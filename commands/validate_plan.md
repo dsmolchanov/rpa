@@ -1,7 +1,3 @@
----
-description: Validate that an implementation plan was correctly executed
----
-
 # Validate Plan
 
 You are tasked with validating that an implementation plan was correctly executed, verifying all success criteria and identifying any deviations or issues.
@@ -102,14 +98,14 @@ Create comprehensive validation summary and **write it to a file**:
 **Validated**: YYYY-MM-DD
 
 ### Implementation Status
-- Phase 1: [Name] - Fully implemented
-- Phase 2: [Name] - Fully implemented
-- Phase 3: [Name] - Partially implemented (see issues)
+✓ Phase 1: [Name] - Fully implemented
+✓ Phase 2: [Name] - Fully implemented
+⚠️ Phase 3: [Name] - Partially implemented (see issues)
 
 ### Automated Verification Results
-- Build passes: `make build`
-- Tests pass: `make test`
-- Linting issues: `make lint` (3 warnings)
+✓ Build passes: `make build`
+✓ Tests pass: `make test`
+✗ Linting issues: `make lint` (3 warnings)
 
 ### Code Review Findings
 

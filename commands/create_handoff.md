@@ -1,7 +1,3 @@
----
-description: Create handoff document to transfer work between sessions
----
-
 # Create Handoff Document Guide
 
 This document outlines the process for creating a handoff document to transfer work between sessions.
@@ -15,12 +11,12 @@ Components:
 - Ticket: ENG-XXXX (use "general" if no ticket)
 - Description: brief kebab-case summary
 
-Run `~/.claude/scripts/spec_metadata.sh` to generate metadata automatically.
+Run `scripts/spec_metadata.sh` to generate metadata automatically.
 
 ## YAML Frontmatter Template
 Required fields:
 - `date`: ISO format with timezone
-- `researcher`: Name of researcher
+- `researcher`: Name from thoughts status
 - `git_commit`: Current commit hash
 - `branch`: Current branch name
 - `repository`: Repository name

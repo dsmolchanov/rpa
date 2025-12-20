@@ -59,6 +59,10 @@ Then wait for the user's research query.
    - Use the **web-search-researcher** agent for external documentation and resources
    - IF you use web-research agents, instruct them to return LINKS with their findings, and please INCLUDE those links in your final report
 
+   **For Linear tickets (if relevant):**
+   - Use the **linear-ticket-reader** agent to get full details of a specific ticket
+   - Use the **linear-searcher** agent to find related tickets or historical context
+
    The key is to use these agents intelligently:
    - Start with locator agents to find what exists
    - Then use analyzer agents on the most promising findings to document how they work
@@ -74,12 +78,12 @@ Then wait for the user's research query.
    - Use thoughts/ findings as supplementary historical context
    - Connect findings across different components
    - Include specific file paths and line numbers for reference
-   - Verify all thoughts/ paths are correct
+   - Verify all thoughts/ paths are correct (e.g., thoughts/allison/ not thoughts/shared/ for personal files)
    - Highlight patterns, connections, and architectural decisions
    - Answer the user's specific questions with concrete evidence
 
 5. **Gather metadata for the research document:**
-   - Run the `~/.claude/scripts/spec_metadata.sh` script to generate all relevant metadata
+   - Run the `~/.claude/hack/spec_metadata.sh` script to generate all relevant metadata
    - Filename: `thoughts/shared/research/YYYY-MM-DD-ENG-XXXX-description.md`
      - Format: `YYYY-MM-DD-ENG-XXXX-description.md` where:
        - YYYY-MM-DD is today's date
@@ -90,12 +94,12 @@ Then wait for the user's research query.
        - Without ticket: `2025-01-08-authentication-flow.md`
 
 6. **Generate research document:**
-   - Use the metadata gathered in step 5
+   - Use the metadata gathered in step 4
    - Structure the document with YAML frontmatter followed by content:
      ```markdown
      ---
      date: [Current date and time with timezone in ISO format]
-     researcher: [Researcher name]
+     researcher: [Researcher name from thoughts status]
      git_commit: [Current commit hash]
      branch: [Current branch name]
      repository: [Repository name]
@@ -108,10 +112,10 @@ Then wait for the user's research query.
 
      # Research: [User's Question/Topic]
 
-     **Date**: [Current date and time with timezone from step 5]
-     **Researcher**: [Researcher name]
-     **Git Commit**: [Current commit hash from step 5]
-     **Branch**: [Current branch name from step 5]
+     **Date**: [Current date and time with timezone from step 4]
+     **Researcher**: [Researcher name from thoughts status]
+     **Git Commit**: [Current commit hash from step 4]
+     **Branch**: [Current branch name from step 4]
      **Repository**: [Repository name]
 
      ## Research Question
@@ -141,6 +145,7 @@ Then wait for the user's research query.
      [Relevant insights from thoughts/ directory with references]
      - `thoughts/shared/something.md` - Historical decision about X
      - `thoughts/local/notes.md` - Past exploration of Y
+     Note: Paths exclude "searchable/" even if found there
 
      ## Related Research
      [Links to other research documents in thoughts/shared/research/]
@@ -167,7 +172,7 @@ Then wait for the user's research query.
    - Add `last_updated_note: "Added follow-up research for [brief description]"` to frontmatter
    - Add a new section: `## Follow-up Research [timestamp]`
    - Spawn new sub-agents as needed for additional investigation
-   - Continue updating the document
+   - Continue updating the document and syncing
 
 ## Important notes:
 - Always use parallel Task agents to maximize efficiency and minimize context usage
@@ -191,6 +196,14 @@ Then wait for the user's research query.
   - ALWAYS wait for all sub-agents to complete before synthesizing (step 4)
   - ALWAYS gather metadata before writing the document (step 5 before step 6)
   - NEVER write the research document with placeholder values
+- **Path handling**: The thoughts/searchable/ directory contains hard links for searching
+  - Always document paths by removing ONLY "searchable/" - preserve all other subdirectories
+  - Examples of correct transformations:
+    - `thoughts/searchable/allison/old_stuff/notes.md` → `thoughts/allison/old_stuff/notes.md`
+    - `thoughts/searchable/shared/prs/123.md` → `thoughts/shared/prs/123.md`
+    - `thoughts/searchable/global/shared/templates.md` → `thoughts/global/shared/templates.md`
+  - NEVER change allison/ to shared/ or vice versa - preserve the exact directory structure
+  - This ensures paths are correct for editing and navigation
 - **Frontmatter consistency**:
   - Always include frontmatter at the beginning of research documents
   - Keep frontmatter fields consistent across all research documents

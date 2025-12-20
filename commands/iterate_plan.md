@@ -78,6 +78,7 @@ If the user's feedback requires understanding new code patterns or validating as
    - **thoughts-analyzer** - To extract insights from documents
 
    **Be EXTREMELY specific about directories**:
+   - Specify the exact directory path for the component being researched
    - Include full path context in prompts
 
 3. **Read any new files identified by research**:
@@ -145,7 +146,7 @@ Get user confirmation before proceeding.
    Would you like any further adjustments?
    ```
 
-2. **Be ready to iterate further** based on feedback
+3. **Be ready to iterate further** based on feedback
 
 ## Important Guidelines
 
@@ -190,6 +191,7 @@ When updating success criteria, always maintain the two-category structure:
 
 1. **Automated Verification** (can be run by execution agents):
    - Commands that can be run: `make test`, `npm run lint`, etc.
+   - Prefer `make` commands when available
    - Specific files that should exist
    - Code compilation/type checking
 

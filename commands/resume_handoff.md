@@ -13,12 +13,12 @@ When this command is invoked:
 1. **If the path to a handoff document was provided**:
    - If a handoff document path was provided as a parameter, skip the default message
    - Immediately read the handoff document FULLY
-   - Immediately read any research or plan documents that it links to under `thoughts/shared/plans` or `thoughts/shared/research`. Do NOT use a sub-agent to read these critical files.
+   - Immediately read any research or plan documents that it links to under `thoughts/shared/plans` or `thoughts/shared/research`. do NOT use a sub-agent to read these critical files.
    - Begin the analysis process by ingesting relevant context from the handoff document, reading additional files it mentions
    - Then propose a course of action to the user and confirm, or ask for clarification on direction.
 
 2. **If a ticket number (like ENG-XXXX) was provided**:
-   - Locate the most recent handoff document for the ticket. Tickets will be located in `thoughts/shared/handoffs/ENG-XXXX` where `ENG-XXXX` is the ticket number. e.g. for `ENG-2124` the handoffs would be in `thoughts/shared/handoffs/ENG-2124/`. **List this directory's contents.**
+   - locate the most recent handoff document for the ticket. Tickets will be located in `thoughts/shared/handoffs/ENG-XXXX` where `ENG-XXXX` is the ticket number. e.g. for `ENG-2124` the handoffs would be in `thoughts/shared/handoffs/ENG-2124/`. **List this directory's contents.**
    - There may be zero, one or multiple files in the directory.
    - **If there are zero files in the directory, or the directory does not exist**: tell the user: "I'm sorry, I can't seem to find that handoff document. Can you please provide me with a path to it?"
    - **If there is only one file in the directory**: proceed with that handoff
@@ -34,7 +34,7 @@ I'll help you resume work from a handoff document. Let me find the available han
 
 Which handoff would you like to resume from?
 
-Tip: You can invoke this command directly with a handoff path: `/resume_handoff thoughts/shared/handoffs/ENG-XXXX/YYYY-MM-DD_HH-MM-SS_ENG-XXXX_description.md`
+Tip: You can invoke this command directly with a handoff path: `/resume_handoff `thoughts/shared/handoffs/ENG-XXXX/YYYY-MM-DD_HH-MM-SS_ENG-XXXX_description.md`
 
 or using a ticket number to resume from the most recent handoff for that ticket: `/resume_handoff ENG-XXXX`
 ```
@@ -83,8 +83,8 @@ Then wait for the user's input.
    I've analyzed the handoff from [date] by [researcher]. Here's the current situation:
 
    **Original Tasks:**
-   - [Task 1]: [Status from handoff] -> [Current verification]
-   - [Task 2]: [Status from handoff] -> [Current verification]
+   - [Task 1]: [Status from handoff] → [Current verification]
+   - [Task 2]: [Status from handoff] → [Current verification]
 
    **Key Learnings Validated:**
    - [Learning with file:line reference] - [Still valid/Changed]
@@ -197,7 +197,7 @@ Then wait for the user's input.
 ## Example Interaction Flow
 
 ```
-User: /resume_handoff thoughts/shared/handoffs/ENG-1234/handoff-0.md
+User: /resume_handoff specification/feature/handoffs/handoff-0.md
 Assistant: Let me read and analyze that handoff document...
 
 [Reads handoff completely]

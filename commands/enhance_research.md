@@ -184,7 +184,7 @@ Get user confirmation before proceeding.
    Would you like any further adjustments?
    ```
 
-2. **Be ready to iterate further** based on feedback
+3. **Be ready to iterate further** based on feedback
 
 ## Important Guidelines
 
@@ -224,4 +224,3 @@ User: /enhance_research thoughts/shared/research/2025-01-08-auth-flow.md
 Opinion 1: "The research missed the token refresh mechanism in auth/refresh.ts"
 Opinion 2: "Should include the session storage patterns"
 Opinion 3: "The error handling section needs more detail about retry logic"
-```

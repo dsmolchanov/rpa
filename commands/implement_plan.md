@@ -62,7 +62,7 @@ After implementing a phase:
 
 If instructed to execute multiple phases consecutively, skip the pause until the last phase. Otherwise, assume you are just doing one phase.
 
-Do not check off items in the manual testing steps until confirmed by the user.
+do not check off items in the manual testing steps until confirmed by the user.
 
 
 ## If You Get Stuck
