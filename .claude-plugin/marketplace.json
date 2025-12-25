@@ -1,0 +1,16 @@
+{
+  "name": "rpa-marketplace",
+  "description": "RPA (Research, Plan, Act) plugin marketplace",
+  "plugins": [
+    {
+      "id": "rpa",
+      "name": "RPA - Research, Plan, Act",
+      "description": "Structured software development workflows with technical debt management, refactoring tools, and planning utilities",
+      "version": "1.0.0",
+      "source": {
+        "type": "directory",
+        "path": "."
+      }
+    }
+  ]
+}
