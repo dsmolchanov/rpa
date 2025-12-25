@@ -30,7 +30,37 @@ This approach reduces errors, improves code quality, and creates documentation t
 
 ## Installation
 
-### Quick Install (Recommended)
+### Plugin Install (Recommended)
+
+Install as a Claude Code plugin for automatic updates and namespaced commands:
+
+```bash
+# Clone and install as plugin
+git clone https://github.com/dsmolchanov/rpa-claude-code.git
+claude plugin install --plugin-dir ./rpa-claude-code
+
+# Or install directly from GitHub
+claude plugin install --plugin-dir https://github.com/dsmolchanov/rpa-claude-code
+```
+
+After installation, commands are available with the `rpa-claude-code:` prefix:
+- `/rpa-claude-code:research_codebase`
+- `/rpa-claude-code:create_plan`
+- `/rpa-claude-code:tech_debt_sweep`
+
+**Installation scopes:**
+```bash
+# User scope (default) - available in all projects
+claude plugin install --plugin-dir ./rpa-claude-code --scope user
+
+# Project scope - shared with team via git
+claude plugin install --plugin-dir ./rpa-claude-code --scope project
+
+# Local scope - project-specific, gitignored
+claude plugin install --plugin-dir ./rpa-claude-code --scope local
+```
+
+### Manual Install (Alternative)
 
 Copy commands, agents, and scripts to your global Claude configuration:
 
@@ -52,10 +82,10 @@ cp scripts/*.sh ~/.claude/scripts/
 chmod +x ~/.claude/scripts/*.sh
 
 # Optional: Copy hooks for deterministic quality gates
-cp hooks/*.md ~/.claude/hooks/
+cp hooks/*.json ~/.claude/hooks/
 ```
 
-### Manual Installation
+### From Source
 
 1. Download or clone this repository
 2. Copy the contents of `commands/` to `~/.claude/commands/`
