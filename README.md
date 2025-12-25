@@ -57,11 +57,11 @@ cp hooks/*.json ~/.claude/hooks/
 
 ### Plugin Install (Alternative)
 
-Install as a Claude Code plugin (adds `rpa-claude-code:` prefix to commands):
+Install as a Claude Code plugin (adds `rpa:` prefix to commands):
 
 ```bash
-git clone https://github.com/dsmolchanov/rpa-claude-code.git
-claude plugin install --plugin-dir ./rpa-claude-code
+git clone https://github.com/dsmolchanov/rpa.git
+claude plugin install --plugin-dir ./rpa
 ```
 
 ### Verify Installation
