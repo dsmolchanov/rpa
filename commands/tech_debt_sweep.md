@@ -124,6 +124,16 @@ Task 5 - Configuration:
     Find: hardcoded paths, URLs, potential credentials (REDACT these!), magic values.
     Return: prioritized findings with externalization recommendations.
     Limit response to 100 lines.
+
+Task 6 - God Modules:
+  subagent_type: god-module-finder
+  Prompt: |
+    Scan for God-like modules (monolithic files needing refactoring).
+    Use weighted scoring: size(30) + surface(20) + fan_in(20) + fan_out(10) + smell(10) + hotspot(10)
+    Classify: SEVERE (>=85), HIGH (>=70), MEDIUM (>=55), LOW (>=40)
+    Flag "big but cohesive" files as false positives.
+    Return: Top 10 candidates ranked by score with recommended split strategy.
+    Limit response to 100 lines.
 ```
 
 **Note**: test-runner is invoked separately after synthesis for verification, not as part of the scan.
@@ -157,6 +167,10 @@ metrics:
   doc_coverage: 67
   config_health: 65
   dependency_health: 78
+  god_modules_count: 12
+  god_modules_severe: 2
+  god_modules_high: 4
+  god_modules_worst_score: 94
 ---
 
 # Technical Debt Sweep Report
@@ -187,6 +201,28 @@ metrics:
 
 ### Configuration
 [Summary from config-auditor]
+
+### God Modules
+[Summary from god-module-finder]
+
+## God Modules Shortlist
+
+### Top 10 Refactoring Candidates
+
+| Rank | File | Score | Severity | Action |
+|------|------|-------|----------|--------|
+| 1 | [worst file] | [score] | SEVERE | `/refactor [path]` |
+| 2 | [second file] | [score] | SEVERE | `/refactor [path]` |
+| ... | ... | ... | ... | ... |
+
+### Newly God-like Since Last Sweep
+- [file] (was [old score], now [new score]) - grew from [reason]
+
+### God-like + Hotspot (High Churn)
+These are the most painful files (big + frequently edited):
+- [file] - [commits] commits, [score] score
+
+**Next Action**: Run `/refactor_candidates` for full index or `/refactor <file>` for immediate action.
 
 ## Trends (vs Previous Sweep)
 - New debt items: +X
@@ -365,8 +401,9 @@ For complex fixes, chain agents:
 - If tests fail after apply, roll back and report
 
 ## Success Criteria
-- [ ] All 5 specialized agents completed their scans
+- [ ] All 6 specialized agents completed their scans (including god-module-finder)
 - [ ] Debt report generated with metrics
+- [ ] God Modules Shortlist included with top 10 candidates
 - [ ] Paydown plan created with prioritized items
 - [ ] Quick wins clearly identified
 - [ ] (If apply) Safe fixes applied and verified
