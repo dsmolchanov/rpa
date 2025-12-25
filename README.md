@@ -25,24 +25,34 @@ This approach reduces errors, improves code quality, and creates documentation t
 | `/validate_plan` | Verify that a plan was correctly implemented |
 | `/create_handoff` | Create handoff documents to transfer work between sessions |
 | `/resume_handoff` | Resume work from a handoff document |
+| `/tech_debt_sweep` | Scan codebase for technical debt and generate paydown plan |
+| `/tech_debt_trends` | Analyze technical debt trends over time |
 
 ## Installation
 
 ### Quick Install (Recommended)
 
-Copy the commands and scripts to your global Claude configuration:
+Copy commands, agents, and scripts to your global Claude configuration:
 
 ```bash
 # Create directories if they don't exist
 mkdir -p ~/.claude/commands
+mkdir -p ~/.claude/agents
 mkdir -p ~/.claude/scripts
+mkdir -p ~/.claude/hooks
 
 # Copy commands
 cp commands/*.md ~/.claude/commands/
 
+# Copy agents (enables parallel sub-agents)
+cp agents/*.md ~/.claude/agents/
+
 # Copy and make scripts executable
 cp scripts/*.sh ~/.claude/scripts/
 chmod +x ~/.claude/scripts/*.sh
+
+# Optional: Copy hooks for deterministic quality gates
+cp hooks/*.md ~/.claude/hooks/
 ```
 
 ### Manual Installation
@@ -78,9 +88,29 @@ After installation, your `~/.claude/` directory should look like:
 │   ├── enhance_research.md
 │   ├── validate_plan.md
 │   ├── create_handoff.md
-│   └── resume_handoff.md
-└── scripts/
-    └── spec_metadata.sh
+│   ├── resume_handoff.md
+│   ├── tech_debt_sweep.md     # NEW
+│   └── tech_debt_trends.md    # NEW
+├── agents/                     # NEW SECTION
+│   ├── code-analyzer.md
+│   ├── codebase-analyzer.md
+│   ├── codebase-locator.md
+│   ├── codebase-pattern-finder.md
+│   ├── file-analyzer.md
+│   ├── parallel-worker.md
+│   ├── test-runner.md
+│   ├── thoughts-analyzer.md
+│   ├── thoughts-locator.md
+│   ├── web-search-researcher.md
+│   ├── dependency-auditor.md   # NEW
+│   ├── debt-scanner.md         # NEW
+│   ├── architecture-guard.md   # NEW
+│   ├── docs-auditor.md         # NEW
+│   └── config-auditor.md       # NEW
+├── scripts/
+│   └── spec_metadata.sh
+└── hooks/                      # NEW SECTION
+    └── tech-debt-hooks.md
 ```
 
 ## Project Setup
@@ -88,7 +118,7 @@ After installation, your `~/.claude/` directory should look like:
 For each project using RPA, create a `thoughts/` directory structure:
 
 ```bash
-mkdir -p thoughts/shared/{research,plans,implementations,handoffs}
+mkdir -p thoughts/shared/{research,plans,implementations,handoffs,debt}
 ```
 
 This creates:
@@ -96,6 +126,101 @@ This creates:
 - `thoughts/shared/plans/` - Implementation plans
 - `thoughts/shared/implementations/` - Validation reports
 - `thoughts/shared/handoffs/` - Session handoff documents
+- `thoughts/shared/debt/` - Technical debt reports and paydown plans
+
+**Important**: Ensure `thoughts/shared/debt/` is tracked in git (not in `.gitignore`) for trend analysis to work.
+
+## Technical Debt Management
+
+The repo includes commands for periodic technical debt reduction.
+
+### Philosophy
+
+Tech debt work follows the same RPA pattern as feature work:
+1. **Research** (scan) - Discover what debt exists
+2. **Plan** (prioritize) - Create actionable paydown plan
+3. **Act** (apply) - Fix safe issues, plan larger refactors
+
+### /tech_debt_sweep
+
+Performs a comprehensive technical debt scan and generates actionable artifacts.
+
+**Usage:**
+```bash
+/tech_debt_sweep        # Scan and generate report + plan
+/tech_debt_sweep apply  # Auto-fix safe issues
+```
+
+**What it scans:**
+- Dependencies (security, outdated, unused)
+- Code debt markers (TODO/FIXME, lint suppressions)
+- Architecture (boundaries, cycles, god modules)
+- Documentation (README accuracy, docstrings)
+- Configuration (hardcoded values, credentials)
+
+**Output:**
+- `thoughts/shared/debt/YYYY-MM-DD-tech-debt-sweep.md` - Debt report
+- `thoughts/shared/debt/YYYY-MM-DD-tech-debt-paydown.md` - Paydown plan
+
+### /tech_debt_trends
+
+Analyzes debt trajectory by comparing historical sweep reports.
+
+**Usage:**
+```bash
+/tech_debt_trends      # Analyze last 4 weeks
+/tech_debt_trends 8    # Analyze last 8 weeks
+```
+
+**Requires:** At least 2 previous debt sweeps
+
+### New Agents
+
+These specialized agents support the debt sweep:
+
+| Agent | Purpose |
+|-------|---------|
+| `dependency-auditor` | Security vulnerabilities, outdated packages |
+| `debt-scanner` | TODO/FIXME, lint suppressions, complexity |
+| `architecture-guard` | Boundary violations, circular deps |
+| `docs-auditor` | README accuracy, docstring coverage |
+| `config-auditor` | Hardcoded values, credential detection |
+
+### Recommended Schedule
+
+- **Weekly**: Run `/tech_debt_sweep` every Friday
+- **After sweep**: Review plan, run `/tech_debt_sweep apply`
+- **Monthly**: Run `/tech_debt_trends` to track progress
+
+### Hooks for Deterministic Quality
+
+Install the hooks pack for automatic quality gates:
+
+```bash
+cp hooks/*.md ~/.claude/hooks/
+```
+
+This ensures:
+- Files are auto-formatted after edits
+- Lint runs when Claude finishes responding
+- Related tests run after code changes
+
+### Whitelist for False Positives
+
+Create `thoughts/shared/debt/.whitelist` to exclude files/patterns from scans:
+
+```
+# Exclude intentionally hardcoded config
+src/config/defaults.ts
+
+# Exclude legacy code that's being replaced
+legacy/**
+
+# Exclude specific TODO that's deferred
+src/api/client.ts:45
+```
+
+Agents will check this file and skip whitelisted items.
 
 ## Usage Examples
 
