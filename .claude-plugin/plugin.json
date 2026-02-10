@@ -1,25 +1,8 @@
 {
   "name": "rpa",
-  "version": "1.0.0",
   "description": "Research, Plan, Act - Structured software development workflows with technical debt management",
   "author": {
     "name": "Dmitry Molchanov",
-    "url": "https://github.com/dsmolchanov"
-  },
-  "homepage": "https://github.com/dsmolchanov/rpa",
-  "repository": "https://github.com/dsmolchanov/rpa",
-  "license": "MIT",
-  "keywords": [
-    "rpa",
-    "research",
-    "planning",
-    "implementation",
-    "tech-debt",
-    "workflow",
-    "automation"
-  ],
-  "commands": "./commands/",
-  "agents": "./agents/",
-  "hooks": "./hooks/hooks.json",
-  "scripts": "./scripts/"
+    "email": "dsmolchanov@gmail.com"
+  }
 }

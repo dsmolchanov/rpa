@@ -2,9 +2,7 @@
   "hooks": {
     "PostToolUse": [
       {
-        "matcher": {
-          "tool_name": "Edit"
-        },
+        "matcher": "Edit",
         "hooks": [
           {
             "type": "command",

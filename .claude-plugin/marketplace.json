@@ -1,16 +1,18 @@
 {
-  "name": "rpa-marketplace",
+  "name": "dsmolchanov-rpa",
   "description": "RPA (Research, Plan, Act) plugin marketplace",
+  "owner": {
+    "name": "Dmitry Molchanov",
+    "email": "dsmolchanov@gmail.com"
+  },
   "plugins": [
     {
-      "id": "rpa",
-      "name": "RPA - Research, Plan, Act",
+      "name": "rpa",
       "description": "Structured software development workflows with technical debt management, refactoring tools, and planning utilities",
       "version": "1.0.0",
-      "source": {
-        "type": "directory",
-        "path": "."
-      }
+      "source": "./",
+      "category": "development",
+      "homepage": "https://github.com/dsmolchanov/rpa"
     }
   ]
 }
