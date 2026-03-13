@@ -1,8 +1,8 @@
-# AI-DLC Skills Implementation Plan
+# AWS AI-DLC-Compatible Skills Implementation Plan
 
 ## Overview
 
-Add a parallel set of AI-DLC (AI-Driven Development Life Cycle) commands and agents to the RPA plugin, inspired by the Sberbank AI-DLC methodology. These new skills implement a closed-loop, 3-phase system (Inception → Construction → Operations) with shorter feedback cycles ("Bolts"), adaptive workflow depth, and formalized steering rules. All existing commands and agents remain untouched.
+Add an AWS AI-DLC-compatible command facade to the RPA plugin. The facade should map plugin-native `/aidlc_*` commands onto the current `awslabs/aidlc-workflows` stage model and artifact conventions, while keeping two plugin-specific extensions: `/aidlc_operations` and `/aidlc_feedback`. Canonical AI-DLC artifacts live under `aidlc-docs/`; `thoughts/shared/` is used only for plugin-facing summaries, overlays, and indexes. Existing legacy commands and agents remain behaviorally untouched.
 
 ## Current State Analysis
 
@@ -20,164 +20,202 @@ Supporting commands: `/iterate_plan`, `/enhance_plan`, `/enhance_research`, `/co
 - Agents live in `agents/*.md` with frontmatter (`name`, `description`, `tools`, `model`, `color`)
 - Artifacts go to `thoughts/shared/{research,plans,implementations,debt,handoffs}/`
 - Commands spawn parallel sub-agents via the `Task` tool using agent types like `codebase-locator`, `codebase-analyzer`, etc.
-- The plugin system uses `.claude-plugin/plugin.json` for registration
+- `.claude-plugin/plugin.json` currently contains plugin metadata only, so command/agent availability is file-driven rather than manifest-driven
 - Existing commands reuse the same pool of 27 agents
+- `README.md` currently enumerates only the legacy workflow and project setup directories, so AI-DLC requires documentation changes in more than one section to avoid stale guidance
+- The current AWS AI-DLC upstream for alignment is release `v0.1.6`, published on March 5, 2026
+- Upstream Claude Code packaging is rule-file based (`CLAUDE.md` + `.aidlc-rule-details/`), not slash-command based
+- Upstream canonical artifacts live in `aidlc-docs/` with persistent `aidlc-state.md` and `audit.md`
+- Upstream requires file-based questions with `[Answer]:` tags and separates stage selection from depth selection
+- Upstream Operations is still a placeholder and Feedback is not part of the core stage model
 
 ## Desired End State
 
-After implementation, the plugin has two parallel skill families:
+After implementation, the plugin has two complementary skill families:
 
 1. **Legacy RPA** (unchanged): `/research_codebase`, `/create_plan`, `/implement_plan`, `/validate_plan`, etc.
-2. **AI-DLC** (new): `/aidlc_start`, `/aidlc_inception`, `/aidlc_bolt`, `/aidlc_operations`, `/aidlc_feedback`
+2. **AI-DLC Facade** (new): `/aidlc_start`, `/aidlc_inception`, `/aidlc_bolt`, `/aidlc_build_test`, `/aidlc_operations`, `/aidlc_feedback`
 
-Both families share the same agent pool (existing agents are reused). Five new agents are added. A new `steering-rules.yaml` configuration file governs AI-DLC behavior. New artifact directories extend `thoughts/shared/`.
+The AI-DLC facade shares the existing agent pool where practical and adds five new AI-DLC support agents. Canonical workflow artifacts are written under `aidlc-docs/` following the upstream stage structure. A plugin-local YAML overlay remains available for command mappings and local conventions, but stage execution is driven by AWS AI-DLC-compatible execution planning rather than by YAML depth flags. `/aidlc_operations` and `/aidlc_feedback` are explicitly documented as experimental extensions beyond current upstream core parity.
 
 ### Verification of End State:
-- All 5 new commands exist in `commands/` and are invokable as slash commands
+- All 6 new commands exist in `commands/` and are invokable as slash commands
 - All 5 new agents exist in `agents/` and are spawnable by new commands
 - Legacy commands remain byte-identical to their current state
 - Legacy agents remain byte-identical to their current state
-- New artifact directories exist under `thoughts/shared/`
-- Steering rules file is loadable and parseable
-- Each new command produces its expected artifact type
+- Canonical AI-DLC artifact directories exist under `aidlc-docs/`
+- `aidlc-docs/aidlc-state.md` and `aidlc-docs/audit.md` are created and updated
+- Rule-details loading follows upstream search order
+- Extensions loading follows upstream opt-in semantics
+- The plugin overlay file is loadable and parseable
+- Each command produces its expected AWS-compatible artifact type
+- README/project setup documentation reflects the new workflow without leaving stale command or directory lists behind
+- The plan explicitly labels Operations/Feedback as experimental extensions relative to upstream core
 
 ## What We're NOT Doing
 
-- NOT modifying any existing command or agent files
-- NOT changing the `thoughts/shared/research/` or `thoughts/shared/plans/` artifact formats
+- NOT modifying any existing command files
+- NOT modifying any existing agent files in v1
+- NOT changing the `thoughts/shared/research/` or `thoughts/shared/plans/` artifact formats for legacy RPA flows
 - NOT replacing the linear RPA cycle (it remains available and fully functional)
-- NOT adding automated deployment or CI/CD integration (Operations phase produces plans, not automation)
+- NOT claiming full parity with future AWS Operations/Feedback phases that do not yet exist upstream
+- NOT moving application source code under `aidlc-docs/`
 - NOT building a web UI or dashboard for steering rules
 - NOT adding Linear/GitHub integration beyond what already exists
 - NOT changing the plugin.json or marketplace.json
+- NOT introducing additional generic code-writing agents beyond the five AI-DLC support agents defined in this plan
 
 ## Implementation Approach
 
-Build bottom-up: configuration → agents → commands. Each phase is independently testable.
+Build bottom-up: compatibility substrate → plugin overlay → agents → facade commands → documentation. Each phase is independently testable.
+
+Design invariants for the implementation:
+- Treat the plugin as an AWS AI-DLC compatibility layer, not as a second independent lifecycle
+- Canonical documentation artifacts live in `aidlc-docs/`; `thoughts/shared/` may contain summaries or plugin indexes only
+- Separate stage selection from depth: workflow planning decides EXECUTE/SKIP, while depth determines detail level inside executed stages
+- Use file-based question documents with `[Answer]:` tags for all AI-DLC clarifications
+- Reuse legacy command structure where practical (`/create_plan`, `/implement_plan`, `/validate_plan`) to reduce prompt drift and maintenance overhead
+- Separate gate execution from compliance: `quality-gate-runner` executes build/test outputs, while the compliance checker validates extension and overlay adherence
+- Keep the implementation additive at the workflow level: no existing user flow should require migration or behavioral change
+- Pin compatibility to a specific verified upstream release rather than tracking `main`
 
 ---
 
-## Phase 1: Steering Rules Configuration
+## Phase 0: Compatibility Substrate
 
 ### Overview
-Create the steering rules YAML schema and a default template. This is the foundation that all AI-DLC commands read to determine workflow depth, quality gates, and team constraints.
+Create the upstream-compatible file and state substrate before introducing plugin-local overlays or slash commands. This phase is what makes the plugin a compatibility facade rather than a parallel invention.
 
 ### Changes Required:
 
-#### 1. Steering Rules Template
+#### 1. Canonical Artifact Root
+**Directory**: `aidlc-docs/` (new)
+**Purpose**: Canonical source of truth for AWS AI-DLC-compatible artifacts.
+
+Create the initial structure:
+
+```text
+aidlc-docs/
+├── aidlc-state.md
+├── audit.md
+├── inception/
+│   ├── plans/
+│   │   └── execution-plan.md
+│   ├── requirements/
+│   ├── reverse-engineering/
+│   ├── user-stories/
+│   ├── application-design/
+│   └── units/
+├── construction/
+│   ├── units/
+│   └── build-and-test/
+└── operations/
+```
+
+#### 2. Persistent State File
+**File**: `aidlc-docs/aidlc-state.md` (new)
+**Purpose**: Session resume point and current workflow truth.
+
+The file should track:
+- Upstream compatibility version (`v0.1.6` at initial implementation time)
+- Current request/work item
+- Workspace type (greenfield/brownfield)
+- Active extensions
+- Current stage and current depth
+- Artifact pointers
+- Approval status of major checkpoints
+
+#### 3. Audit Trail
+**File**: `aidlc-docs/audit.md` (new)
+**Purpose**: Append-only record of raw user inputs, stage decisions, approvals, and generated artifact references.
+
+#### 4. Rule Resolution
+**Directories/Files**:
+- `CLAUDE.md` (existing, loaded by host tool)
+- `.aidlc-rule-details/` (new or mirrored compatibility directory)
+- `extensions/` (existing-or-new opt-in rules directory)
+
+**Purpose**: Mirror the upstream rule-loading model as closely as the plugin architecture allows.
+
+Resolution behavior:
+- Load the pinned upstream-compatible rule details first
+- Load repo-local `.aidlc-rule-details/` overrides second
+- Load enabled extension rules from `extensions/` third
+- Record the resolved rule set in `aidlc-state.md`
+
+#### 5. Execution Plan Baseline
+**File**: `aidlc-docs/inception/plans/execution-plan.md` (new)
+**Purpose**: The approved source of truth for which stages execute or skip, and why.
+
+The execution plan must record:
+- Stage name
+- Decision: `EXECUTE` or `SKIP`
+- Rationale
+- Depth used for that stage
+- Required approvals
+
+### Success Criteria:
+
+#### Automated Verification:
+- [x] Directory exists: `aidlc-docs/`
+- [x] File exists: `aidlc-docs/aidlc-state.md`
+- [x] File exists: `aidlc-docs/audit.md`
+- [x] File exists: `aidlc-docs/inception/plans/execution-plan.md`
+- [x] Rule-resolution order is documented in the compatibility substrate
+- [x] `aidlc-state.md` contains upstream compatibility version `v0.1.6`
+
+#### Manual Verification:
+- [ ] A resumed session can reconstruct prior context from `aidlc-state.md` and `audit.md`
+- [ ] Stage decisions are captured in `execution-plan.md` rather than inferred from depth alone
+- [ ] The directory layout is recognizably aligned with upstream AI-DLC artifacts
+
+**Implementation Note**: After completing this phase and all automated verification passes, pause here for manual confirmation before proceeding to Phase 1.
+
+---
+
+## Phase 1: Plugin Overlay Configuration
+
+### Overview
+Create a plugin-local overlay for command mappings, repo conventions, and default commands. This is intentionally not the canonical AI-DLC steering mechanism; it augments the compatibility substrate for plugin-specific concerns only.
+
+### Changes Required:
+
+#### 1. Plugin Overlay Template
 **File**: `thoughts/shared/steering-rules/default.yaml` (new)
-**Purpose**: Default steering rules that teams customize. Versioned in thoughts/ so it travels with the project.
+**Purpose**: Plugin-local overlay for command mappings, commit conventions, default check commands, and experimental-feature toggles.
 
 ```yaml
-# AI-DLC Steering Rules v1
-# These rules govern AI behavior across all AI-DLC commands.
-# Customize per-project. All AI-DLC commands read this file.
-
 version: "1.0"
+upstream_compatibility:
+  pinned_release: "v0.1.6"
+  canonical_artifact_root: "aidlc-docs"
+  state_file: "aidlc-docs/aidlc-state.md"
+  audit_file: "aidlc-docs/audit.md"
 
-# Change type classification criteria
 change_types:
   hotfix:
-    description: "Urgent production fix, minimal ceremony"
-    indicators:
-      - "bug fix"
-      - "hotfix"
-      - "critical"
-      - "production issue"
-    workflow_depth: minimal
+    indicators: ["bug fix", "hotfix", "critical", "production issue"]
+    default_depth: minimal
   feature:
-    description: "New functionality or enhancement"
-    indicators:
-      - "feature"
-      - "enhancement"
-      - "new"
-      - "add"
-    workflow_depth: standard
+    indicators: ["feature", "enhancement", "new", "add"]
+    default_depth: standard
   refactor:
-    description: "Code restructuring without behavior change"
-    indicators:
-      - "refactor"
-      - "cleanup"
-      - "restructure"
-      - "technical debt"
-    workflow_depth: standard
+    indicators: ["refactor", "cleanup", "restructure", "technical debt"]
+    default_depth: standard
   migration:
-    description: "Data or schema migration with rollback needs"
-    indicators:
-      - "migration"
-      - "schema change"
-      - "data transform"
-      - "upgrade"
-    workflow_depth: enhanced
+    indicators: ["migration", "schema change", "data transform", "upgrade"]
+    default_depth: comprehensive
 
-# Quality gates per workflow depth
-quality_gates:
-  minimal:
-    inception:
-      research: skip
-      plan_detail: inline  # No separate plan document
-      uow_decomposition: single  # One UoW, no decomposition
-    construction:
-      required_checks:
-        - lint
-        - typecheck
-        - unit_tests
-      coverage_minimum: existing  # Don't regress
-      pr_review: optional
-    operations:
-      deploy_plan: skip
-      monitoring: skip
-      rollback_plan: inline
-
-  standard:
-    inception:
-      research: targeted  # Focused research, not exhaustive
-      plan_detail: document  # Full plan document with UoWs
-      uow_decomposition: full
-    construction:
-      required_checks:
-        - lint
-        - typecheck
-        - unit_tests
-        - integration_tests
-      coverage_minimum: "80%"
-      pr_review: required
-    operations:
-      deploy_plan: document
-      monitoring: checklist
-      rollback_plan: document
-
-  enhanced:
-    inception:
-      research: exhaustive  # Deep research with multiple agents
-      plan_detail: document
-      uow_decomposition: full
-    construction:
-      required_checks:
-        - lint
-        - typecheck
-        - unit_tests
-        - integration_tests
-        - api_snapshot_comparison
-        - consumer_compatibility
-      coverage_minimum: "90%"
-      pr_review: required
-    operations:
-      deploy_plan: document
-      monitoring: full  # Dashboards, alerts, runbooks
-      rollback_plan: document_with_verification
-
-# Team conventions (steering rules proper)
-conventions:
-  commit_style: conventional  # conventional | freeform
+plugin_conventions:
+  commit_style: conventional
   branch_naming: "feature/{ticket}-{description}"
   test_naming: "{module}.test.{ext}"
-  pr_template: true
-  max_uow_size: "~200 lines changed"
-  bolt_timeout_minutes: 60
+  max_unit_size: "~200 lines changed"
+  experimental_extensions:
+    operations: true
+    feedback: true
 
-# Custom quality check commands (project-specific)
-check_commands:
+default_commands:
   lint: "make lint"
   typecheck: "make typecheck"
   unit_tests: "make test"
@@ -185,43 +223,28 @@ check_commands:
   build: "make build"
 ```
 
-#### 2. Steering Rules README
+#### 2. Overlay README
 **File**: `thoughts/shared/steering-rules/README.md` (new)
-**Purpose**: Documents how to customize steering rules
+**Purpose**: Documents the difference between upstream-compatible artifacts and plugin-local overlay behavior.
 
-```markdown
-# Steering Rules
-
-This directory contains AI-DLC steering rules that govern how AI-DLC commands behave.
-
-## Usage
-
-AI-DLC commands (`/aidlc_start`, `/aidlc_inception`, `/aidlc_bolt`, `/aidlc_operations`, `/aidlc_feedback`) automatically read `default.yaml` in this directory.
-
-## Customization
-
-Edit `default.yaml` to match your team's conventions. Key sections:
-- `change_types`: How the system classifies incoming work
-- `quality_gates`: What checks run at each depth level
-- `conventions`: Team coding standards
-- `check_commands`: Project-specific commands to run
-
-## Versioning
-
-Steering rules are versioned in `thoughts/` so they travel with the project and are visible to all team members.
-```
+The README must state clearly:
+- `aidlc-docs/` is canonical
+- `thoughts/shared/steering-rules/default.yaml` is a plugin overlay, not the primary source of workflow truth
+- Stage EXECUTE/SKIP decisions belong in `aidlc-docs/inception/plans/execution-plan.md`
+- Depth values are `minimal`, `standard`, and `comprehensive`
 
 ### Success Criteria:
 
 #### Automated Verification:
-- [ ] File exists: `thoughts/shared/steering-rules/default.yaml`
-- [ ] File exists: `thoughts/shared/steering-rules/README.md`
-- [ ] YAML is valid: `python3 -c "import yaml; yaml.safe_load(open('thoughts/shared/steering-rules/default.yaml'))"`
+- [x] File exists: `thoughts/shared/steering-rules/default.yaml`
+- [x] File exists: `thoughts/shared/steering-rules/README.md`
+- [x] YAML is valid: `python3 -c "import yaml; yaml.safe_load(open('thoughts/shared/steering-rules/default.yaml'))"`
+- [x] Overlay uses `comprehensive` rather than `enhanced`
 
 #### Manual Verification:
-- [ ] Steering rules cover all four change types (hotfix, feature, refactor, migration)
-- [ ] Quality gates scale appropriately (minimal < standard < enhanced)
-- [ ] Convention fields are reasonable defaults
+- [ ] The overlay contains only plugin-local concerns, not stage EXECUTE/SKIP logic
+- [ ] The README makes the canonical-vs-overlay distinction explicit
+- [ ] The overlay is useful even if upstream rule-details change later
 
 **Implementation Note**: After completing this phase and all automated verification passes, pause here for manual confirmation before proceeding to Phase 2.
 
@@ -236,35 +259,36 @@ Create 5 new agents that support AI-DLC commands. These agents are read-only res
 
 #### 1. UoW Decomposer Agent
 **File**: `agents/uow-decomposer.md` (new)
-**Purpose**: Decomposes requirements into autonomous, independently deployable Units of Work
+**Purpose**: Generates AWS AI-DLC-style unit planning artifacts from approved inception outputs
 
 ```markdown
 ---
 name: uow-decomposer
 description: |
-  Decomposes requirements into autonomous, independently deployable Units of Work (UoWs).
-  Analyzes dependencies, estimates scope, and assigns change types. Used by /aidlc_inception.
+  Generates AI-DLC-compatible unit planning artifacts from approved requirements,
+  workflow planning, and application design. Used by /aidlc_inception.
 tools: Grep, Glob, LS, Read
 model: inherit
 color: yellow
 ---
 
-You are a specialist at decomposing software requirements into Units of Work (UoWs).
-A UoW is an autonomous, independently deployable chunk of work with clear boundaries.
+You are a specialist at generating Units of Work from approved inception artifacts.
+A unit is a logical grouping of stories/work that can be implemented coherently; in a monolith, one unit may cover the entire app with internal modules.
 
 ## Core Responsibilities
 
 1. **Analyze Requirements**
-   - Read the requirement/ticket/description provided
-   - Identify distinct functional areas
-   - Map to existing codebase components
+   - Read approved requirements artifacts
+   - Read workflow planning decisions
+   - Read application design and user-story artifacts when present
+   - Map units to existing codebase components
 
 2. **Decompose into UoWs**
-   Each UoW must be:
-   - **Autonomous**: Can be implemented without other UoWs being complete (or has explicit dependencies)
-   - **Deployable**: Produces a working, committable result on its own
-   - **Bounded**: Clear start and end, estimatable scope
-   - **Testable**: Has its own success criteria
+   Each unit should be:
+   - **Coherent**: Represents a logical slice of approved work
+   - **Bounded**: Has clear scope and estimatable effort
+   - **Traceable**: Links back to requirements/stories/design
+   - **Testable**: Can feed later construction/build-test stages
 
 3. **Classify Each UoW**
    Assign a change type to each:
@@ -274,9 +298,10 @@ A UoW is an autonomous, independently deployable chunk of work with clear bounda
    - `migration`: Data/schema changes
 
 4. **Map Dependencies**
-   - Identify which UoWs depend on others
-   - Mark which can run in parallel
-   - Flag any circular dependencies (these indicate bad decomposition)
+   - Identify which units depend on others
+   - Flag optional parallelism
+   - Flag circular dependencies (these indicate bad decomposition)
+   - Produce dependency artifacts expected by the compatibility facade
 
 ## Output Format
 
@@ -290,7 +315,7 @@ units_of_work:
       files: ["path/to/file1.ext", "path/to/file2.ext"]
       estimated_lines: ~50
     dependencies: []  # or ["UOW-2"]
-    parallel: true  # Can run alongside other UoWs?
+    parallel: true
     definition_of_done:
       - "[Specific criterion 1]"
       - "[Specific criterion 2]"
@@ -298,12 +323,17 @@ units_of_work:
       - "command to verify"
 ```
 
+Also generate companion artifact summaries for:
+- `aidlc-docs/inception/units/unit-of-work.md`
+- `aidlc-docs/inception/units/unit-of-work-dependency.md`
+- `aidlc-docs/inception/units/unit-of-work-story-map.md`
+
 ## Decomposition Rules
 
-- Prefer smaller UoWs (< 200 lines changed each)
-- Data model changes are always their own UoW
-- Test additions can be bundled with their implementation UoW
-- Config changes are their own UoW if they affect multiple components
+- Prefer smaller units, but allow a single monolith-spanning unit when upstream-compatible planning calls for it
+- Data model changes are often their own unit, but may remain coupled when approved design requires it
+- Test additions can be bundled with their implementation unit
+- Config changes are their own unit if they affect multiple components
 - UI changes separate from API changes
 
 ## What NOT to Do
@@ -311,48 +341,50 @@ units_of_work:
 - Don't implement anything
 - Don't write code
 - Don't suggest architectural changes beyond the scope
-- Don't create UoWs that can't be independently verified
+- Don't create units that can't be independently verified
 
 ## Success Criteria
 
 You have succeeded when:
 - [ ] All requirements are covered by at least one UoW
-- [ ] No UoW is too large (> 200 lines estimated)
+- [ ] Each unit traces back to approved inception artifacts
 - [ ] Dependencies form a DAG (no cycles)
-- [ ] Each UoW has clear definition of done
+- [ ] Each unit has a clear definition of done
 - [ ] Change types are assigned to each UoW
 ```
 
 #### 2. Steering Rules Checker Agent
 **File**: `agents/steering-rules-checker.md` (new)
-**Purpose**: Validates work against project steering rules
+**Purpose**: Validates work against the active compatibility rule set
 
 ```markdown
 ---
 name: steering-rules-checker
 description: |
-  Validates work against project steering rules from thoughts/shared/steering-rules/default.yaml.
-  Checks conventions, quality gates, and constraints. Used by /aidlc_bolt and /aidlc_operations.
+  Validates work against active AWS AI-DLC extensions plus the plugin-local overlay.
+  Checks conventions, stage compliance, and artifact completeness. Used by
+  /aidlc_build_test and /aidlc_operations.
 tools: Grep, Glob, LS, Read
 model: inherit
 color: red
 ---
 
-You validate work against the project's steering rules.
+You validate work against the active compatibility rule set.
 
 ## Core Responsibilities
 
-1. **Load Steering Rules**
-   - Read `thoughts/shared/steering-rules/default.yaml`
-   - If not found, report and use sensible defaults
-   - Parse the rules for the relevant change type and workflow depth
+1. **Load Active Rules**
+   - Read `aidlc-docs/aidlc-state.md` for active extensions and current stage
+   - Read resolved rule-details / extension references
+   - Read `thoughts/shared/steering-rules/default.yaml` as plugin overlay only
 
 2. **Validate Against Rules**
-   Given a change type and workflow depth, check:
-   - Are all required quality gates satisfied?
-   - Do naming conventions match?
-   - Is scope within limits (max_uow_size)?
-   - Are required artifacts present?
+   Given the current stage and workflow depth, check using persisted artifacts rather than live execution:
+   - Are required stage artifacts present?
+   - Are enabled extensions satisfied?
+   - Do plugin overlay conventions match?
+   - Is scope within limits (`max_unit_size`)?
+   - Does the build/test output contain enough evidence to justify PASS/WARN/FAIL?
 
 3. **Report Compliance**
    For each rule, report:
@@ -368,17 +400,17 @@ You validate work against the project's steering rules.
 
 **Change Type**: feature
 **Workflow Depth**: standard
-**Rules File**: thoughts/shared/steering-rules/default.yaml
+**Compatibility State**: aidlc-docs/aidlc-state.md
 
 ### Quality Gates
-- [PASS] lint: `make lint` exits 0
-- [PASS] typecheck: `make typecheck` exits 0
-- [FAIL] unit_tests: 3 tests failing
+- [PASS] lint: Build-and-test report shows `make lint` exited 0
+- [PASS] typecheck: Build-and-test report shows `make typecheck` exited 0
+- [FAIL] unit_tests: Build-and-test report captured 3 failing tests
 - [SKIP] api_snapshot_comparison: not required for standard depth
 
 ### Conventions
-- [PASS] Branch naming matches pattern
-- [WARN] Commit messages not all conventional format
+- [PASS] Branch naming matches pattern recorded in bolt metadata
+- [WARN] Commit message in bolt record is not conventional format
 - [PASS] Test files follow naming convention
 
 ### Summary
@@ -388,41 +420,42 @@ Verdict: NOT READY (fix failing tests)
 
 ## What NOT to Do
 - Don't fix issues, only report them
-- Don't run commands, only check if results exist
-- Don't modify steering rules
+- Don't rerun quality gates that should already be captured by `quality-gate-runner`
+- Don't modify extension rules or the plugin overlay
 - Don't skip rules without explanation
 ```
 
 #### 3. Quality Gate Runner Agent
 **File**: `agents/quality-gate-runner.md` (new)
-**Purpose**: Runs adaptive quality gates based on change type and steering rules
+**Purpose**: Runs the global Build and Test stage using active overlay defaults
 
 ```markdown
 ---
 name: quality-gate-runner
 description: |
-  Runs quality gate checks adapted to change type and workflow depth.
-  Executes check commands from steering rules and reports pass/fail.
-  Used by /aidlc_bolt after implementation.
+  Runs the always-on Build and Test stage for completed units.
+  Executes plugin-overlay default commands and reports pass/fail.
+  Used by /aidlc_build_test.
 tools: Grep, Glob, LS, Read, Bash
 model: inherit
 color: red
 ---
 
-You execute quality gate checks defined in steering rules.
+You execute the Build and Test stage after units are completed.
 
 ## Core Responsibilities
 
 1. **Load Configuration**
+   - Read `aidlc-docs/aidlc-state.md`
    - Read `thoughts/shared/steering-rules/default.yaml`
-   - Determine which checks to run based on change type + workflow depth
-   - Load custom check commands
+   - Determine which checks apply based on the approved execution plan and overlay defaults
 
 2. **Execute Checks**
-   Run each required check from the `check_commands` section:
+   Run the required Build and Test checks:
    - Capture stdout/stderr
    - Record exit code
    - Time each check
+   - Return a structured summary that `/aidlc_build_test` persists into `aidlc-docs/construction/build-and-test/build-and-test-report.md`
 
 3. **Report Results**
 
@@ -454,38 +487,38 @@ Key output:
 Based on workflow depth from steering rules:
 - **minimal**: Run only required checks for minimal depth
 - **standard**: Run standard depth checks
-- **enhanced**: Run all checks including api_snapshot_comparison, consumer_compatibility
+- **comprehensive**: Run all checks including api_snapshot_comparison, consumer_compatibility
 
 ## What NOT to Do
 - Don't fix issues, only report them
 - Don't modify any files
 - Don't skip required checks
-- Don't run checks not in the steering rules
+- Don't run checks that are not enabled by the approved execution plan and plugin overlay
 ```
 
 #### 4. Operations Planner Agent
 **File**: `agents/operations-planner.md` (new)
-**Purpose**: Generates deployment checklists, monitoring recommendations, rollback plans
+**Purpose**: Generates experimental deployment/monitoring/rollback artifacts beyond current upstream core parity
 
 ```markdown
 ---
 name: operations-planner
 description: |
   Generates deployment checklists, monitoring recommendations, and rollback plans
-  based on what was changed. Analyzes git diff and codebase to produce operations artifacts.
-  Used by /aidlc_operations.
-tools: Grep, Glob, LS, Read
+  based on what was changed. Analyzes git diff and codebase to produce
+  experimental operations artifacts. Used by /aidlc_operations.
+tools: Grep, Glob, LS, Read, Bash
 model: inherit
 color: blue
 ---
 
-You generate operations planning artifacts by analyzing what was implemented.
+You generate experimental operations planning artifacts by analyzing what was implemented.
 
 ## Core Responsibilities
 
 1. **Analyze Changes**
-   - Read the implementation plan or bolt records
-   - Examine git diff to understand what changed
+   - Read canonical AI-DLC artifacts from `aidlc-docs/`
+   - Examine git history/diffs (using Bash) to understand exactly what changed
    - Identify affected components, services, databases
 
 2. **Generate Deployment Plan**
@@ -506,6 +539,7 @@ You generate operations planning artifacts by analyzing what was implemented.
    - Rollback steps (reverse of deployment)
    - Data recovery procedures (if applicable)
    - Verification after rollback
+   - Mark uncertain items as `MANUAL REVIEW REQUIRED` rather than inventing unsupported steps
 
 ## Output Format
 
@@ -538,7 +572,7 @@ You generate operations planning artifacts by analyzing what was implemented.
 - **hotfix**: Minimal deploy plan, focus on speed
 - **feature**: Standard plan with staging verification
 - **refactor**: Emphasize behavioral equivalence checks
-- **migration**: Enhanced plan with data verification, longer monitoring window
+- **migration**: Comprehensive plan with data verification, longer monitoring window
 
 ## What NOT to Do
 - Don't execute deployments
@@ -549,7 +583,7 @@ You generate operations planning artifacts by analyzing what was implemented.
 
 #### 5. Feedback Collector Agent
 **File**: `agents/feedback-collector.md` (new)
-**Purpose**: Gathers post-deploy observations and links back to inception artifacts
+**Purpose**: Gathers experimental retrospective observations and links them back to canonical AI-DLC artifacts
 
 ```markdown
 ---
@@ -557,24 +591,25 @@ name: feedback-collector
 description: |
   Gathers post-deployment observations and links them back to inception artifacts.
   Reads operations reports, identifies lessons learned, and creates feedback documents.
-  Used by /aidlc_feedback to close the loop from Operations back to Inception.
+  Used by /aidlc_feedback as a plugin extension beyond upstream core workflow.
 tools: Grep, Glob, LS, Read
 model: inherit
 color: magenta
 ---
 
-You collect post-implementation feedback and link it to planning artifacts.
+You collect post-implementation feedback and link it to canonical AI-DLC artifacts.
 
 ## Core Responsibilities
 
 1. **Gather Observations**
    - Read operations plan and deployment results
+   - Read file-based feedback question answers when present
    - Identify what went well vs. what didn't
    - Note any unexpected behaviors or issues
    - Collect performance observations
 
 2. **Link to Source Artifacts**
-   - Connect observations to specific UoWs
+   - Connect observations to specific units
    - Reference original inception plans
    - Link to bolt execution records
    - Map issues to specific code changes
@@ -591,9 +626,9 @@ You collect post-implementation feedback and link it to planning artifacts.
 ```markdown
 ## Feedback: [Feature/Change Name]
 
-**Source Plan**: thoughts/shared/plans/YYYY-MM-DD-description.md
-**Bolts Completed**: [list of bolt records]
-**Operations Plan**: thoughts/shared/operations/YYYY-MM-DD-description.md
+**Source Plan**: aidlc-docs/inception/plans/execution-plan.md
+**Units Completed**: [list of construction unit artifacts]
+**Operations Plan**: aidlc-docs/operations/YYYY-MM-DD-description.md
 
 ### What Went Well
 - [observation linked to UoW-id]
@@ -621,294 +656,234 @@ You collect post-implementation feedback and link it to planning artifacts.
 ### Success Criteria:
 
 #### Automated Verification:
-- [ ] File exists: `agents/uow-decomposer.md`
-- [ ] File exists: `agents/steering-rules-checker.md`
-- [ ] File exists: `agents/quality-gate-runner.md`
-- [ ] File exists: `agents/operations-planner.md`
-- [ ] File exists: `agents/feedback-collector.md`
-- [ ] Each file has valid YAML frontmatter with `name`, `description`, `tools`, `model`, `color`
-- [ ] No existing agent files were modified: `git diff agents/` shows only new files
+- [x] File exists: `agents/uow-decomposer.md`
+- [x] File exists: `agents/steering-rules-checker.md`
+- [x] File exists: `agents/quality-gate-runner.md`
+- [x] File exists: `agents/operations-planner.md`
+- [x] File exists: `agents/feedback-collector.md`
+- [x] Each file has valid YAML frontmatter with `name`, `description`, `tools`, `model`, `color`
+- [x] No existing agent files were modified: `git diff agents/` shows only new files
+- [x] Agent prompts reference canonical `aidlc-docs/` artifacts rather than using `thoughts/shared/` as the source of truth
 
 #### Manual Verification:
 - [ ] Each agent has clear, focused responsibilities
 - [ ] Agent tools are appropriate (read-only except quality-gate-runner which needs Bash)
 - [ ] Agents don't overlap with existing agents' responsibilities
+- [ ] Operations/Feedback are clearly framed as experimental extensions, not upstream-core parity claims
 
 **Implementation Note**: After completing this phase and all automated verification passes, pause here for manual confirmation before proceeding to Phase 3.
 
 ---
 
-## Phase 3: New Artifact Directories
+## Phase 3: Canonical Artifact Directories
 
 ### Overview
-Create the directory structure for AI-DLC artifacts.
+Create the canonical AWS-compatible artifact structure under `aidlc-docs/`, and keep any `thoughts/shared/` usage clearly secondary.
 
 ### Changes Required:
 
-#### 1. Bolt Records Directory
-**Directory**: `thoughts/shared/bolts/` (new)
-**Purpose**: Stores execution records for each Bolt (closed-loop UoW execution)
+#### 1. Inception Artifact Directories
+Create:
+- `aidlc-docs/inception/plans/`
+- `aidlc-docs/inception/questions/`
+- `aidlc-docs/inception/requirements/`
+- `aidlc-docs/inception/reverse-engineering/`
+- `aidlc-docs/inception/user-stories/`
+- `aidlc-docs/inception/application-design/`
+- `aidlc-docs/inception/units/`
 
-Create with a `.gitkeep` file.
+#### 2. Construction Artifact Directories
+Create:
+- `aidlc-docs/construction/units/`
+- `aidlc-docs/construction/build-and-test/`
 
-#### 2. Operations Directory
-**Directory**: `thoughts/shared/operations/` (new)
-**Purpose**: Stores deployment plans, monitoring checklists, rollback procedures
+#### 3. Operations Artifact Directory
+Create:
+- `aidlc-docs/operations/`
 
-Create with a `.gitkeep` file.
+#### 4. Optional Plugin Index Directory
+If useful for discoverability, create:
+- `thoughts/shared/aidlc/`
 
-#### 3. Feedback Directory
-**Directory**: `thoughts/shared/feedback/` (new)
-**Purpose**: Stores post-deploy observations that feed back into future inception
-
-Create with a `.gitkeep` file.
+This directory may contain summaries or pointers only. It must not become a second source of truth.
 
 ### Success Criteria:
 
 #### Automated Verification:
-- [ ] Directory exists: `thoughts/shared/bolts/`
-- [ ] Directory exists: `thoughts/shared/operations/`
-- [ ] Directory exists: `thoughts/shared/feedback/`
-- [ ] Existing directories unchanged: `thoughts/shared/research/`, `thoughts/shared/plans/`, `thoughts/shared/debt/`
+- [x] Directories exist under `aidlc-docs/` for inception, construction, and operations
+- [x] `aidlc-docs/inception/questions/` exists for file-based question artifacts
+- [x] `aidlc-docs/construction/build-and-test/` exists for the global Build and Test stage
+- [x] Any `thoughts/shared/aidlc/` usage is documented as summary/index-only
 
 #### Manual Verification:
-- [ ] Directory names are intuitive and consistent with existing naming
+- [ ] Artifact paths visibly mirror the upstream AI-DLC shape
+- [ ] Canonical-vs-summary ownership is unambiguous
 
 **Implementation Note**: After completing this phase and all automated verification passes, pause here for manual confirmation before proceeding to Phase 4.
 
 ---
 
-## Phase 4: AI-DLC Commands
+## Phase 4: AI-DLC Facade Commands
 
 ### Overview
-Create the 5 new commands. These are the user-facing slash commands that orchestrate the AI-DLC workflow.
+Create six slash commands that act as a plugin-native facade over the upstream AI-DLC stage model. The first four commands map to core parity goals; the last two are explicit experimental extensions.
 
 ### Changes Required:
 
-#### 1. `/aidlc_start` - Orchestrator Command
+#### 1. `/aidlc_start` - Compatibility Entry Command
 **File**: `commands/aidlc_start.md` (new)
-**Purpose**: Entry point for AI-DLC workflow. Classifies change type, selects workflow depth, routes to appropriate sub-commands.
+**Purpose**: Entry point that initializes/resumes state, resolves active rules, classifies the request, and writes the approved execution plan.
 
 The command should:
-1. Accept a description of the work (or ticket reference)
-2. Read steering rules from `thoughts/shared/steering-rules/default.yaml`
-3. Classify the change type (hotfix/feature/refactor/migration) using indicators from steering rules
-4. Present the classification to the user for confirmation
-5. Based on workflow depth, explain which phases will run and at what depth
-6. Route to `/aidlc_inception` with the context
+1. Accept a work description or ticket reference
+2. Load or create `aidlc-docs/aidlc-state.md`
+3. Append the raw user request to `aidlc-docs/audit.md`
+4. Resolve rule-details, repo-local overrides, and enabled extensions
+5. Detect greenfield vs brownfield workspace
+6. If the request is ambiguous, generate a markdown question file in `aidlc-docs/inception/questions/` using `[Answer]:` tags
+7. Write or update `aidlc-docs/inception/plans/execution-plan.md`
+8. Route to `/aidlc_inception` only after the required questions/approvals are satisfied
 
 Key behaviors:
-- For **minimal** depth (hotfix): Skip separate inception document, go straight to a single bolt
-- For **standard** depth (feature/refactor): Full inception → bolt(s) → operations
-- For **enhanced** depth (migration): Exhaustive inception → bolt(s) with extra gates → full operations
-- Always interactive: present classification, get user confirmation before proceeding
-- If steering rules file doesn't exist, offer to create from template
+- Do not rely on chat-only confirmations for required AI-DLC decisions
+- Record stage decisions as `EXECUTE`/`SKIP` with rationale in `execution-plan.md`
+- Record the current depth separately from stage decisions
+- Resume safely from prior `aidlc-state.md` if the workflow already exists
 
 Frontmatter:
 ```yaml
 ---
-description: "AI-DLC orchestrator - classifies work, selects adaptive workflow depth, routes to phases"
-argument-hint: "[description or ticket path] - Describe the work to classify and route"
+description: "AI-DLC compatibility entrypoint - initialize state, resolve rules, and write execution plan"
+argument-hint: "[description or ticket path] - Describe the work to classify and initialize"
 model: opus
 ---
 ```
 
-#### 2. `/aidlc_inception` - Inception Phase Command
+#### 2. `/aidlc_inception` - Upstream-Compatible Inception Command
 **File**: `commands/aidlc_inception.md` (new)
-**Purpose**: Combines research + planning into a specification with Units of Work. This is the AI-DLC equivalent of `/research_codebase` + `/create_plan` combined.
+**Purpose**: Execute the upstream Inception phase stages that the execution plan marked `EXECUTE`.
 
 The command should:
-1. Accept work description, change type, and workflow depth (from `/aidlc_start` or directly)
-2. Read steering rules to determine research depth
-3. **Research phase** (adapted to depth):
-   - `skip`: No research document, work from description only
-   - `targeted`: Spawn `codebase-locator` + `codebase-analyzer` for specific areas
-   - `exhaustive`: Full research with all available agents (locator, analyzer, pattern-finder, thoughts-locator, thoughts-analyzer)
-4. **Specification phase**:
-   - Spawn `uow-decomposer` agent with research findings
-   - Review and refine UoW decomposition interactively
-   - Produce specification document with UoWs
-5. Write specification to `thoughts/shared/plans/YYYY-MM-DD-aidlc-[description].md`
+1. Read `aidlc-docs/aidlc-state.md` and `aidlc-docs/inception/plans/execution-plan.md`
+2. Run or resume these stages as directed:
+   - Workspace Detection
+   - Reverse Engineering (when brownfield and artifacts are missing/stale)
+   - Requirements Analysis
+   - User Stories (when needed)
+   - Workflow Planning (always-on)
+   - Application Design (when needed)
+   - Units Planning / Units Generation
+3. Emit questions as markdown files with `[Answer]:` tags whenever clarification is required
+4. Use `uow-decomposer` only after requirements/workflow/design artifacts are approved
+5. Write canonical artifacts under `aidlc-docs/inception/...`
 
-The specification document format extends the existing plan format:
-```markdown
-# [Feature Name] - AI-DLC Specification
-
-## Metadata
-- Change Type: [type]
-- Workflow Depth: [depth]
-- Steering Rules: v[version]
-
-## Context
-[Research findings summary]
-
-## Units of Work
-
-### UOW-1: [Title]
-- **Type**: feature
-- **Scope**: [files affected]
-- **Dependencies**: none
-- **Definition of Done**:
-  - [criterion]
-- **Automated Checks**:
-  - [command]
-
-### UOW-2: [Title]
-...
-
-## Dependency Graph
-UOW-1 ──→ UOW-3
-UOW-2 ──→ UOW-3
-(UOW-1 and UOW-2 can run in parallel)
-
-## What We're NOT Doing
-[Explicit scope boundaries]
-```
+Depth behavior:
+- `minimal`, `standard`, and `comprehensive` affect detail level within executed stages
+- Depth must not be used as a substitute for `EXECUTE`/`SKIP`
 
 Frontmatter:
 ```yaml
 ---
-description: "AI-DLC Inception - research + plan into Units of Work specification"
-argument-hint: "[description] [--type hotfix|feature|refactor|migration] [--depth minimal|standard|enhanced]"
+description: "AI-DLC Inception - execute approved inception stages and generate canonical artifacts"
+argument-hint: "[description] [--type hotfix|feature|refactor|migration] [--depth minimal|standard|comprehensive]"
 model: opus
 ---
 ```
 
-#### 3. `/aidlc_bolt` - Construction Phase Command
+#### 3. `/aidlc_bolt` - Construction Unit Command
 **File**: `commands/aidlc_bolt.md` (new)
-**Purpose**: Executes a single Unit of Work as a closed loop: implement → verify → deliver. This is the AI-DLC equivalent of a focused `/implement_plan` for one UoW.
+**Purpose**: Execute one construction unit through the per-unit construction loop.
 
 The command should:
-1. Accept a specification path and UoW ID (or pick the next unblocked UoW)
-2. Read the specification and the target UoW
-3. Read steering rules for quality gates
-4. **Implement**: Make the code changes for this UoW only
-5. **Verify**: Spawn `quality-gate-runner` agent to run all required checks
-6. **Deliver**: If all gates pass, commit the changes (with user confirmation)
-7. Write bolt execution record to `thoughts/shared/bolts/YYYY-MM-DD-[uow-id]-[description].md`
-8. Update the specification document: mark UoW as completed
-9. Report completion and suggest next UoW
+1. Accept a unit artifact path or unit ID
+2. Read the unit definition from `aidlc-docs/inception/units/`
+3. Execute the per-unit construction loop as needed:
+   - Functional Design (optional)
+   - NFR Requirements (optional)
+   - NFR Design (optional)
+   - Infrastructure Design (optional)
+   - Code Planning
+   - Code Generation / implementation
+4. Update unit checkboxes and unit artifacts immediately in the same interaction
+5. Support a bounded retry loop if a unit-level verification step fails
+6. Write the unit execution record under `aidlc-docs/construction/units/[unit-id]/`
 
-Bolt execution record format:
-```markdown
-# Bolt Record: [UoW Title]
-
-## Metadata
-- UoW ID: UOW-1
-- Specification: thoughts/shared/plans/YYYY-MM-DD-aidlc-description.md
-- Started: YYYY-MM-DD HH:MM
-- Completed: YYYY-MM-DD HH:MM
-- Status: complete|failed|blocked
-
-## Changes Made
-- [file:line] - [what changed]
-
-## Quality Gate Results
-| Check | Status | Duration |
-|-------|--------|----------|
-| lint | PASS | 2.3s |
-| unit_tests | PASS | 12.4s |
-
-## Commit
-- Hash: [commit hash]
-- Message: [commit message]
-
-## Notes
-[Any deviations from plan, decisions made during implementation]
-```
+Important constraint:
+- Completing `/aidlc_bolt` does not by itself complete Construction. Global completion requires `/aidlc_build_test`.
 
 Frontmatter:
 ```yaml
 ---
-description: "AI-DLC Bolt - execute one Unit of Work: implement, verify, deliver"
-argument-hint: "[spec-path] [UoW-ID] - Execute a specific UoW from a specification"
+description: "AI-DLC Bolt - execute one construction unit through the approved unit loop"
+argument-hint: "[unit-path|unit-id] - Execute a specific construction unit"
 model: opus
 ---
 ```
 
-#### 4. `/aidlc_operations` - Operations Phase Command
+#### 4. `/aidlc_build_test` - Global Build and Test Command
+**File**: `commands/aidlc_build_test.md` (new)
+**Purpose**: Execute the always-on Build and Test stage after required units are complete.
+
+The command should:
+1. Read `aidlc-docs/aidlc-state.md` and the execution plan
+2. Confirm all prerequisite units marked for construction are complete
+3. Spawn `quality-gate-runner` to execute tests
+4. Spawn `steering-rules-checker` to validate overall compliance based on the test outputs
+5. Write `aidlc-docs/construction/build-and-test/build-and-test-report.md` incorporating the compliance summary
+6. Update `aidlc-docs/aidlc-state.md` with Build and Test status
+7. If checks fail, link back to the affected unit(s) for correction
+
+Frontmatter:
+```yaml
+---
+description: "AI-DLC Build and Test - execute the global construction validation stage"
+argument-hint: "[optional scope] - Run global build and test after construction units"
+model: opus
+---
+```
+
+#### 5. `/aidlc_operations` - Experimental Operations Extension
 **File**: `commands/aidlc_operations.md` (new)
-**Purpose**: Generates deployment plan, monitoring checklist, and rollback procedure. This phase is entirely new (no legacy equivalent).
+**Purpose**: Experimental extension that generates deployment, monitoring, and rollback plans after core Construction is complete.
 
 The command should:
-1. Accept a specification path (or find the most recent one)
-2. Read steering rules for operations depth
-3. Read all bolt records for the specification
-4. Spawn `operations-planner` agent with:
-   - Specification document
-   - Bolt records (what changed)
-   - Git diff summary
-   - Steering rules (operations depth)
-5. Spawn `steering-rules-checker` agent to validate all work meets rules
-6. Synthesize into operations document
-7. Write to `thoughts/shared/operations/YYYY-MM-DD-[description]-operations.md`
-8. Present checklist to user for review
+1. Accept a build-and-test report path or infer the latest completed state
+2. Read canonical inception/construction artifacts from `aidlc-docs/`
+3. Spawn `operations-planner`
+4. Spawn the compliance checker to validate extension/overlay expectations
+5. Write experimental operations artifacts to `aidlc-docs/operations/`
+6. Clearly label outputs as plugin extensions beyond the current upstream baseline
 
-Operations document format:
-```markdown
-# Operations Plan: [Feature Name]
-
-## Metadata
-- Specification: [path]
-- Bolts Completed: [count]
-- Change Type: [type]
-- Operations Depth: [depth from steering rules]
-
-## Steering Rules Compliance
-[Output from steering-rules-checker]
-
-## Deployment Plan
-### Pre-Deployment
-- [ ] [checklist item]
-### Deployment Steps
-1. [step]
-### Post-Deployment Verification
-- [ ] [verification item]
-
-## Monitoring Plan
-[What to watch, for how long]
-
-## Rollback Plan
-[Triggers, steps, verification]
-```
-
-For **minimal** depth (hotfix): Skip separate document, output inline summary only.
-For **standard** depth: Full document.
-For **enhanced** depth: Full document with extended monitoring window and data verification.
+Depth behavior:
+- Depth changes detail level only
+- Unknown migration/infrastructure steps must be marked `MANUAL REVIEW REQUIRED`
 
 Frontmatter:
 ```yaml
 ---
-description: "AI-DLC Operations - deployment planning, monitoring, and rollback procedures"
-argument-hint: "[spec-path] - Generate operations plan for a completed specification"
+description: "AI-DLC Operations (Experimental) - generate deployment and rollback artifacts beyond upstream core"
+argument-hint: "[build-test-report-path] - Generate experimental operations artifacts"
 model: opus
 ---
 ```
 
-#### 5. `/aidlc_feedback` - Feedback Loop Command
+#### 6. `/aidlc_feedback` - Experimental Feedback Extension
 **File**: `commands/aidlc_feedback.md` (new)
-**Purpose**: Captures post-deploy observations and links back to inception. Closes the AI-DLC loop.
+**Purpose**: Experimental retrospective loop that complements AI-DLC but is not part of the current upstream core workflow.
 
 The command should:
-1. Accept an operations plan path (or find the most recent one)
-2. Read the operations plan, specification, and bolt records
-3. Ask the user for observations:
-   - What went well?
-   - What didn't go well?
-   - Any unexpected behaviors?
-   - Performance observations?
-4. Spawn `feedback-collector` agent to:
-   - Link observations to specific UoWs
-   - Identify patterns across bolt records
-   - Suggest steering rule adjustments
-5. Write feedback document to `thoughts/shared/feedback/YYYY-MM-DD-[description]-feedback.md`
-6. Optionally: suggest updates to steering rules based on lessons learned
+1. Accept an operations artifact path or infer the latest experimental operations run
+2. Generate a markdown question file for observations when human input is required
+3. Use `[Answer]:` tags instead of chat-only prompts for structured feedback capture
+4. Spawn `feedback-collector`
+5. Write retrospective artifacts to `aidlc-docs/operations/feedback-*.md`
+6. Suggest overlay or extension changes, but never modify them directly
 
 Frontmatter:
 ```yaml
 ---
-description: "AI-DLC Feedback - capture post-deploy observations, close the loop to inception"
-argument-hint: "[operations-path] - Capture feedback for a deployed specification"
+description: "AI-DLC Feedback (Experimental) - collect retrospective observations as a plugin extension"
+argument-hint: "[operations-path] - Capture structured retrospective feedback"
 model: opus
 ---
 ```
@@ -916,24 +891,27 @@ model: opus
 ### Success Criteria:
 
 #### Automated Verification:
-- [ ] File exists: `commands/aidlc_start.md`
-- [ ] File exists: `commands/aidlc_inception.md`
-- [ ] File exists: `commands/aidlc_bolt.md`
-- [ ] File exists: `commands/aidlc_operations.md`
-- [ ] File exists: `commands/aidlc_feedback.md`
-- [ ] Each file has valid YAML frontmatter with `description` field
-- [ ] No existing command files were modified: `git diff commands/` shows only new files
-- [ ] No existing agent files were modified: `git diff agents/` shows only new files from Phase 2
+- [x] File exists: `commands/aidlc_start.md`
+- [x] File exists: `commands/aidlc_inception.md`
+- [x] File exists: `commands/aidlc_bolt.md`
+- [x] File exists: `commands/aidlc_build_test.md`
+- [x] File exists: `commands/aidlc_operations.md`
+- [x] File exists: `commands/aidlc_feedback.md`
+- [x] Each file has valid YAML frontmatter with `description` field
+- [x] No existing command files were modified: `git diff commands/` shows only new files
+- [x] Command-to-agent references are valid: `rg -n "subagent_type: (uow-decomposer|quality-gate-runner|operations-planner|feedback-collector|steering-rules-checker)" commands/aidlc_*.md`
+- [x] Canonical artifact path references are present: `rg -n "aidlc-docs/(aidlc-state|audit|inception|construction|operations)" commands/aidlc_*.md`
+- [x] Question artifacts use `[Answer]:` tags where clarification is required
+- [x] `execution-plan.md` records `EXECUTE`/`SKIP` decisions separately from depth
 
 #### Manual Verification:
-- [ ] `/aidlc_start` correctly routes to inception with appropriate depth
-- [ ] `/aidlc_inception` produces a specification with UoWs
-- [ ] `/aidlc_bolt` executes a single UoW with quality gates
-- [ ] `/aidlc_operations` generates appropriate operations artifacts
-- [ ] `/aidlc_feedback` captures observations and links to inception
-- [ ] Commands reference correct agent names for spawning
-- [ ] Commands reference correct artifact paths
-- [ ] Workflow flows naturally: start → inception → bolt(s) → operations → feedback
+- [ ] `/aidlc_start` initializes or resumes `aidlc-state.md` correctly
+- [ ] `/aidlc_inception` produces canonical inception artifacts, not just a single plugin-local plan
+- [ ] `/aidlc_bolt` updates unit artifacts immediately and stays scoped to one unit
+- [ ] `/aidlc_build_test` acts as the required global construction gate
+- [ ] `/aidlc_operations` is clearly labeled experimental and does not claim upstream-core parity
+- [ ] `/aidlc_feedback` uses structured question files rather than chat-only collection
+- [ ] The workflow is coherent: start → inception → bolt(s) → build_test → operations? → feedback?
 
 **Implementation Note**: After completing this phase and all automated verification passes, pause here for manual confirmation before proceeding to Phase 5.
 
@@ -942,113 +920,211 @@ model: opus
 ## Phase 5: Integration and Documentation
 
 ### Overview
-Update README to document the new AI-DLC workflow alongside the existing RPA workflow. Update thoughts-locator agent awareness of new directories (without modifying its behavior for legacy paths).
+Update README to document the AWS AI-DLC-compatible facade alongside the existing RPA workflow, and correct any legacy sections that would otherwise become stale once the new commands and canonical artifact directories exist.
 
 ### Changes Required:
 
 #### 1. README Update
 **File**: `README.md`
-**Changes**: Add AI-DLC section after existing RPA documentation. Do NOT modify existing sections.
+**Changes**:
+- Add an AI-DLC compatibility section after existing RPA documentation
+- Update existing enumerations that would otherwise become stale:
+  - Commands Overview table
+  - Verify Installation examples
+  - Project Setup directory creation instructions
+  - Any directory structure snippets that explicitly enumerate command or artifact directories
+- Clarify that `aidlc-docs/` is canonical and `thoughts/shared/` is secondary for this workflow
+
+Do not rewrite unrelated prose.
 
 Add a new section:
 ```markdown
-## AI-DLC Workflow (Experimental)
+## AI-DLC Compatibility Layer
 
-In addition to the core RPA workflow, this plugin includes an experimental AI-DLC
-(AI-Driven Development Life Cycle) workflow inspired by modern AI-native development practices.
+In addition to the core RPA workflow, this plugin includes an AWS AI-DLC-compatible
+facade for teams that want plugin-native slash commands while keeping artifact
+conventions close to the upstream AI-DLC workflow.
 
 ### Philosophy Difference
 
-| Aspect | RPA (Legacy) | AI-DLC (New) |
+| Aspect | RPA (Legacy) | AI-DLC Facade |
 |--------|-------------|--------------|
-| Cycle | Linear: research → plan → implement → validate | Closed-loop: inception → bolt(s) → operations → feedback |
-| Granularity | Sequential phases in one plan | Independent Units of Work executed as Bolts |
-| Adaptivity | Same depth for all work | Adaptive depth based on change type |
-| Operations | Not covered | Explicit deployment + monitoring phase |
-| Governance | Informal (CLAUDE.md) | Formalized steering rules |
+| Cycle | Linear: research → plan → implement → validate | AWS-compatible stage model with plugin-native commands |
+| Canonical Artifacts | `thoughts/shared/*` | `aidlc-docs/*` |
+| Adaptivity | Same depth for all work | Stage selection in execution plan + depth per executed stage |
+| Operations | Not covered | Experimental extension beyond upstream core |
+| Feedback | Not covered | Experimental extension beyond upstream core |
 
 ### Commands
 
 | Command | Phase | Description |
 |---------|-------|-------------|
-| `/aidlc_start` | Orchestrator | Classify work, select depth, route to phases |
-| `/aidlc_inception` | Inception | Research + plan into Units of Work specification |
-| `/aidlc_bolt` | Construction | Execute one UoW: implement → verify → deliver |
-| `/aidlc_operations` | Operations | Deployment planning, monitoring, rollback |
-| `/aidlc_feedback` | Feedback | Post-deploy observations, close the loop |
+| `/aidlc_start` | Entry | Initialize/resume state, resolve rules, write execution plan |
+| `/aidlc_inception` | Inception | Execute approved inception stages and emit canonical artifacts |
+| `/aidlc_bolt` | Construction | Execute one construction unit |
+| `/aidlc_build_test` | Construction | Run the global Build and Test stage |
+| `/aidlc_operations` | Operations (Experimental) | Generate deployment/rollback artifacts beyond upstream core |
+| `/aidlc_feedback` | Feedback (Experimental) | Capture retrospective observations as a plugin extension |
 
 ### Quick Start
 
-1. Configure steering rules: `thoughts/shared/steering-rules/default.yaml`
+1. Configure the plugin overlay: `thoughts/shared/steering-rules/default.yaml`
 2. Start: `/aidlc_start Add user authentication to the API`
-3. System classifies as "feature" → standard depth
-4. Inception produces specification with 3 UoWs
-5. Execute each UoW: `/aidlc_bolt thoughts/shared/plans/...-spec.md UOW-1`
-6. Generate operations plan: `/aidlc_operations`
-7. After deploy, capture feedback: `/aidlc_feedback`
+3. Answer any generated question files in `aidlc-docs/inception/questions/`
+4. Run inception: `/aidlc_inception`
+5. Execute units: `/aidlc_bolt UOW-1`
+6. Run global validation: `/aidlc_build_test`
+7. Optionally run `/aidlc_operations` and `/aidlc_feedback` for experimental extensions
 
-### Steering Rules
+### Canonical Artifacts
 
-Edit `thoughts/shared/steering-rules/default.yaml` to customize:
-- Change type classification
-- Quality gates per depth level
+Core AI-DLC-compatible artifacts are written under:
+- `aidlc-docs/aidlc-state.md`
+- `aidlc-docs/audit.md`
+- `aidlc-docs/inception/...`
+- `aidlc-docs/construction/...`
+- `aidlc-docs/operations/...`
+
+### Plugin Overlay
+
+Edit `thoughts/shared/steering-rules/default.yaml` for plugin-local concerns:
+- Change type heuristics
+- Default commands
 - Team conventions
-- Custom check commands
+- Experimental extension toggles
+
+### Project Setup
+
+If a repo will use AI-DLC artifacts, create the additional directories:
+
+```bash
+mkdir -p aidlc-docs/{inception,construction,operations}
+mkdir -p thoughts/shared/steering-rules
+```
 ```
 
 ### Success Criteria:
 
 #### Automated Verification:
-- [ ] README.md contains "AI-DLC" section
-- [ ] README.md still contains original "RPA" sections unchanged
-- [ ] All new command names appear in README
+- [x] README.md contains an AI-DLC compatibility section
+- [x] Commands Overview includes all new `aidlc_*` commands
+- [x] Project Setup documents `aidlc-docs/` as canonical
+- [x] Verify Installation includes at least one `aidlc_*` command example
+- [x] README labels Operations/Feedback as experimental extensions
 
 #### Manual Verification:
-- [ ] Documentation accurately describes the workflow
+- [ ] Documentation accurately describes the compatibility-layer framing
 - [ ] Quick Start guide is clear and followable
-- [ ] No legacy documentation was altered
+- [ ] Updated legacy sections remain accurate after the additive workflow is introduced
+- [ ] README does not imply that chat-only Q&A is part of the core AI-DLC interaction model
 
 **Implementation Note**: After completing this phase and all automated verification passes, pause here for final review.
 
 ---
 
+## Error Handling & State Recovery
+
+To ensure the closed-loop system is robust, the workflow must actively support failure recovery:
+
+1. **Bolt Failure Recovery**:
+   - If `/aidlc_bolt` fails a unit-level verification step, the error output should be automatically fed back into the implementation loop for an attempted fix (e.g., up to 3 retries).
+   - If the bolt unrecoverably fails, its unit record is marked `failed`.
+   - The system must support resuming: a developer can manually fix the code and rerun `/aidlc_bolt [unit]` to continue from the verification step.
+
+2. **Inception Refinement**:
+   - If `uow-decomposer` produces an inaccurate breakdown, `/aidlc_inception` must emit a file-based question/approval step before the final unit artifacts are accepted.
+
+3. **Operations Planner Fallback**:
+   - If the `operations-planner` lacks context to verify complex migrations, it should explicitly mark checks as `MANUAL REVIEW REQUIRED` in the resulting Markdown rather than fabricating unverified steps.
+
+4. **Build and Test Recovery**:
+   - If `/aidlc_build_test` fails, the failure must be written to `aidlc-docs/construction/build-and-test/build-and-test-report.md` and linked back to the impacted units before any claim that Construction is complete.
+
 ## Testing Strategy
+
+### Static Verification (First Line of Defense)
+Before manual smoke tests, run lightweight checks against the markdown assets:
+
+1. Parse `thoughts/shared/steering-rules/default.yaml`
+2. Validate command frontmatter is present in each `commands/aidlc_*.md`
+3. Validate `aidlc-docs/aidlc-state.md` and `aidlc-docs/audit.md` are referenced where required
+4. Grep for expected agent references, `aidlc-docs/` paths, and `[Answer]:` tags
+5. Confirm README and project setup instructions mention the new workflow consistently
 
 ### Manual Testing (Primary):
 Since these are prompt-based skills (markdown files interpreted by Claude Code), testing is manual:
 
 1. **Steering rules loading**: Invoke `/aidlc_start` and verify it reads and parses the YAML
-2. **Classification flow**: Test each change type keyword triggers correct classification
-3. **Inception depth scaling**: Verify minimal/standard/enhanced produce different levels of research
-4. **Bolt execution**: Run a bolt on a simple UoW and verify quality gates run
-5. **Operations generation**: Verify operations plan is appropriate for the change type
-6. **Feedback capture**: Verify feedback links back to specification and bolt records
-7. **Legacy compatibility**: Run `/create_plan` and `/implement_plan` to confirm they still work identically
+2. **Question-file flow**: Verify required clarifications are emitted as markdown files with `[Answer]:` tags
+3. **Execution-plan flow**: Verify `execution-plan.md` marks stages `EXECUTE`/`SKIP` separately from depth
+4. **Inception depth scaling**: Verify minimal/standard/comprehensive produce different artifact detail within executed stages
+5. **Bolt execution**: Run a bolt on a simple unit and verify unit artifacts update immediately
+6. **Build and Test**: Run `/aidlc_build_test` and verify canonical build/test artifacts are created
+7. **Operations generation**: Verify operations artifacts are clearly labeled experimental
+8. **Feedback capture**: Verify feedback links back to canonical artifacts and uses structured questions when needed
+9. **Legacy compatibility**: Run `/create_plan` and `/implement_plan` to confirm they still work identically
 
 ### Smoke Test Sequence:
 1. `/aidlc_start Add a simple utility function` → should classify as feature/standard
-2. `/aidlc_inception` → should produce spec with UoWs
-3. `/aidlc_bolt [spec] UOW-1` → should implement, run gates, commit
-4. `/aidlc_operations [spec]` → should produce operations plan
-5. `/aidlc_feedback [ops]` → should capture observations
+2. Answer any generated question files under `aidlc-docs/inception/questions/`
+3. `/aidlc_inception` → should produce canonical inception artifacts and units
+4. `/aidlc_bolt UOW-1` → should implement one unit and update unit artifacts
+5. `/aidlc_build_test` → should produce `build-and-test-report.md`
+6. `/aidlc_operations` → should produce experimental operations artifacts
+7. `/aidlc_feedback` → should capture structured retrospective observations
 
 ## Performance Considerations
 
-- Inception with `exhaustive` research depth spawns many agents in parallel, which is expensive. Steering rules default most work to `targeted` depth.
-- Bolt execution spawns `quality-gate-runner` which runs Bash commands. These should complete quickly for well-configured projects.
-- The adaptive depth system ensures we don't over-process simple changes (hotfixes) or under-process risky ones (migrations).
+- Comprehensive inception is expensive because it may execute more upstream-compatible stages and generate more artifacts.
+- `/aidlc_build_test` is the main command that runs Bash-heavy validation and may dominate runtime.
+- The compatibility layer adds I/O overhead because it writes canonical state, audit, questions, and stage artifacts explicitly.
 
 ## Migration Notes
 
-No migration needed. This is purely additive:
-- New files only (no modifications to existing)
-- New directories only (no changes to existing structure)
+No migration of existing legacy RPA workflows or artifacts is needed. This is additive from a user-flow perspective:
+- New command files and canonical `aidlc-docs/` artifact directories are introduced
+- Existing README/project setup documentation must be updated to stay accurate
 - Users opt-in by using `/aidlc_*` commands
 - Legacy `/research_codebase`, `/create_plan`, `/implement_plan`, `/validate_plan` remain fully functional
+- The compatibility layer is pinned to upstream AI-DLC `v0.1.6` until intentionally upgraded
 
 ## References
 
-- AI-DLC article: https://habr.com/ru/companies/sberbank/articles/1007006/
+- AWS AI-DLC upstream README: https://raw.githubusercontent.com/awslabs/aidlc-workflows/main/README.md
+- AWS AI-DLC core workflow: https://raw.githubusercontent.com/awslabs/aidlc-workflows/main/aidlc-rules/aws-aidlc-rules/core-workflow.md
+- AWS AI-DLC question format guide: https://raw.githubusercontent.com/awslabs/aidlc-workflows/main/aidlc-rules/aws-aidlc-rule-details/common/question-format-guide.md
+- AWS AI-DLC depth levels: https://raw.githubusercontent.com/awslabs/aidlc-workflows/main/aidlc-rules/aws-aidlc-rule-details/common/depth-levels.md
+- AWS AI-DLC releases: https://github.com/awslabs/aidlc-workflows/releases
 - Existing commands: `commands/*.md` (16 files)
 - Existing agents: `agents/*.md` (27 files)
 - Plugin config: `.claude-plugin/plugin.json`
+
+## Enhancement History
+
+### 2026-03-13 Enhancement
+Based on critique and repo validation, this plan was improved with:
+- Consistent artifact semantics for `minimal` workflows so hotfix flows no longer break the `operations -> feedback` chain
+- Clear separation between quality-gate execution and compliance checking, with persisted evidence in bolt records
+- Documentation scope corrections so README and project setup instructions do not become stale after implementation
+- Removal of the contradictory requirement to keep all existing agents untouched while also updating a legacy agent
+
+Changes made:
+- Reworked the steering-rules defaults to require compact artifacts for minimal depth
+- Strengthened Phase 4 command contracts and verification criteria
+- Expanded Phase 5 to update stale README sections, not just append a new section
+- Corrected migration notes to reflect the real documentation changes required
+
+### 2026-03-13 Compatibility Revision
+Based on AWS AI-DLC reference-model review, this plan was further improved with:
+- Reframing from a parallel custom lifecycle to an AWS AI-DLC-compatible facade
+- Canonical artifact strategy moved to `aidlc-docs/` with persistent `aidlc-state.md` and `audit.md`
+- Stage selection separated from depth through `execution-plan.md`
+- File-based question handling with `[Answer]:` tags added to the workflow contract
+- `/aidlc_build_test` added to match the always-on global Build and Test stage
+- `/aidlc_operations` and `/aidlc_feedback` explicitly labeled as experimental extensions beyond upstream core
+
+Changes made:
+- Added a new Phase 0 compatibility substrate
+- Demoted the YAML steering file to a plugin overlay and switched `enhanced` to `comprehensive`
+- Rewrote the artifact directory and command phases around canonical `aidlc-docs/` paths
+- Updated testing, migration, and documentation sections to reflect upstream-compatible behavior

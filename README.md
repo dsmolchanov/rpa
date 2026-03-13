@@ -27,6 +27,12 @@ This approach reduces errors, improves code quality, and creates documentation t
 | `/resume_handoff` | Resume work from a handoff document |
 | `/tech_debt_sweep` | Scan codebase for technical debt and generate paydown plan |
 | `/tech_debt_trends` | Analyze technical debt trends over time |
+| `/aidlc_start` | Initialize or resume the AI-DLC compatibility workflow |
+| `/aidlc_inception` | Execute approved inception stages and generate canonical artifacts |
+| `/aidlc_bolt` | Execute one construction unit in the AI-DLC workflow |
+| `/aidlc_build_test` | Run the global Build and Test stage |
+| `/aidlc_operations` | Generate experimental operations artifacts |
+| `/aidlc_feedback` | Capture experimental retrospective feedback |
 
 ## Installation
 
@@ -46,6 +52,9 @@ cp commands/*.md ~/.claude/commands/
 
 # Copy agents (enables parallel sub-agents)
 cp agents/*.md ~/.claude/agents/
+
+# Optional: copy the compatibility bootstrap if using AI-DLC workflows
+cp CLAUDE.md ~/.claude/CLAUDE-rpa-aidlc.md
 
 # Copy and make scripts executable
 cp scripts/*.sh ~/.claude/scripts/
@@ -73,6 +82,7 @@ After installation, start Claude Code and check that commands are available:
 /research_codebase
 /create_plan
 /implement_plan
+/aidlc_start
 ```
 
 ## Directory Structure
@@ -85,6 +95,12 @@ After installation, your `~/.claude/` directory should look like:
 │   ├── research_codebase.md
 │   ├── create_plan.md
 │   ├── implement_plan.md
+│   ├── aidlc_start.md
+│   ├── aidlc_inception.md
+│   ├── aidlc_bolt.md
+│   ├── aidlc_build_test.md
+│   ├── aidlc_operations.md
+│   ├── aidlc_feedback.md
 │   ├── iterate_plan.md
 │   ├── enhance_plan.md
 │   ├── enhance_research.md
@@ -108,7 +124,12 @@ After installation, your `~/.claude/` directory should look like:
 │   ├── debt-scanner.md         # NEW
 │   ├── architecture-guard.md   # NEW
 │   ├── docs-auditor.md         # NEW
-│   └── config-auditor.md       # NEW
+│   ├── config-auditor.md       # NEW
+│   ├── uow-decomposer.md       # NEW
+│   ├── steering-rules-checker.md # NEW
+│   ├── quality-gate-runner.md  # NEW
+│   ├── operations-planner.md   # NEW
+│   └── feedback-collector.md   # NEW
 ├── scripts/
 │   └── spec_metadata.sh
 └── hooks/                      # NEW SECTION
@@ -117,7 +138,7 @@ After installation, your `~/.claude/` directory should look like:
 
 ## Project Setup
 
-For each project using RPA, create a `thoughts/` directory structure:
+For each project using the legacy RPA workflow, create a `thoughts/` directory structure:
 
 ```bash
 mkdir -p thoughts/shared/{research,plans,implementations,handoffs,debt}
@@ -131,6 +152,79 @@ This creates:
 - `thoughts/shared/debt/` - Technical debt reports and paydown plans
 
 **Important**: Ensure `thoughts/shared/debt/` is tracked in git (not in `.gitignore`) for trend analysis to work.
+
+## AI-DLC Compatibility Layer
+
+This repo also includes an AWS AI-DLC-compatible facade for teams that want plugin-native slash commands while staying close to the upstream AI-DLC artifact model.
+
+### Philosophy Difference
+
+| Aspect | RPA (Legacy) | AI-DLC Facade |
+|--------|-------------|--------------|
+| Cycle | Linear: research -> plan -> implement -> validate | Stage-based compatibility flow with canonical state |
+| Canonical Artifacts | `thoughts/shared/*` | `aidlc-docs/*` |
+| Adaptivity | Same depth for all work | Stage selection in execution plan + depth per executed stage |
+| Operations | Not covered | Experimental extension beyond upstream core |
+| Feedback | Not covered | Experimental extension beyond upstream core |
+
+### AI-DLC Commands
+
+| Command | Phase | Description |
+|---------|-------|-------------|
+| `/aidlc_start` | Entry | Initialize state, resolve rules, write execution plan |
+| `/aidlc_inception` | Inception | Execute approved inception stages |
+| `/aidlc_bolt` | Construction | Execute one approved construction unit |
+| `/aidlc_build_test` | Construction | Run the global Build and Test stage |
+| `/aidlc_operations` | Operations (Experimental) | Generate deployment and rollback artifacts |
+| `/aidlc_feedback` | Feedback (Experimental) | Capture structured retrospective feedback |
+
+### Canonical Artifacts
+
+The AI-DLC facade writes canonical artifacts under:
+
+- `aidlc-docs/aidlc-state.md`
+- `aidlc-docs/audit.md`
+- `aidlc-docs/inception/...`
+- `aidlc-docs/construction/...`
+- `aidlc-docs/operations/...`
+
+### Plugin Overlay
+
+Plugin-local conventions live in:
+
+- `thoughts/shared/steering-rules/default.yaml`
+
+That overlay is secondary. It does not replace canonical state or execution planning.
+
+### Question Files
+
+Required clarifications for AI-DLC flows should be written to markdown files and answered via `[Answer]:` tags rather than being handled only in chat.
+
+### Project Setup
+
+If a repo will use the AI-DLC compatibility layer, create:
+
+```bash
+mkdir -p aidlc-docs/{inception,construction,operations}
+mkdir -p thoughts/shared/steering-rules
+```
+
+If you installed commands by copying files into `~/.claude/commands/`, also copy the compatibility rule details into the working repository:
+
+```bash
+cp -R /path/to/rpa/.aidlc-rule-details .
+cp /path/to/rpa/CLAUDE.md .
+```
+
+### Quick Start
+
+1. Configure the plugin overlay in `thoughts/shared/steering-rules/default.yaml`
+2. Start the workflow with `/aidlc_start`
+3. Answer any generated question files under `aidlc-docs/inception/questions/`
+4. Run `/aidlc_inception`
+5. Execute units with `/aidlc_bolt`
+6. Run `/aidlc_build_test`
+7. Optionally use `/aidlc_operations` and `/aidlc_feedback`
 
 ## Technical Debt Management
 

@@ -1,0 +1,36 @@
+version: "1.0"
+upstream_compatibility:
+  pinned_release: "v0.1.6"
+  canonical_artifact_root: "aidlc-docs"
+  state_file: "aidlc-docs/aidlc-state.md"
+  audit_file: "aidlc-docs/audit.md"
+
+change_types:
+  hotfix:
+    indicators: ["bug fix", "hotfix", "critical", "production issue"]
+    default_depth: minimal
+  feature:
+    indicators: ["feature", "enhancement", "new", "add"]
+    default_depth: standard
+  refactor:
+    indicators: ["refactor", "cleanup", "restructure", "technical debt"]
+    default_depth: standard
+  migration:
+    indicators: ["migration", "schema change", "data transform", "upgrade"]
+    default_depth: comprehensive
+
+plugin_conventions:
+  commit_style: conventional
+  branch_naming: "feature/{ticket}-{description}"
+  test_naming: "{module}.test.{ext}"
+  max_unit_size: "~200 lines changed"
+  experimental_extensions:
+    operations: true
+    feedback: true
+
+default_commands:
+  lint: "make lint"
+  typecheck: "make typecheck"
+  unit_tests: "make test"
+  integration_tests: "make test-integration"
+  build: "make build"
