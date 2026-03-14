@@ -216,15 +216,46 @@ cp -R /path/to/rpa/.aidlc-rule-details .
 cp /path/to/rpa/CLAUDE.md .
 ```
 
+### Bootstrap Script
+
+For a first-time project bootstrap, use the helper script instead of creating the structure manually:
+
+```bash
+/path/to/rpa/scripts/bootstrap_aidlc_project.sh /path/to/project
+```
+
+What it does:
+- creates `aidlc-docs/` with starter templates and `.gitkeep` files
+- copies `.aidlc-rule-details/`
+- creates `thoughts/shared/steering-rules/default.yaml`
+- detects package-manager and test/build commands for the overlay
+- copies `CLAUDE.md` if missing, or appends the AI-DLC bootstrap section if the repo already has its own `CLAUDE.md`
+
+Useful flags:
+
+```bash
+/path/to/rpa/scripts/bootstrap_aidlc_project.sh --force-overlay /path/to/project
+/path/to/rpa/scripts/bootstrap_aidlc_project.sh --force-claude /path/to/project
+```
+
+Example:
+
+```bash
+/Users/dmitrymolchanov/Programs/rpa/scripts/bootstrap_aidlc_project.sh /Users/dmitrymolchanov/Programs/teaming
+```
+
+After the script runs, review `thoughts/shared/steering-rules/default.yaml` before the first `/aidlc_build_test` because multi-stack repos may need command adjustments.
+
 ### Quick Start
 
-1. Configure the plugin overlay in `thoughts/shared/steering-rules/default.yaml`
-2. Start the workflow with `/aidlc_start`
-3. Answer any generated question files under `aidlc-docs/inception/questions/`
-4. Run `/aidlc_inception`
-5. Execute units with `/aidlc_bolt`
-6. Run `/aidlc_build_test`
-7. Optionally use `/aidlc_operations` and `/aidlc_feedback`
+1. Run `scripts/bootstrap_aidlc_project.sh /path/to/project` once per repo
+2. Review `thoughts/shared/steering-rules/default.yaml`
+3. Start the workflow with `/aidlc_start`
+4. Answer any generated question files under `aidlc-docs/inception/questions/`
+5. Run `/aidlc_inception`
+6. Execute units with `/aidlc_bolt`
+7. Run `/aidlc_build_test`
+8. Optionally use `/aidlc_operations` and `/aidlc_feedback`
 
 ## Technical Debt Management
 
