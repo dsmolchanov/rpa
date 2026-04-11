@@ -1,0 +1,29 @@
+name: codex-review-window
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+# The job key below MUST match the required-status-check name in branch
+# protection. GitHub matches required checks against the job key (or the
+# reported check-run name), NOT a custom display name. Do not add `name:`
+# at the job level unless you also update branch protection.
+jobs:
+  codex-review-window:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hold merge for AI review convergence
+        if: ${{ !contains(github.event.repository.topics, 'fast-merge') }}
+        run: |
+          if [ "${{ github.event.pull_request.user.type }}" = "Bot" ]; then
+            DURATION=90
+            echo "Bot-authored PR, using short window (${DURATION}s)"
+          else
+            DURATION=240
+            echo "Human-authored PR, using full window (${DURATION}s)"
+          fi
+          echo "Holding merge for ${DURATION}s so Codex and Auto-fix can land reviews..."
+          sleep "$DURATION"
+
+      - name: Fast-merge opt-out
+        if: ${{ contains(github.event.repository.topics, 'fast-merge') }}
+        run: echo "Repo has topic 'fast-merge'; soak window skipped."
