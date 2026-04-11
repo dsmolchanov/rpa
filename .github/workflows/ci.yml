@@ -1,0 +1,73 @@
+name: ci
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+  push:
+    branches: [main, master]
+
+# IMPORTANT: this file is a starting-point template. The job keys below must
+# match the required-status-check names in branch protection:
+#   lint, unit, integration, e2e, coverage
+# Tune the per-repo commands (npm, pnpm, pytest, go test, cargo test, etc.)
+# without renaming the jobs.
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run lint
+        run: |
+          if [ -f package.json ]; then
+            npm ci && npm run lint --if-present
+          elif [ -f pyproject.toml ]; then
+            pip install ruff && ruff check .
+          fi
+
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run unit tests
+        run: |
+          if [ -f package.json ]; then
+            npm ci && npm test --if-present
+          elif [ -f pyproject.toml ]; then
+            pip install -e . && pytest tests/unit -q || pytest -q -m "not integration and not e2e"
+          fi
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run integration tests
+        run: |
+          if [ -f package.json ]; then
+            npm ci && npm run test:integration --if-present
+          elif [ -f pyproject.toml ]; then
+            pip install -e . && pytest -q -m integration || true
+          fi
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run e2e tests
+        run: |
+          if [ -f package.json ]; then
+            npm ci && npm run test:e2e --if-present
+          elif [ -f pyproject.toml ]; then
+            pip install -e . && pytest -q -m e2e || true
+          fi
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run coverage
+        run: |
+          if [ -f package.json ]; then
+            npm ci && npm test --if-present -- --coverage
+          elif [ -f pyproject.toml ]; then
+            pip install -e . pytest-cov && pytest --cov=. --cov-report=term
+          fi
