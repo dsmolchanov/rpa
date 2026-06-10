@@ -1,3 +1,8 @@
+---
+description: Create well-structured git commits for changes made during the session
+allowed-tools: Bash(git status:*), Bash(git diff:*), Bash(git log:*), Bash(git add:*), Bash(git commit:*)
+---
+
 # Commit Changes
 
 You are tasked with creating git commits for the changes made during this session.

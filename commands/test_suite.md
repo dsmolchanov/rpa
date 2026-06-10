@@ -1,6 +1,6 @@
 ---
 description: Create, update, and maintain test suites with coverage tracking
-argument-hint: "[audit|init|update|gaps|run|ci] [options]"
+argument-hint: "[audit|adopt|init|update|gaps|run|ci|standardize] [options]"
 allowed-tools: Read, Glob, Grep, LS, Task, Edit, Write, TodoWrite, Bash(npm test:*), Bash(npx jest:*), Bash(pytest:*), Bash(python -m pytest:*), Bash(go test:*), Bash(cargo test:*), Bash(make test:*), Bash(git diff:*), Bash(git log:*), Bash(git rev-parse:*), Bash(mkdir:*)
 model: opus
 ---
@@ -12,11 +12,13 @@ You manage test suites: creation, maintenance, coverage tracking, and CI integra
 ## Usage Modes
 
 - `/test_suite audit` - Detect test infrastructure, produce manifest
-- `/test_suite init [apply]` - Scaffold tests (plan by default)
+- `/test_suite adopt [apply]` - Harmonize existing suites without file migrations (legacy repos)
+- `/test_suite init [apply]` - Scaffold tests (plan by default; if tests exist, defaults to adopt)
 - `/test_suite update [apply]` - Sync tests with code changes
 - `/test_suite gaps [--runtime] [apply]` - Find and fill coverage holes
 - `/test_suite run` - Execute and report results
 - `/test_suite ci [--github|--gitlab]` - Generate CI configuration
+- `/test_suite standardize [apply]` - Migrate fragmented suites to majority pattern
 
 The subcommand is available as `$ARGUMENTS`.
 
@@ -180,9 +182,85 @@ Test Infrastructure Audit Complete!
 
 ---
 
+## Subcommand: adopt [apply]
+
+Harmonize existing test suites in legacy repos — unified execution and reporting WITHOUT forcing file migrations. (For active migration to a single framework, use `standardize` instead.)
+
+### Initial Response
+
+```
+Starting test suite adoption analysis...
+
+I'll harmonize your existing tests without moving or rewriting them:
+1. Inventory existing suites (unit/integration/e2e) and their runners
+2. Propose minimal glue: wrapper scripts, script entries, Makefile targets
+3. Generate a unified reporting format
+
+This will generate:
+- Harmonization Plan: `thoughts/shared/test-suite/YYYY-MM-DD-test-adopt-plan.md`
+
+No files will be written until you run `/test_suite adopt apply`.
+
+Analyzing existing suites...
+```
+
+### Process
+
+#### Step 1: Require Manifest
+
+Read the manifest; if missing, run audit first automatically. The manifest must list all detected test layers and runners (including mixed frameworks like jest + vitest or pytest + unittest).
+
+#### Step 2: Inventory Layers
+
+From the manifest, group existing tests by layer (unit/integration/e2e) and by runner. For each layer record: runner, config file, invocation command, approximate test count.
+
+#### Step 3: Propose Minimal Glue
+
+Only safe, reversible additions — never move or rewrite test files:
+- Wrapper script `scripts/test-all.sh` that runs each detected layer in sequence (e2e behind a `--e2e` flag)
+- `package.json` script entries (added as clearly marked blocks only)
+- Makefile targets where a Makefile already exists
+- CI jobs per detected layer (handoff to the `ci` subcommand)
+
+Wrapper script shape:
+
+```bash
+#!/bin/bash
+set -e
+
+echo "=== Running Unit Tests ==="
+npm run test:unit || exit 1
+
+echo "=== Running Integration Tests ==="
+npm run test:int || exit 1
+
+if [[ "$1" == "--e2e" ]]; then
+  echo "=== Running E2E Tests ==="
+  npm run test:e2e || exit 1
+fi
+
+echo "=== All Tests Passed ==="
+```
+
+#### Step 4: Generate Harmonization Plan
+
+Write to `thoughts/shared/test-suite/YYYY-MM-DD-test-adopt-plan.md` with: detected layers table, proposed glue files (full contents), unified reporting format, and a note for each mixed-framework pair (run both, report separately; suggest `standardize` if unification is desired).
+
+#### Step 5 (Apply Mode): Write Glue
+
+If `apply` argument present: write the wrapper scripts and marked script blocks, then run the wrapper once to verify all layers execute.
+
+### Idempotency
+
+Safe to run repeatedly: existing glue files are detected and updated in place; marked blocks are replaced, never duplicated.
+
+---
+
 ## Subcommand: init [apply]
 
 Scaffold tests for uncovered code following repo conventions.
+
+If the audit shows tests already exist, do NOT error and do NOT scaffold duplicates — default to producing an adopt plan (see `adopt` subcommand) and tell the user why.
 
 ### Initial Response (Plan Mode)
 
@@ -768,6 +846,109 @@ jobs:
             exit 1
           fi
 ```
+
+---
+
+## Subcommand: standardize [apply]
+
+Migrate a fragmented test suite (mixed frameworks, scattered files) to the majority pattern found during audit.
+
+### Initial Response
+
+```
+Starting test suite standardization analysis...
+
+I'll unify your test suite around its dominant pattern:
+1. Read the manifest to find the majority framework and convention
+2. Inventory minority-framework tests
+3. Generate a migration plan with per-file diffs
+
+This will generate:
+- Migration Plan: `thoughts/shared/test-suite/YYYY-MM-DD-test-migration-plan.md`
+
+No changes will be made until you run `/test_suite standardize apply`.
+
+Analyzing test suite...
+```
+
+### Process
+
+#### Step 1: Require Manifest
+
+Read `thoughts/shared/test-suite/manifest.md`. If missing, run the audit subcommand first — standardize depends on the "majority vote" the audit produces (e.g., 80% Jest in `__tests__/`, 20% Mocha in `spec/`).
+
+If the suite is already uniform (single framework, single convention), report that and stop.
+
+#### Step 2: Spawn Test Refactorer
+
+```yaml
+Task - Migration Analysis:
+  subagent_type: test-refactorer
+  Prompt: |
+    Plan migration of minority-framework tests to the majority pattern.
+
+    Majority (from manifest): [framework, directory, naming pattern]
+    Minority: [framework(s) and locations from manifest]
+
+    For each minority test file:
+    1. Target path under the majority convention
+    2. Assertion-level diff (framework idioms translated exactly)
+    3. Confidence: safe (mechanical) or review (semantic ambiguity)
+
+    Also flag dead tests (imports that no longer resolve).
+
+    Return: Migration plan with per-file diffs.
+    Limit response to 250 lines.
+```
+
+#### Step 3: Generate Migration Plan
+
+Write to `thoughts/shared/test-suite/YYYY-MM-DD-test-migration-plan.md`:
+
+```markdown
+---
+date: [ISO timestamp]
+type: test-migration-plan
+from_framework: mocha
+to_framework: jest
+files_to_migrate: 6
+safe: 5
+needs_review: 1
+dead_tests: 1
+---
+
+# Test Migration Plan
+
+## Summary
+[counts + one-line recommendation]
+
+## Safe Migrations
+[per-file: target path + diff]
+
+## Needs Review
+[files with semantic ambiguity — custom matchers, complex mocks]
+
+## Dead Tests
+[files whose source no longer exists — listed, never auto-deleted]
+
+## Verification
+[exact test commands; expectation: pre-migration pass/fail status preserved per test]
+```
+
+#### Step 4 (Apply Mode): Migrate
+
+If `apply` argument present:
+1. Apply only `safe` migrations (rewrite assertions, move files)
+2. Skip `needs review` items — present them for human decision
+3. Present dead tests for confirmation (Delete / Skip / Archive); never auto-delete
+4. Run the migrated tests and compare against pre-migration results
+5. If any migrated test changes status (pass→fail or fail→pass), revert that file and flag it
+
+### Idempotency
+
+- Already-migrated files are detected via the manifest convention and skipped
+- Review items re-presented until resolved
+- Re-running after partial apply continues from the remaining minority files
 
 ---
 

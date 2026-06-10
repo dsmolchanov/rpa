@@ -55,7 +55,7 @@ Then wait for the user's research query.
    - Use the **thoughts-locator** agent to discover what documents exist about the topic
    - Use the **thoughts-analyzer** agent to extract key insights from specific documents (only the most relevant ones)
 
-   **For web research (only if user explicitly asks):**
+   **For web research (when the user asks, or when the question hinges on external libraries/APIs the codebase can't answer):**
    - Use the **web-search-researcher** agent for external documentation and resources
    - IF you use web-research agents, instruct them to return LINKS with their findings, and please INCLUDE those links in your final report
 
@@ -83,7 +83,7 @@ Then wait for the user's research query.
    - Answer the user's specific questions with concrete evidence
 
 5. **Gather metadata for the research document:**
-   - Run the `~/.claude/hack/spec_metadata.sh` script to generate all relevant metadata
+   - Run the `~/.claude/scripts/spec_metadata.sh` script (shipped in this plugin's `scripts/`) to generate all relevant metadata; if absent, gather the same metadata manually (date, git commit, branch, repo name)
    - Filename: `thoughts/shared/research/YYYY-MM-DD-ENG-XXXX-description.md`
      - Format: `YYYY-MM-DD-ENG-XXXX-description.md` where:
        - YYYY-MM-DD is today's date

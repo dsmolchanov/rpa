@@ -25,8 +25,16 @@ This approach reduces errors, improves code quality, and creates documentation t
 | `/validate_plan` | Verify that a plan was correctly implemented |
 | `/create_handoff` | Create handoff documents to transfer work between sessions |
 | `/resume_handoff` | Resume work from a handoff document |
+| `/commit` | Create well-structured git commits for session changes |
+| `/debug` | Investigate problems via logs, DB state, and git history without editing files |
+| `/create_test_plan` | Create comprehensive test plans and TDD strategies |
+| `/tdd` | Execute full TDD cycle with Red/Green/Refactor verification |
+| `/test_suite` | Create, update, and maintain test suites (audit, init, update, gaps, run, ci, standardize) |
+| `/refactor_candidates` | Discover and index God-like modules as refactoring candidates |
+| `/refactor` | Refactor monolithic modules into focused, testable modules |
 | `/tech_debt_sweep` | Scan codebase for technical debt and generate paydown plan |
 | `/tech_debt_trends` | Analyze technical debt trends over time |
+| `/aidlc_init` | Bootstrap the current repository for the AI-DLC compatibility workflow |
 | `/aidlc_start` | Initialize or resume the AI-DLC compatibility workflow |
 | `/aidlc_inception` | Execute approved inception stages and generate canonical artifacts |
 | `/aidlc_bolt` | Execute one construction unit in the AI-DLC workflow |
@@ -82,6 +90,7 @@ After installation, start Claude Code and check that commands are available:
 /research_codebase
 /create_plan
 /implement_plan
+/aidlc_init
 /aidlc_start
 ```
 
@@ -92,47 +101,79 @@ After installation, your `~/.claude/` directory should look like:
 ```
 ~/.claude/
 ├── commands/
+│   │                          # RPA core
 │   ├── research_codebase.md
 │   ├── create_plan.md
 │   ├── implement_plan.md
-│   ├── aidlc_start.md
-│   ├── aidlc_inception.md
-│   ├── aidlc_bolt.md
-│   ├── aidlc_build_test.md
-│   ├── aidlc_operations.md
-│   ├── aidlc_feedback.md
 │   ├── iterate_plan.md
 │   ├── enhance_plan.md
 │   ├── enhance_research.md
 │   ├── validate_plan.md
 │   ├── create_handoff.md
 │   ├── resume_handoff.md
-│   ├── tech_debt_sweep.md     # NEW
-│   └── tech_debt_trends.md    # NEW
-├── agents/                     # NEW SECTION
-│   ├── code-analyzer.md
-│   ├── codebase-analyzer.md
+│   ├── commit.md
+│   ├── debug.md
+│   │                          # Testing
+│   ├── create_test_plan.md
+│   ├── tdd.md
+│   ├── test_suite.md
+│   │                          # Refactoring & tech debt
+│   ├── refactor_candidates.md
+│   ├── refactor.md
+│   ├── tech_debt_sweep.md
+│   ├── tech_debt_trends.md
+│   │                          # AI-DLC compatibility
+│   ├── aidlc_init.md
+│   ├── aidlc_start.md
+│   ├── aidlc_inception.md
+│   ├── aidlc_bolt.md
+│   ├── aidlc_build_test.md
+│   ├── aidlc_operations.md
+│   └── aidlc_feedback.md
+├── agents/
+│   │                          # Codebase research
 │   ├── codebase-locator.md
+│   ├── codebase-analyzer.md
 │   ├── codebase-pattern-finder.md
+│   ├── code-analyzer.md
 │   ├── file-analyzer.md
-│   ├── parallel-worker.md
-│   ├── test-runner.md
-│   ├── thoughts-analyzer.md
 │   ├── thoughts-locator.md
+│   ├── thoughts-analyzer.md
 │   ├── web-search-researcher.md
-│   ├── dependency-auditor.md   # NEW
-│   ├── debt-scanner.md         # NEW
-│   ├── architecture-guard.md   # NEW
-│   ├── docs-auditor.md         # NEW
-│   ├── config-auditor.md       # NEW
-│   ├── uow-decomposer.md       # NEW
-│   ├── steering-rules-checker.md # NEW
-│   ├── quality-gate-runner.md  # NEW
-│   ├── operations-planner.md   # NEW
-│   └── feedback-collector.md   # NEW
+│   ├── parallel-worker.md
+│   │                          # Testing
+│   ├── test-analyzer.md
+│   ├── test-architect.md
+│   ├── test-generator.md
+│   ├── test-runner.md
+│   ├── test-updater.md
+│   ├── test-refactorer.md
+│   ├── test-impact-mapper.md
+│   ├── coverage-reporter.md
+│   │                          # Refactoring
+│   ├── god-module-finder.md
+│   ├── api-snapshotter.md
+│   ├── responsibility-decomposer.md
+│   ├── coupling-analyzer.md
+│   ├── consumer-mapper.md
+│   ├── refactor-validator.md
+│   │                          # Tech debt
+│   ├── debt-scanner.md
+│   ├── dependency-auditor.md
+│   ├── architecture-guard.md
+│   ├── docs-auditor.md
+│   ├── config-auditor.md
+│   │                          # AI-DLC
+│   ├── uow-decomposer.md
+│   ├── steering-rules-checker.md
+│   ├── quality-gate-runner.md
+│   ├── operations-planner.md
+│   └── feedback-collector.md
 ├── scripts/
+│   ├── bootstrap_aidlc_project.sh
 │   └── spec_metadata.sh
-└── hooks/                      # NEW SECTION
+└── hooks/
+    ├── hooks.json
     └── tech-debt-hooks.md
 ```
 
@@ -171,6 +212,7 @@ This repo also includes an AWS AI-DLC-compatible facade for teams that want plug
 
 | Command | Phase | Description |
 |---------|-------|-------------|
+| `/aidlc_init` | Bootstrap | Create or refresh the repo-local AI-DLC substrate |
 | `/aidlc_start` | Entry | Initialize state, resolve rules, write execution plan |
 | `/aidlc_inception` | Inception | Execute approved inception stages |
 | `/aidlc_bolt` | Construction | Execute one approved construction unit |
@@ -246,16 +288,34 @@ Example:
 
 After the script runs, review `thoughts/shared/steering-rules/default.yaml` before the first `/aidlc_build_test` because multi-stack repos may need command adjustments.
 
+### `/aidlc_init` Wrapper
+
+If the RPA scripts were copied into `~/.claude/scripts/`, you can bootstrap directly from Claude Code with:
+
+```text
+/aidlc_init
+```
+
+Optional flags:
+
+```text
+/aidlc_init --force-overlay
+/aidlc_init --force-claude
+```
+
+`/aidlc_init` is a thin wrapper over `~/.claude/scripts/bootstrap_aidlc_project.sh`. It bootstraps the current repository root, then tells you to review the generated overlay and proceed to `/aidlc_start`.
+
 ### Quick Start
 
-1. Run `scripts/bootstrap_aidlc_project.sh /path/to/project` once per repo
-2. Review `thoughts/shared/steering-rules/default.yaml`
-3. Start the workflow with `/aidlc_start`
-4. Answer any generated question files under `aidlc-docs/inception/questions/`
-5. Run `/aidlc_inception`
-6. Execute units with `/aidlc_bolt`
-7. Run `/aidlc_build_test`
-8. Optionally use `/aidlc_operations` and `/aidlc_feedback`
+1. Open the target repo in Claude Code
+2. Run `/aidlc_init`
+3. Review `thoughts/shared/steering-rules/default.yaml`
+4. Start the workflow with `/aidlc_start "<full request>"`
+5. Answer any generated question files under `aidlc-docs/inception/questions/`
+6. Run `/aidlc_inception`
+7. Execute units with `/aidlc_bolt`
+8. Run `/aidlc_build_test`
+9. Optionally use `/aidlc_operations` and `/aidlc_feedback`
 
 ## Technical Debt Management
 

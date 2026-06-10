@@ -1,3 +1,8 @@
+---
+description: Create a handoff document to transfer work context between sessions
+argument-hint: "[ticket-number] [description]"
+---
+
 # Create Handoff Document Guide
 
 This document outlines the process for creating a handoff document to transfer work between sessions.

@@ -115,6 +115,10 @@ After getting initial clarifications:
    **For related tickets:**
    - **linear-searcher** - To find similar issues or past implementations
 
+   **For external context (when the plan touches third-party libraries, APIs, or framework behavior not answerable from the codebase):**
+   - **web-search-researcher** - To verify current library APIs, version constraints, known issues, and best practices
+   - Instruct it to return LINKS with findings, and include those links in the plan's References section
+
    Each agent knows how to:
    - Find the right files and code patterns
    - Identify conventions and patterns to follow
