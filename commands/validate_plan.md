@@ -7,6 +7,8 @@ argument-hint: "[plan-file]"
 
 You are tasked with validating that an implementation plan was correctly executed, verifying all success criteria and identifying any deviations or issues.
 
+**Scope**: this command checks *plan conformance* — did the implementation do what the plan said, do the success criteria pass. It does NOT hunt for bugs in the diff itself; that is the job of the native `/code-review` skill, which this command recommends as a follow-up.
+
 ## Initial Setup
 
 When invoked:
@@ -112,7 +114,7 @@ Create comprehensive validation summary and **write it to a file**:
 ✓ Tests pass: `make test`
 ✗ Linting issues: `make lint` (3 warnings)
 
-### Code Review Findings
+### Plan Conformance Findings
 
 #### Matches Plan:
 - Database migration correctly adds [table]
@@ -126,6 +128,10 @@ Create comprehensive validation summary and **write it to a file**:
 #### Potential Issues:
 - Missing index on foreign key could impact performance
 - No rollback handling in migration
+
+### Next Step: Diff Quality Review
+Run `/code-review` on this branch for a bug-focused review of the diff
+itself (correctness, edge cases, simplification) — outside this command's scope.
 
 ### Manual Testing Required:
 1. UI functionality:
@@ -179,8 +185,9 @@ Always verify:
 Recommended workflow:
 1. `/implement_plan` - Execute the implementation
 2. `/commit` - Create atomic commits for changes
-3. `/validate_plan` - Verify implementation correctness
-4. `/describe_pr` - Generate PR description
+3. `/validate_plan` - Verify implementation correctness (plan conformance)
+4. `/code-review` (native) - Bug-focused review of the diff quality
+5. `/describe_pr` - Generate PR description
 
 The validation works best after commits are made, as it can analyze the git history to understand what was implemented.
 

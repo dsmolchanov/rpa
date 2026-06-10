@@ -38,6 +38,11 @@ You are tasked with creating git commits for the changes made during this sessio
 - Do not add "Co-Authored-By" lines
 - Write commit messages as if the user wrote them
 
+> **Note**: This is a deliberate policy override. Claude Code's default convention
+> adds a `Co-Authored-By: Claude <...>` trailer; this command intentionally
+> suppresses it. If a specific repository's history or its CLAUDE.md asks for
+> attribution trailers, that repository's own convention wins over this command.
+
 ## Remember:
 - You have the full context of what was done in this session
 - Group related changes together

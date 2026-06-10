@@ -42,6 +42,25 @@ This approach reduces errors, improves code quality, and creates documentation t
 | `/aidlc_operations` | Generate experimental operations artifacts |
 | `/aidlc_feedback` | Capture experimental retrospective feedback |
 
+## When to Use Plugin vs Native Claude Code
+
+Claude Code ships native skills and agents that partially overlap with this plugin. Use the right tool for the altitude of the task:
+
+| Task | Use native | Use this plugin |
+|------|-----------|-----------------|
+| Clean up a diff (naming, dead code, small simplifications) | `/simplify` | — |
+| Find bugs in a branch/PR diff | `/code-review` | — |
+| Check an implementation against its plan and success criteria | — | `/validate_plan` (then follow up with `/code-review`) |
+| Decompose a God module into focused modules (multi-phase, with API snapshots and rollback) | — | `/refactor`, `/refactor_candidates` |
+| Ad-hoc "where is X / how does Y work" exploration | `Explore` agent | — |
+| Durable research docs in `thoughts/shared/research/` | — | `/research_codebase` |
+| Security audit of pending changes | `/security-review` | — |
+| Find hardcoded config that should be externalized | — | `config-auditor` (via `/tech_debt_sweep`) |
+| Deep multi-source web research report | `deep-research` | — |
+| Targeted web lookups inside plan/research flows | — | `web-search-researcher` (spawned by `/create_plan`, `/research_codebase`) |
+
+Rule of thumb: native skills work at the **diff level** on the current branch; this plugin works at the **workflow level** — persistent artifacts in `thoughts/`, multi-phase orchestration, and cross-session state.
+
 ## Installation
 
 ### Quick Install (Recommended)

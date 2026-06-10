@@ -2,7 +2,7 @@
 date: 2026-06-10
 type: improvement-roadmap
 scope: entire rpa plugin (commands, agents, hooks, packaging)
-status: phases 0-1 complete; phases 2-4 pending (2.6 also done)
+status: phases 0-2 complete; phases 3-4 pending
 ---
 
 # RPA Plugin Improvement Roadmap
@@ -57,10 +57,10 @@ Native = built into current Claude Code (skills, agents, tools). Verdict legend:
 
 ## Phase 2 — Dedup against native (medium)
 
-4. **`/commit` convention conflict** — the command forbids Claude attribution lines while the harness mandates them. Add an explicit note that repo/user policy wins, or drop the prohibition. Decide once, document in the command.
-5. **`/validate_plan` → `/code-review` handoff** — after conformance check, emit "run `/code-review` for diff-quality findings" instead of attempting its own bug hunt.
+4. ✅ **`/commit` convention conflict** — DONE 2026-06-11: documented as a deliberate override; repo-local conventions win over the command.
+5. ✅ **`/validate_plan` → `/code-review` handoff** — DONE 2026-06-11: scope note added (plan conformance only), report renamed to "Plan Conformance Findings" with a `/code-review` next step, workflow updated.
 6. ✅ **`web-search-researcher`** — RESOLVED 2026-06-11: wired into `/create_plan` (external-context research block) and `/research_codebase` (trigger broadened to external-library/API questions).
-7. **Document native-vs-plugin boundaries** in README (one short section): when to use `/simplify` vs `/refactor`, `/code-review` vs `/validate_plan`, `Explore` vs locator agents.
+7. ✅ **Document native-vs-plugin boundaries** — DONE 2026-06-11: "When to Use Plugin vs Native Claude Code" section added to README.
 
 ## Phase 3 — Per-command improvements (one by one)
 
@@ -89,5 +89,5 @@ Ordered by value; each item is independently shippable.
 |---|---|---|
 | 1 | ~~Delete `.agent/workflows/` mirror or add sync script?~~ | ✅ Deleted (2026-06-11) |
 | 2 | ~~Retire `web-search-researcher` or wire into plan/research commands?~~ | ✅ Wired in (2026-06-11) |
-| 3 | `/commit` attribution policy: repo rule vs harness default? | Keep repo rule, state it explicitly as an override |
+| 3 | ~~`/commit` attribution policy: repo rule vs harness default?~~ | ✅ Documented as explicit override (2026-06-11) |
 | 4 | Migrate big commands to `skills/` format? | Defer until a concrete benefit appears |
