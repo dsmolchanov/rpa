@@ -65,25 +65,31 @@ After the user describes the issue:
 
 Spawn parallel Task agents for efficient investigation:
 
-```
+```yaml
 Task 1 - Check Recent Logs:
-Find and analyze any relevant log files for errors:
-1. Look for log files in the project directory
-2. Search for errors, warnings, or issues around the problem timeframe
-3. Look for stack traces or repeated errors
-Return: Key errors/warnings with timestamps
+  subagent_type: file-analyzer
+  Prompt: |
+    Find and analyze any relevant log files for errors:
+    1. Look for log files in the project directory
+    2. Search for errors, warnings, or issues around the problem timeframe
+    3. Look for stack traces or repeated errors
+    Summarize aggressively — return only key errors/warnings with timestamps
+    and file:line references, not raw log dumps.
 ```
 
-```
+```yaml
 Task 2 - Git and File State:
-Understand what changed recently:
-1. Check git status and current branch
-2. Look at recent commits: git log --oneline -10
-3. Check uncommitted changes: git diff
-4. Verify expected files exist
-5. Look for any file permission issues
-Return: Git state and any file issues
+  Prompt: |
+    Understand what changed recently:
+    1. Check git status and current branch
+    2. Look at recent commits: git log --oneline -10
+    3. Check uncommitted changes: git diff
+    4. Verify expected files exist
+    5. Look for any file permission issues
+    Return: Git state and any file issues
 ```
+
+If the user provides a specific large output (test log, build output, crash dump), spawn an additional **file-analyzer** task pointed at that file instead of reading it into the main context.
 
 ### Step 3: Present Findings
 

@@ -1,5 +1,6 @@
 ---
 description: Enhance existing implementation plans by synthesizing user feedback and opinions
+argument-hint: "[plan-file] [feedback or opinions]"
 model: opus
 ---
 

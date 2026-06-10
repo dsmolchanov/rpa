@@ -2,7 +2,7 @@
 date: 2026-06-10
 type: improvement-roadmap
 scope: entire rpa plugin (commands, agents, hooks, packaging)
-status: phase 0 complete; phases 1-4 pending
+status: phases 0-1 complete; phases 2-4 pending (2.6 also done)
 ---
 
 # RPA Plugin Improvement Roadmap
@@ -51,9 +51,9 @@ Native = built into current Claude Code (skills, agents, tools). Verdict legend:
 
 ## Phase 1 — Hygiene (low risk, do first)
 
-1. **Frontmatter completion** — add `argument-hint` (and `allowed-tools` where the command runs shell) to: `create_plan`, `enhance_plan`, `enhance_research`, `implement_plan`, `iterate_plan`, `research_codebase`, `resume_handoff`. ~30 min.
+1. ✅ **Frontmatter completion** — DONE 2026-06-11: `argument-hint` added to all 7 commands.
 2. ✅ **Resolve `.agent/workflows/` drift** — RESOLVED 2026-06-11: owner chose deletion; `.agent/` removed.
-3. **Orphan `file-analyzer`** — wire into `/debug` (log summarization step) and `/test_suite run` (verbose output digestion). Keeps the agent useful; otherwise retire.
+3. ✅ **Orphan `file-analyzer`** — DONE 2026-06-11: wired into `/debug` (log-analysis Task + large-output rule) and `/test_suite run` (verbose output digestion).
 
 ## Phase 2 — Dedup against native (medium)
 

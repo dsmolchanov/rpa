@@ -422,9 +422,22 @@ Execute tests and report results.
 ### Process
 
 1. Read manifest for test command
-2. Execute tests
+2. Execute tests, capturing output to a log file (e.g. `tee /tmp/test-run.log`)
 3. Parse results
 4. Report with file:line references
+
+If the output is large (hundreds of lines, many failures, or verbose stack traces), do NOT read the full log into the main context — spawn file-analyzer instead:
+
+```yaml
+Task - Digest Test Output:
+  subagent_type: file-analyzer
+  Prompt: |
+    Analyze the test run log at [log path].
+    Extract: pass/fail/skip counts, each failure with test name,
+    file:line, error message, and expected vs actual.
+    Group repeated failures with the same root error.
+    Limit response to 120 lines.
+```
 
 ### Output
 

@@ -1,5 +1,6 @@
 ---
 description: Document codebase as-is with thoughts directory for historical context
+argument-hint: "[research question or files to read]"
 model: opus
 ---
 
