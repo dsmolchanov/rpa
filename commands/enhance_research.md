@@ -99,6 +99,16 @@ If the feedback references code or patterns not covered in the original research
 
    **IMPORTANT**: All agents are documentarians, not critics. They describe what exists.
 
+   These names are `subagent_type` values for the Task tool — spawn them as real tasks, not prose suggestions. Example:
+
+   ```yaml
+   Task - Locate Affected Code:
+     subagent_type: codebase-locator
+     Prompt: |
+       Find all files related to [specific topic].
+       Return file paths grouped by role (implementation, tests, config).
+   ```
+
 3. **Wait for ALL sub-tasks to complete** before proceeding
 
 4. **Read any new files identified by research** FULLY into main context

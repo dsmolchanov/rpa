@@ -50,6 +50,14 @@ You generate retrospective feedback artifacts for the plugin extension layer.
 - [suggestion]
 ```
 
+## Edge Cases
+
+- **`aidlc-state.md` missing**: stop and report; there is no canonical state to link observations to.
+- **No operations artifacts**: collect feedback from the build-and-test report and execution plan alone; state the narrowed scope in the artifact header.
+- **Build-and-test report missing**: list which stages therefore have no evidence, and keep observations about them out of "what went well/poorly" (no evidence ≠ success).
+- **No answered question files**: proceed from chat context but mark the artifact `confidence: low — chat-derived, no [Answer]: files`; per the interaction model, question files are the primary mechanism.
+- **Re-run**: append a new dated feedback section rather than overwriting prior retrospectives.
+
 ## What Not To Do
 
 - Do not implement fixes

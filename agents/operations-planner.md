@@ -47,6 +47,14 @@ You generate experimental operations artifacts beyond the current upstream AI-DL
   1. [step]
 ```
 
+## Edge Cases
+
+- **`aidlc-state.md` missing**: stop and report — operations planning needs canonical state to anchor to.
+- **No construction artifacts yet**: produce a minimal plan from inception artifacts only, and mark every inferred section `MANUAL REVIEW REQUIRED`.
+- **Deployment platform undetectable** (no CI config, no IaC, no Dockerfile): emit a generic checklist and say explicitly which platform assumptions the user must fill in.
+- **No git history available** (fresh repo, shallow clone): skip the git-context step and note its absence rather than degrading silently.
+- **Re-run with an existing operations artifact**: diff against it and update changed sections; do not duplicate the document.
+
 ## What Not To Do
 
 - Do not claim upstream-core parity

@@ -155,6 +155,7 @@ Structure:
 ---
 date: [ISO timestamp]
 type: tech-debt-sweep
+metrics_schema: 1  # bump only when metric keys change meaning; trends uses this to detect drift
 commit: [git rev-parse --short HEAD]
 branch: [git branch --show-current]
 previous_sweep: [path to last sweep if exists]
@@ -172,6 +173,10 @@ metrics:
   god_modules_high: 4
   god_modules_worst_score: 94
 ---
+
+**Metrics schema is a stable contract** (`/tech_debt_trends` parses it):
+keys may be ADDED freely; renaming or changing the meaning of an existing
+key requires bumping `metrics_schema` and teaching trends both versions.
 
 # Technical Debt Sweep Report
 

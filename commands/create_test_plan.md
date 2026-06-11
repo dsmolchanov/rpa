@@ -286,6 +286,20 @@ Write the plan to:
 
 * `thoughts/shared/tests/YYYY-MM-DD-TEST-XXXX-<short-description>.md`
 
+**This command produces the plan only — it never creates test files.** Execution belongs to:
+- `/tdd [plan-path]` — drive the Red→Green→Refactor cycle from this plan (preferred for new features)
+- `/test_suite init apply` — batch-scaffold from coverage gaps (repo-wide, not feature-scoped)
+
+### Scope boundary vs `/test_suite`
+
+| | `/create_test_plan` | `/test_suite init` |
+|---|---|---|
+| Scope | One feature/change, pre-implementation | Whole repo, existing untested code |
+| Output | Strategy + Red-phase spec (a thoughts doc) | Scaffold plan + (with `apply`) test files |
+| Executes | Never | With `apply` |
+
+If the user asks for repo-wide coverage scaffolding, redirect to `/test_suite init` instead of stretching this command.
+
 ---
 
 ## Step 4: Detailed Plan Template (Final Output Format)

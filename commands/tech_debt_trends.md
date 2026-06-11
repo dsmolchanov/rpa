@@ -41,6 +41,11 @@ metrics:
 
 **Fallback**: If a sweep lacks structured metrics, skip it and note in report.
 
+**Schema drift detection**: Check `metrics_schema` in each sweep's frontmatter (sweeps written before the field exists count as version 1):
+- Same version across sweeps → compare metrics directly
+- Mixed versions → compare only keys whose meaning is unchanged across those versions; list the excluded keys in the report under "Schema notes"
+- Unknown (newer) version → skip that sweep and report "sweep X uses metrics_schema N, not supported by this command version"
+
 ### Step 3: Calculate Trends
 - Week-over-week change
 - Month-over-month change

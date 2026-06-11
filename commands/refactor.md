@@ -492,10 +492,23 @@ For each phase:
    [test command] && [lint command] && [typecheck command]
    ```
 
-4. **Compare API snapshot**:
-   - Run api-snapshotter again
-   - Compare with baseline
-   - Flag any removed or changed exports
+4. **Compare API snapshot** — spawn refactor-validator with the explicit baseline path:
+
+   ```yaml
+   Task - Validate Phase N:
+     subagent_type: refactor-validator
+     Prompt: |
+       Validate the refactoring phase just completed for [component].
+
+       Baseline snapshot: thoughts/shared/plans/YYYY-MM-DD-api-snapshot-[component].md
+       (the exact file persisted in Step 2 — pass its real path, not a pattern)
+
+       1. Re-capture the current API surface of [component]
+       2. Compare against the baseline: every export present, signatures unchanged
+       3. Flag any removed or changed exports
+
+       Return: PASS/FAIL with a per-export diff for any mismatch.
+   ```
 
 5. **Present results**:
    ```

@@ -64,6 +64,17 @@ Then wait for the user's research query.
    - Use the **linear-ticket-reader** agent to get full details of a specific ticket
    - Use the **linear-searcher** agent to find related tickets or historical context
 
+
+   These names are `subagent_type` values for the Task tool — spawn them as real tasks, not prose suggestions. Example:
+
+   ```yaml
+   Task - Locate Affected Code:
+     subagent_type: codebase-locator
+     Prompt: |
+       Find all files related to [specific topic].
+       Return file paths grouped by role (implementation, tests, config).
+   ```
+
    The key is to use these agents intelligently:
    - Start with locator agents to find what exists
    - Then use analyzer agents on the most promising findings to document how they work

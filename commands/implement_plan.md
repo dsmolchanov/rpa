@@ -48,6 +48,7 @@ After implementing a phase:
 - Fix any issues before proceeding
 - Update your progress in both the plan and your todos
 - Check off completed items in the plan file itself using Edit
+- **Checkpoint commit**: once a phase's automated verification passes, create a commit for that phase (follow the `/commit` command's conventions: specific files, imperative message naming the phase, e.g. "Implement Phase 2: add token validation"). One commit per phase keeps history reviewable and makes rollback of a single phase trivial. Skip only if the user has said they'll handle commits themselves.
 - **Pause for human verification**: After completing all automated verification for a phase, pause and inform the human that the phase is ready for manual testing. Use this format:
   ```
   Phase [N] Complete - Ready for Manual Verification

@@ -2,7 +2,7 @@
 date: 2026-06-10
 type: improvement-roadmap
 scope: entire rpa plugin (commands, agents, hooks, packaging)
-status: phases 0-2 complete; phases 3-4 pending
+status: phases 0-3 complete; phase 4 pending (one e2e verification item open in 3.8)
 ---
 
 # RPA Plugin Improvement Roadmap
@@ -66,15 +66,15 @@ Native = built into current Claude Code (skills, agents, tools). Verdict legend:
 
 Ordered by value; each item is independently shippable.
 
-8. **`/test_suite`** — verify new `adopt`/`standardize` end-to-end on a real fragmented repo; align manifest filename (command references both `manifest.md` and `test-suite-manifest.json` — pick one).
-9. **`/tdd` (829 lines)** — extract the testing patterns/anti-patterns catalog into `commands/shared/` or an agent doc; the command should orchestrate, not teach. Target <400 lines.
-10. **`/create_plan` family** — convert prose agent mentions ("use codebase-locator…") into explicit Task blocks like `tech_debt_sweep` does; removes ambiguity about whether spawning is required. Applies to `create_plan`, `enhance_plan`, `enhance_research`, `iterate_plan`, `research_codebase`.
-11. **`/implement_plan`** — add an explicit checkpoint step invoking `/commit` per completed phase; today commits are implied.
-12. **`/refactor`** — wire `refactor-validator` to compare against `api-snapshotter` baselines explicitly per phase (the loop exists but the snapshot path contract is implicit).
-13. **`/tech_debt_sweep`** — stabilize the YAML metrics block schema (trends depends on it); add schema version field so `tech_debt_trends` can detect drift.
-14. **`/debug`** — integrate `file-analyzer` (Phase 1.3) and add a "recent Claude Code transcript" source alongside logs/db/git.
-15. **AI-DLC thin agents** (`uow-decomposer`, `quality-gate-runner`, `operations-planner`, `feedback-collector`, `steering-rules-checker`, 49–73 lines each) — add edge-case guidance: empty inputs, missing canonical files, partial state. One pass over all five.
-16. **`/create_test_plan`** — deduplicate against `/test_suite init` (both scaffold plans); make create_test_plan strategy-level and have it hand off to test_suite for execution.
+8. ✅ **`/test_suite`** — DONE 2026-06-12: manifest filename unified to `test-suite-manifest.json` everywhere. *Still open: end-to-end run of `adopt`/`standardize` on a real fragmented repo.*
+9. ✅ **`/tdd`** — DONE 2026-06-12: patterns/anti-patterns catalog extracted to `docs/testing-patterns.md` (shared with `/create_test_plan`, `/test_suite`); command now 641 lines (from 829) with a compact pointer + non-negotiable rules.
+10. ✅ **`/create_plan` family** — DONE 2026-06-12: all 5 commands now state the bold names are `subagent_type` values and include an explicit Task block example.
+11. ✅ **`/implement_plan`** — DONE 2026-06-12: checkpoint-commit step added (one commit per verified phase, `/commit` conventions).
+12. ✅ **`/refactor`** — DONE 2026-06-12: per-phase validation now spawns `refactor-validator` with the explicit persisted baseline path.
+13. ✅ **`/tech_debt_sweep`** — DONE 2026-06-12: `metrics_schema: 1` field added + stable-contract note; `/tech_debt_trends` got drift-detection rules (missing field = v1, mixed versions compare shared keys, unknown versions skipped).
+14. ✅ **`/debug`** — DONE 2026-06-12: transcript source added (`~/.claude/projects/.../*.jsonl`, digested via file-analyzer); file-analyzer integration done in Phase 1.
+15. ✅ **AI-DLC thin agents** — DONE 2026-06-12: tailored "Edge Cases" sections added to all five (missing state, missing overlay, partial plans, re-run behavior, ERROR-vs-FAIL distinction).
+16. ✅ **`/create_test_plan`** — DONE 2026-06-12: declared plan-only (never creates files), execution handoff to `/tdd` or `/test_suite init apply`, scope-boundary table added.
 
 ## Phase 4 — Packaging & distribution
 

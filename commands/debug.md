@@ -45,6 +45,11 @@ You have access to these key locations and tools:
 - Check if services are running with `ps aux | grep <service>`
 - Check for relevant log files in the project
 
+**Recent Claude Code Session Transcripts** (when the issue arose during an earlier session):
+- Transcripts live in `~/.claude/projects/<encoded-project-path>/*.jsonl`
+- Find the most recent: `ls -t ~/.claude/projects/*/ | head`
+- These are large — spawn **file-analyzer** to extract what commands ran and what errors appeared; never read them fully into the main context
+
 ## Process Steps
 
 ### Step 1: Understand the Problem

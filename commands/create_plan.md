@@ -120,6 +120,17 @@ After getting initial clarifications:
    - **web-search-researcher** - To verify current library APIs, version constraints, known issues, and best practices
    - Instruct it to return LINKS with findings, and include those links in the plan's References section
 
+
+   These names are `subagent_type` values for the Task tool — spawn them as real tasks, not prose suggestions. Example:
+
+   ```yaml
+   Task - Locate Affected Code:
+     subagent_type: codebase-locator
+     Prompt: |
+       Find all files related to [specific topic].
+       Return file paths grouped by role (implementation, tests, config).
+   ```
+
    Each agent knows how to:
    - Find the right files and code patterns
    - Identify conventions and patterns to follow

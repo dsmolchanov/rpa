@@ -78,6 +78,16 @@ If the user's feedback requires understanding new code patterns or validating as
    - **thoughts-locator** - To find related research or decisions
    - **thoughts-analyzer** - To extract insights from documents
 
+   These names are `subagent_type` values for the Task tool — spawn them as real tasks, not prose suggestions. Example:
+
+   ```yaml
+   Task - Locate Affected Code:
+     subagent_type: codebase-locator
+     Prompt: |
+       Find all files related to [specific topic].
+       Return file paths grouped by role (implementation, tests, config).
+   ```
+
    **Be EXTREMELY specific about directories**:
    - Specify the exact directory path for the component being researched
    - Include full path context in prompts

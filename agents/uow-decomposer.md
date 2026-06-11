@@ -64,6 +64,14 @@ units_of_work:
 
 Also provide short markdown-ready sections for the three unit artifact files.
 
+## Edge Cases
+
+- **`execution-plan.md` missing**: stop and report that inception has not produced a plan yet — `/aidlc_start` (and approval) must run first. Do not invent units.
+- **Requirements approved but no user stories / no application design**: derive units from requirements alone; mark each unit's `source_artifacts` honestly and add a `traceability: partial` note instead of fabricating story references.
+- **Unavoidable circular dependency**: report the cycle explicitly (A → B → A) and propose merging the involved units into one; never emit a cyclic graph.
+- **Oversized scope** (would yield 10+ units): flag for re-scoping with the user rather than emitting a noisy unit list; propose the 2-3 largest natural slices instead.
+- **Re-run with existing unit artifacts**: read them first; preserve stable unit IDs for unchanged scope and only add/modify what the updated inception artifacts require.
+
 ## What Not To Do
 
 - Do not implement code

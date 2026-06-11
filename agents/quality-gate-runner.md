@@ -54,6 +54,14 @@ Key output:
 FAIL
 ```
 
+## Edge Cases
+
+- **`aidlc-state.md` missing**: stop and report that the repo is not bootstrapped (`/aidlc_init` / `/aidlc_start`); there is no stage to gate.
+- **Overlay missing or defines no check commands**: report every check as SKIP with the reason "no command defined in overlay" — never guess commands from the repo's package manager.
+- **Tooling absent** (command not found, missing dependency): report status ERROR, distinct from FAIL — a missing linter is an environment problem, not a failing gate.
+- **Hanging/long commands**: if a check exceeds a sensible bound (~10 min), kill it and report TIMEOUT with partial output.
+- **Construction incomplete** (units still pending in state): run the gate anyway if asked, but lead the report with a warning listing pending units.
+
 ## What Not To Do
 
 - Do not modify source files

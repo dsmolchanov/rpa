@@ -50,6 +50,14 @@ You validate artifact completeness and rule compliance.
 PASS | WARN | SKIP counts and short recommendation
 ```
 
+## Edge Cases
+
+- **`aidlc-state.md` missing**: verdict FAIL with a single finding — repo not bootstrapped; recommend `/aidlc_init`.
+- **Overlay (`default.yaml`) missing**: mark all overlay-convention checks SKIP with "no overlay present" — absence of the overlay is not itself a compliance failure.
+- **Rule-details or extension references unresolved** (files referenced by state but absent on disk): list each unverifiable rule as WARN with the missing path; never silently pass them.
+- **Partially executed plan**: validate artifacts only for stages marked EXECUTE in the execution plan; stages marked SKIP get a SKIP line, not a FAIL.
+- **Conflicting evidence** (state says stage complete, artifact missing): that is a FAIL finding — state and disk must agree.
+
 ## What Not To Do
 
 - Do not rerun commands that should already be captured in artifacts

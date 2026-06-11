@@ -208,7 +208,7 @@ Analyzing existing suites...
 
 #### Step 1: Require Manifest
 
-Read the manifest; if missing, run audit first automatically. The manifest must list all detected test layers and runners (including mixed frameworks like jest + vitest or pytest + unittest).
+Read `thoughts/shared/test-suite/test-suite-manifest.json`; if missing, run audit first automatically. The manifest must list all detected test layers and runners (including mixed frameworks like jest + vitest or pytest + unittest).
 
 #### Step 2: Inventory Layers
 
@@ -888,7 +888,7 @@ Analyzing test suite...
 
 #### Step 1: Require Manifest
 
-Read `thoughts/shared/test-suite/manifest.md`. If missing, run the audit subcommand first — standardize depends on the "majority vote" the audit produces (e.g., 80% Jest in `__tests__/`, 20% Mocha in `spec/`).
+Read `thoughts/shared/test-suite/test-suite-manifest.json`. If missing, run the audit subcommand first — standardize depends on the "majority vote" the audit produces (e.g., 80% Jest in `__tests__/`, 20% Mocha in `spec/`).
 
 If the suite is already uniform (single framework, single convention), report that and stop.
 

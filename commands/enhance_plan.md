@@ -101,6 +101,16 @@ If the feedback references code patterns or approaches not covered in the origin
    - **thoughts-locator** - To find related research or past decisions
    - **thoughts-analyzer** - To extract insights from previous implementations
 
+   These names are `subagent_type` values for the Task tool — spawn them as real tasks, not prose suggestions. Example:
+
+   ```yaml
+   Task - Locate Affected Code:
+     subagent_type: codebase-locator
+     Prompt: |
+       Find all files related to [specific topic].
+       Return file paths grouped by role (implementation, tests, config).
+   ```
+
 3. **Wait for ALL sub-tasks to complete** before proceeding
 
 4. **Read any new files identified by research** FULLY into main context
