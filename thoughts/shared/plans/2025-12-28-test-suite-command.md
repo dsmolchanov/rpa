@@ -1,5 +1,7 @@
 # `/test_suite` Command Implementation Plan
 
+> **Status (2026-06-12)**: Phases 0.5 and 2.5 are implemented — `adopt` and `standardize [apply]` subcommands ship in `commands/test_suite.md` (with `init` defaulting to adopt when tests exist), and `agents/test-refactorer.md` exists. Success-criteria checkboxes below remain unchecked because they require an end-to-end run against a real fragmented repo, which is still open (see roadmap `2026-06-10-plugin-improvement-roadmap.md`, item 3.8).
+
 ## Overview
 
 A comprehensive test suite management command that creates, maintains, and tracks tests with coverage trending. This plan synthesizes feedback from three expert reviews to create a production-ready, language-agnostic implementation.
@@ -280,6 +282,8 @@ model: sonnet
 ---
 
 ## Phase 0.5: Adopt Existing Suites (Added to Phase 0)
+
+> ✅ **Implemented 2026-06-11**: `/test_suite adopt [apply]` subcommand in `commands/test_suite.md`; `init` defaults to adopt when tests exist. Verification boxes below pending e2e run (roadmap item 3.8).
 
 ### Overview
 For legacy repos with existing tests, provide an adoption path that harmonizes execution and reporting without forcing file migrations.
@@ -598,6 +602,8 @@ Priority Score =
 ---
 
 ## Phase 2.5: Standardize Test Suites (Optional)
+
+> ✅ **Implemented 2026-06-11**: `/test_suite standardize [apply]` subcommand in `commands/test_suite.md`; `agents/test-refactorer.md` created. Verification boxes below pending e2e run (roadmap item 3.8).
 
 ### Overview
 For repos with fragmented test suites (mixed frameworks, scattered files), provide an active migration path to unify them.

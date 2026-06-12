@@ -87,8 +87,9 @@ cp CLAUDE.md ~/.claude/CLAUDE-rpa-aidlc.md
 cp scripts/*.sh ~/.claude/scripts/
 chmod +x ~/.claude/scripts/*.sh
 
-# Optional: Copy hooks for deterministic quality gates
-cp hooks/*.json ~/.claude/hooks/
+# Optional: hooks for deterministic quality gates — merge the "hooks" object
+# from hooks/hooks.json into ~/.claude/settings.json (hooks are read from
+# settings, not from a standalone file; see "How Hooks Work" below)
 ```
 
 ### Plugin Install (Alternative)
@@ -191,9 +192,7 @@ After installation, your `~/.claude/` directory should look like:
 ├── scripts/
 │   ├── bootstrap_aidlc_project.sh
 │   └── spec_metadata.sh
-└── hooks/
-    ├── hooks.json
-    └── tech-debt-hooks.md
+└── settings.json              # optional: "hooks" object merged from hooks/hooks.json
 ```
 
 ## Project Setup
@@ -398,18 +397,19 @@ These specialized agents support the debt sweep:
 - **After sweep**: Review plan, run `/tech_debt_sweep apply`
 - **Monthly**: Run `/tech_debt_trends` to track progress
 
-### Hooks for Deterministic Quality
+### How Hooks Work
 
-Install the hooks pack for automatic quality gates:
+`hooks/hooks.json` defines three deterministic quality gates that run automatically — no model judgment involved:
 
-```bash
-cp hooks/*.md ~/.claude/hooks/
-```
+1. **PostToolUse (matcher: `Edit`)** — after every file edit, the hook extracts the edited file path from the tool input and runs `npx prettier --write` on it. If `prettier` is not installed, the hook silently no-ops, so it is safe in non-JS projects.
+2. **Stop (lint)** — when Claude finishes responding, `npm run lint --silent` runs. If `npm` is missing or the project has no `lint` script, the hook prints a one-line notice instead of failing.
+3. **Stop (related tests)** — also on Stop, the hook collects up to 5 modified files from `git diff --name-only` and runs `npm test -- --bail --findRelatedTests <files>`. This relies on Jest's `--findRelatedTests`; in repos without npm it degrades to a notice.
 
-This ensures:
-- Files are auto-formatted after edits
-- Lint runs when Claude finishes responding
-- Related tests run after code changes
+Together they ensure edited files are formatted, lint runs at the end of every response, and tests related to changed files run before you move on.
+
+**Installation**: when installed as a plugin, `hooks/hooks.json` is picked up automatically. For a manual (non-plugin) install, merge the `"hooks"` object into your `~/.claude/settings.json` (or the project's `.claude/settings.json`) — Claude Code reads hooks from settings, not from a standalone file.
+
+**Caveats**: all three hooks are npm/Jest-centric by design; adapt the commands for other toolchains (see `hooks/tech-debt-hooks.md` for cross-platform variants). Hooks execute shell commands with your environment credentials — review before enabling.
 
 ### Whitelist for False Positives
 

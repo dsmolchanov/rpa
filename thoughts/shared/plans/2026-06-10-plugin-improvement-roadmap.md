@@ -2,7 +2,7 @@
 date: 2026-06-10
 type: improvement-roadmap
 scope: entire rpa plugin (commands, agents, hooks, packaging)
-status: phases 0-3 complete; phase 4 pending (one e2e verification item open in 3.8)
+status: phases 0-4 complete (one e2e verification item open in 3.8)
 ---
 
 # RPA Plugin Improvement Roadmap
@@ -78,10 +78,10 @@ Ordered by value; each item is independently shippable.
 
 ## Phase 4 — Packaging & distribution
 
-17. **README "How Hooks Work"** — document `hooks/hooks.json` (PostToolUse/Stop) behavior in prose.
-18. **Skills migration (optional)** — current `commands/*.md` format works; modern plugins may also ship `skills/<name>/SKILL.md` for richer descriptions and supporting files. Evaluate once; if migrating, do it for the big three (`test_suite`, `refactor`, `tdd`) whose pattern catalogs would become supporting files.
-19. **Marketplace metadata** — `plugin.json` is minimal; add `version`, keywords, and verify against current plugin schema (commands/agents auto-discovery makes explicit registries unnecessary — do NOT add them blindly).
-20. **Test-suite plan closure** — update `thoughts/shared/plans/2025-12-28-test-suite-command.md` checkboxes for Phases 0.5/2.5 now implemented.
+17. ✅ **README "How Hooks Work"** — DONE 2026-06-12: prose section added documenting all three hooks (PostToolUse prettier, Stop lint, Stop related-tests), plugin vs manual installation (merge into `settings.json`, not `~/.claude/hooks/`), npm/Jest-centric caveats. Misleading `cp hooks/*.json ~/.claude/hooks/` install snippet and directory tree corrected.
+18. ✅ **Skills migration (optional)** — EVALUATED 2026-06-12, verdict: **defer**. The concrete benefit skills offer (bundled supporting files) is already achieved — the `/tdd` pattern catalog lives at `docs/testing-patterns.md` and is referenced by path from three commands. Migration would fragment the flat `commands/*.md` layout the Quick Install copy flow depends on. Revisit only if a command needs per-skill supporting files that can't live in `docs/`.
+19. ✅ **Marketplace metadata** — DONE 2026-06-12: `plugin.json` now has `version: 1.0.0`, `homepage`, `repository`, and 8 keywords. No explicit command/agent registries added (auto-discovery).
+20. ✅ **Test-suite plan closure** — DONE 2026-06-12: status banner added to `2025-12-28-test-suite-command.md` plus per-phase "Implemented 2026-06-11" notes on Phases 0.5/2.5. Success-criteria checkboxes deliberately left unchecked — they require the e2e run tracked as item 3.8.
 
 ## Decisions Needed From Owner
 
@@ -90,4 +90,4 @@ Ordered by value; each item is independently shippable.
 | 1 | ~~Delete `.agent/workflows/` mirror or add sync script?~~ | ✅ Deleted (2026-06-11) |
 | 2 | ~~Retire `web-search-researcher` or wire into plan/research commands?~~ | ✅ Wired in (2026-06-11) |
 | 3 | ~~`/commit` attribution policy: repo rule vs harness default?~~ | ✅ Documented as explicit override (2026-06-11) |
-| 4 | Migrate big commands to `skills/` format? | Defer until a concrete benefit appears |
+| 4 | ~~Migrate big commands to `skills/` format?~~ | ✅ Evaluated, deferred (2026-06-12) — see Phase 4 item 18 |
