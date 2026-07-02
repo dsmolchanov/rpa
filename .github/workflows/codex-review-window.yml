@@ -7,23 +7,74 @@ on:
 # protection. GitHub matches required checks against the job key (or the
 # reported check-run name), NOT a custom display name. Do not add `name:`
 # at the job level unless you also update branch protection.
+#
+# 2026-07-02: upgraded from a blind sleep to a real gate. The old soak lost
+# the race — e.g. BoardAI#146 merged at 08:43:38 and Codex posted a P1 19s
+# later. Now the check waits for the Codex review of the CURRENT head commit
+# and FAILS while it reports P1/[BLOCKER] findings, so auto-merge holds and
+# Auto-fix pushes re-run the loop until Codex is green.
 jobs:
   codex-review-window:
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      CODEX_BOT: chatgpt-codex-connector[bot]
     steps:
-      - name: Hold merge for AI review convergence
-        if: ${{ !contains(github.event.repository.topics, 'fast-merge') }}
-        run: |
-          if [ "${{ github.event.pull_request.user.type }}" = "Bot" ]; then
-            DURATION=90
-            echo "Bot-authored PR, using short window (${DURATION}s)"
-          else
-            DURATION=240
-            echo "Human-authored PR, using full window (${DURATION}s)"
-          fi
-          echo "Holding merge for ${DURATION}s so Codex and Auto-fix can land reviews..."
-          sleep "$DURATION"
-
       - name: Fast-merge opt-out
         if: ${{ contains(github.event.repository.topics, 'fast-merge') }}
-        run: echo "Repo has topic 'fast-merge'; soak window skipped."
+        run: echo "Repo has topic 'fast-merge'; Codex gate skipped."
+
+      - name: Gate on Codex verdict for this commit
+        if: ${{ !contains(github.event.repository.topics, 'fast-merge') }}
+        run: |
+          set -euo pipefail
+          echo "Waiting for Codex review of ${HEAD_SHA} on PR #${PR}"
+
+          review_id_for_head() {
+            gh api "repos/${REPO}/pulls/${PR}/reviews" --paginate \
+              --jq "[.[] | select(.user.login == \"${CODEX_BOT}\" and .commit_id == \"${HEAD_SHA}\")] | (last | .id) // empty"
+          }
+
+          # Codex auto-reviews on open/ready but NOT on pushes — ask for a
+          # re-review when a fix commit lands. If Codex ignores bot-authored
+          # mentions this is a no-op and we fall through to the timeout path.
+          if [ "${{ github.event.action }}" = "synchronize" ] && [ -z "$(review_id_for_head)" ]; then
+            gh api "repos/${REPO}/issues/${PR}/comments" -f body="@codex review" >/dev/null || true
+            echo "Posted '@codex review' to request a re-review of the new commit."
+          fi
+
+          DEADLINE=$((SECONDS + 480))
+          RID=""
+          while [ ${SECONDS} -lt ${DEADLINE} ]; do
+            RID="$(review_id_for_head)"
+            [ -n "${RID}" ] && break
+            sleep 20
+          done
+
+          if [ -z "${RID}" ]; then
+            echo "::warning::No Codex review for ${HEAD_SHA} within the window — passing (advisory fallback; repo may not be connected to Codex Cloud)."
+            exit 0
+          fi
+
+          # Give inline finding comments a moment to finish landing.
+          sleep 15
+
+          PATTERN='\[BLOCKER\]|badge/P1|P1 Badge'
+          INLINE=$(gh api "repos/${REPO}/pulls/${PR}/comments" --paginate \
+            --jq ".[] | select(.pull_request_review_id == ${RID}) | .body" \
+            | grep -cE "${PATTERN}" || true)
+          BODY=$(gh api "repos/${REPO}/pulls/${PR}/reviews/${RID}" --jq '.body' \
+            | grep -cE "${PATTERN}" || true)
+
+          if [ "$((INLINE + BODY))" -gt 0 ]; then
+            echo "::error::Codex review reports P1/[BLOCKER] finding(s) on ${HEAD_SHA} (inline hits: ${INLINE}). Auto-fix must push a fix commit; this check re-runs on the new head until Codex is green."
+            exit 1
+          fi
+          echo "Codex review is green for ${HEAD_SHA}."
