@@ -77,8 +77,8 @@ Compatibility below).
 
 ## Eval set
 
-Repos (owner-confirmed): **rpa** (small, markdown/plugin), **Plaintalk**
-(repo TBD: frontend/widget/worker), **NeoMenu**.
+Repos (owner-confirmed): **rpa** (small, markdown/plugin),
+**livekit-voice-agent** (active production repo), **NeoMenu**.
 
 **Development set (visible):** 4–5 tasks used while building the candidate.
 **Sealed holdout:** 4–5 tasks authored in a **separate session** (not by the
@@ -159,7 +159,7 @@ Before candidate runs count:
 
 ## Privacy
 
-Plaintalk and NeoMenu are private. Raw outputs, ground-truth notes, real
+livekit-voice-agent and NeoMenu are private. Raw outputs, ground-truth notes, real
 paths, and code snippets from private repos are **not** committed to this
 public repo. The public results doc carries only aggregated metrics and
 sanitized examples; raw run artifacts stay in a private location.
@@ -176,7 +176,7 @@ sanitized examples; raw run artifacts stay in a private location.
 ## Sequence
 
 1. Prerequisites 1–4.
-2. Owner picks the Plaintalk repo; ground-truth notes for the dev set.
+2. Ground-truth notes for the dev set.
 3. Baseline runs recorded (all arms' capture fields).
 4. Candidate implementation frozen; holdout unsealed; candidate + third-arm
    runs recorded.
@@ -188,8 +188,8 @@ sanitized examples; raw run artifacts stay in a private location.
 
 ## Owner decisions (2026-07-26)
 
-1. **Eval repos**: rpa, Plaintalk (which of frontend/widget/worker — TBD),
-   NeoMenu.
+1. **Eval repos**: rpa, livekit-voice-agent (confirmed 2026-07-26, replacing
+   the earlier Plaintalk option), NeoMenu.
 2. **Push flow**: branches in `dsmolchanov/rpa`; the rewrite PR goes through
    the normal Codex review gate like any other PR (advisory, see above).
 3. **Blind scorer**: separate model session (see Scoring).
