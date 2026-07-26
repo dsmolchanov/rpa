@@ -48,6 +48,8 @@ EXCLUDED_PARTS = {".git", "node_modules"}
 FIXTURES_REL = Path("tests/fixtures/docs-validate")
 
 LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
+# Inline code spans with equal-length backtick delimiters of any length.
+CODE_SPAN_RE = re.compile(r"(`+)(?:(?!\1).)*?\1")
 
 
 def _has_link_opener(line, j):
@@ -343,7 +345,8 @@ def _heading_anchors(path, cache):
         stripped = line.strip()
         indent = len(line) - len(line.lstrip(" "))
         if fence is None and indent < 4 and stripped.startswith(("```", "~~~")):
-            fence = stripped[:3]
+            marker_char = stripped[0]
+            fence = marker_char * (len(stripped) - len(stripped.lstrip(marker_char)))
             prev_paragraph = None
             continue
         if fence is not None:
@@ -416,7 +419,10 @@ def check_links(root, errors, exclude_fixtures=True):
                 and (indent < 4 or list_context)
                 and stripped_line.startswith(("```", "~~~"))
             ):
-                fence = stripped_line[:3]
+                marker_char = stripped_line[0]
+                fence = marker_char * (
+                    len(stripped_line) - len(stripped_line.lstrip(marker_char))
+                )
                 prev_blank = False
                 continue
             if fence is not None:
@@ -452,7 +458,7 @@ def check_links(root, errors, exclude_fixtures=True):
         for line in content_lines:
             if REF_DEF_RE.match(line):
                 continue
-            stripped = re.sub(r"`[^`]*`", "", line)  # ignore inline code spans
+            stripped = CODE_SPAN_RE.sub("", line)  # ignore inline code spans
             for target in _iter_inline_targets(stripped):
                 _check_target(target, path, root, errors, anchor_cache)
             for text_part, ref_id in REF_USE_RE.findall(stripped):
