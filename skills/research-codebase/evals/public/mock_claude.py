@@ -74,6 +74,7 @@ def emit_nodes(model, main_effort, sub_effort):
     main = {"type": "node", "model": model, "tool_calls": 7,
             "usage": {"input_tokens": 100, "output_tokens": 50}}
     sub = {"type": "node", "model": model, "subagent": True, "tool_calls": 5,
+           "subagent_id": f"mock-sub-{uuid.uuid4().hex[:6]}",
            "usage": {"input_tokens": 40, "output_tokens": 20}}
     if main_effort is not None:
         main["effort"] = main_effort
@@ -104,16 +105,29 @@ def emit_real_stream(model, session_id):
                       "content": [{"type": "tool_use", "id": f"toolu_{i}",
                                    "name": "Read", "input": {}}
                                   for i in range(7)]}})
+    # TWO messages from ONE subagent (same parent_tool_use_id): the runner
+    # must count one distinct spawned subagent, not two, while still
+    # summing both messages' usage into the subagent subtotal.
     emit({"type": "assistant", "session_id": session_id,
           "parent_tool_use_id": "toolu_0",
           "message": {"model": model,
-                      "usage": {"input_tokens": 20,
-                                "cache_creation_input_tokens": 12,
-                                "cache_read_input_tokens": 8,
-                                "output_tokens": 20},
+                      "usage": {"input_tokens": 12,
+                                "cache_creation_input_tokens": 6,
+                                "cache_read_input_tokens": 2,
+                                "output_tokens": 10},
                       "content": [{"type": "tool_use", "id": f"toolu_s{i}",
                                    "name": "Grep", "input": {}}
-                                  for i in range(5)]}})
+                                  for i in range(3)]}})
+    emit({"type": "assistant", "session_id": session_id,
+          "parent_tool_use_id": "toolu_0",
+          "message": {"model": model,
+                      "usage": {"input_tokens": 8,
+                                "cache_creation_input_tokens": 6,
+                                "cache_read_input_tokens": 6,
+                                "output_tokens": 10},
+                      "content": [{"type": "tool_use", "id": f"toolu_s{i}",
+                                   "name": "Read", "input": {}}
+                                  for i in range(3, 5)]}})
     write_artifact()
     emit({"type": "result", "subtype": "success", "session_id": session_id,
           "result": "MOCK-VERDICT: coverage 7/10, evidence 9/10"})
@@ -148,6 +162,12 @@ def main():
     if args.mode == "infra-crash":
         print("mock backend crashed", file=sys.stderr)
         sys.exit(3)
+    if args.mode == "slow-no-artifact":
+        # Burns most of a small run-level deadline per session, never makes
+        # an artifact: proves continuations share ONE deadline instead of
+        # each getting the full timeout again.
+        time.sleep(1.2)
+        args.mode = "no-artifact"
     if args.mode == "garbage":
         print("this is not json")
         sys.exit(0)
@@ -188,8 +208,11 @@ def main():
     else:
         write_artifact()
 
-    emit({"type": "result", "session_id": session_id,
-          "result": "MOCK-VERDICT: coverage 7/10, evidence 9/10"})
+    result_text = "MOCK-VERDICT: coverage 7/10, evidence 9/10"
+    if args.mode == "silent-stop" and not args.resume:
+        # Ritual stop: a question-shaped pause instead of proceeding.
+        result_text = "Ready to research the mock subsystem. Shall I proceed?"
+    emit({"type": "result", "session_id": session_id, "result": result_text})
 
 
 if __name__ == "__main__":

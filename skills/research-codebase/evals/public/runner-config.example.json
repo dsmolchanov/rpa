@@ -33,5 +33,6 @@
   "_workflow_abort_exit_codes_note": "Backend exit codes that mean the evaluated workflow itself gave up (counted as workflow_failure, never rerun). Any other nonzero exit is infra_failure (rerun). Real values for the pinned claude CLI are established during the real-backend preflight; leave empty until then.",
   "max_infra_retries": 2,
   "_max_infra_retries_note": "Infrastructure failures invalidate the run and are re-executed automatically up to this many additional attempts; every attempt's record is written. Workflow failures are counted, never replaced.",
-  "timeout_seconds": 3600
+  "timeout_seconds": 3600,
+  "_timeout_seconds_note": "Run-level deadline shared by the initial session and every driver continuation — resumed sessions receive only the remaining time, never a fresh full timeout."
 }

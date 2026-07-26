@@ -132,7 +132,8 @@ def run_preflight():
             "tree-wide accounting (main/subagent/tree match declared)",
             acc.get("main") == EXPECTED_MAIN
             and acc.get("subagents") == EXPECTED_SUB
-            and acc.get("tree") == EXPECTED_TREE,
+            and acc.get("tree") == EXPECTED_TREE
+            and acc.get("subagents_spawned") == 1,
             notes, json.dumps(acc.get("tree")))
         ok &= check(
             "per-node model capture and validation",
@@ -229,6 +230,10 @@ def run_preflight():
             and record.get("accounting", {}).get("subagents") == EXPECTED_SUB
             and record.get("effort_capture") == "command_pin",
             notes, f"effort_capture={record.get('effort_capture')}")
+        ok &= check(
+            "distinct subagents counted (two messages, one spawned subagent)",
+            record.get("accounting", {}).get("subagents_spawned") == 1,
+            notes)
 
         config, _ = build_config(ws, "normal")
         config["backend_cmd"] = [
@@ -309,6 +314,14 @@ def run_preflight():
         ok &= check("workflow failure classified (timeout, not replaced)",
                     record["status"] == "workflow_failure", notes)
 
+        record, _, _, _ = run_case(ws, "slow-no-artifact", timeout=2)
+        ok &= check(
+            "run-level deadline shared across continuations (no reset)",
+            record["status"] == "workflow_failure"
+            and record.get("wall_seconds", 99) < 3
+            and record["interventions"] == 1,
+            notes, f"wall={record.get('wall_seconds')}")
+
         record, _, _, _ = run_case(ws, "no-artifact", seed_research=True)
         ok &= check(
             "pre-existing artifacts ignored (seeded doc is not this run's output)",
@@ -329,6 +342,13 @@ def run_preflight():
         ok &= check(
             "driver continuation (ritual stop answered, counted)",
             record["status"] == "completed" and record["interventions"] == 1,
+            notes)
+        stops = record.get("interventions_log", [])
+        ok &= check(
+            "pre-artifact stop response preserved and classified",
+            len(stops) == 1
+            and "Shall I proceed" in stops[0].get("response", "")
+            and stops[0].get("classification") == "question",
             notes)
 
         gt_only = ws / "task-gt-only.md"

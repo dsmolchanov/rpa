@@ -43,7 +43,11 @@ Capability map (each proven by `--preflight` before any scored run):
      preserve tree-wide accounting — including nodes harvested from the
      partial transcript of a timed-out or aborted session.
   7. tree-wide accounting            — tokens and tool calls are summed over
-     every transcript node, main-context and subagent subtotals.
+     every transcript node, main-context and subagent subtotals, plus a
+     `subagents_spawned` count of DISTINCT subagent identities (several
+     messages from one subagent are not several subagents). One run-level
+     deadline (`timeout_seconds`) is shared by the initial session and all
+     continuations, so stop-prone arms cannot draw extra compute.
   8. artifact freshness              — only documents created or modified
      during the run count; pre-existing research docs are ignored.
   9. anonymization                   — scored copies carry a random run id
@@ -323,6 +327,7 @@ def _node_from_event(event):
             "output_tokens": int(usage.get("output_tokens", 0)),
             "tool_calls": int(event.get("tool_calls", 0)),
             "subagent": bool(event.get("subagent", False)),
+            "subagent_id": event.get("subagent_id"),
         }
     if event.get("type") == "assistant" and isinstance(event.get("message"), dict):
         message = event["message"]
@@ -348,6 +353,10 @@ def _node_from_event(event):
             "output_tokens": int(usage.get("output_tokens", 0) or 0),
             "tool_calls": tool_calls,
             "subagent": event.get("parent_tool_use_id") is not None,
+            # Identity, not just a boolean: several messages from one
+            # subagent must stay distinguishable from one message each
+            # from several subagents, or "subagents spawned" is unmeasurable.
+            "subagent_id": event.get("parent_tool_use_id"),
         }
     return None
 
@@ -411,6 +420,11 @@ def account(nodes):
         key: totals["main"][key] + totals["subagents"][key]
         for key in totals["main"]
     }
+    distinct = {n.get("subagent_id") for n in nodes
+                if n["subagent"] and n.get("subagent_id")}
+    anonymous = sum(1 for n in nodes
+                    if n["subagent"] and not n.get("subagent_id"))
+    totals["subagents_spawned"] = len(distinct) + anonymous
     return totals
 
 
@@ -485,6 +499,22 @@ def validate_arm_parity(config):
         )
 
 
+def classify_stop(response):
+    """A pre-artifact stop is preserved verbatim and mechanically tagged so
+    the analysis stage can count ritual stops (question-shaped pauses)
+    against the zero-ritual-stop pass bar. Final semantic classification
+    belongs to the sealed analysis, not the harness — this tag only keeps
+    stops distinguishable and reviewable."""
+    text = (response or "").strip()
+    if not text:
+        kind = "empty"
+    elif "?" in text:
+        kind = "question"
+    else:
+        kind = "statement"
+    return {"response": text, "classification": kind}
+
+
 def snapshot_research(worktree):
     research = Path(worktree) / "thoughts" / "shared" / "research"
     if not research.is_dir():
@@ -536,6 +566,7 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1):
         "effort": arm.get("effort", "default"),
         "status": None,
         "interventions": 0,
+        "interventions_log": [],
         "attempt": attempt,
     }
     out = Path(output_dir)
@@ -574,30 +605,43 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1):
         abort_exits = tuple(config.get("workflow_abort_exit_codes", ()))
         before = snapshot_research(worktree)
         effort_modes = set()
+        started = time.time()
+        # ONE run-level deadline shared by the initial session and every
+        # continuation: a per-session reset would grant stop-prone arms up
+        # to (1 + MAX_CONTINUATIONS)x the registered compute ceiling.
+        deadline = started + config["timeout_seconds"]
 
         def _spawn(prompt_text, resume=None):
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                raise WorkflowFailure(
+                    f"run-level deadline of {config['timeout_seconds']}s "
+                    f"exhausted before the next session could start"
+                )
             # A timeout/abort WorkflowFailure carries the partial transcript:
             # harvest its nodes before propagating so the counted failure
             # keeps the cost it already incurred.
             try:
                 return spawn_session(cmd, prompt_text, worktree, env,
-                                     config["timeout_seconds"], resume=resume,
+                                     remaining, resume=resume,
                                      workflow_abort_exits=abort_exits)
             except WorkflowFailure as wf:
                 all_nodes.extend(parse_nodes_tolerant(wf.stdout))
                 raise
 
-        started = time.time()
         stdout = _spawn(prompt)
-        session_id, nodes, _ = parse_transcript(stdout)
+        session_id, nodes, response = parse_transcript(stdout)
         validate_models(nodes, arm["model"])
         effort_modes.add(validate_efforts(nodes, arm.get("effort", "default")))
         all_nodes.extend(nodes)
         artifact = find_new_artifact(worktree, before)
         while artifact is None and record["interventions"] < MAX_CONTINUATIONS:
             record["interventions"] += 1
+            # The pre-artifact response IS the ritual-stop evidence: keep it
+            # verbatim and tagged, or stops are uncountable afterwards.
+            record["interventions_log"].append(classify_stop(response))
             stdout = _spawn(CONTINUATION_MESSAGE, resume=session_id)
-            session_id, nodes, _ = parse_transcript(stdout)
+            session_id, nodes, response = parse_transcript(stdout)
             validate_models(nodes, arm["model"])
             effort_modes.add(
                 validate_efforts(nodes, arm.get("effort", "default")))

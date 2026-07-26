@@ -17,7 +17,7 @@ installation (`docs/conventions.md` §1; pilot plan, "Atomic seal").
 - `runner-config.example.json` — configuration shape; the filled copy (real
   installation paths + hashes) lives in the private eval workspace.
 
-Capability → proof map (each row is backed by named preflight checks; 40 checks total):
+Capability → proof map (each row is backed by named preflight checks; 43 checks total):
 
 | Capability (plan, prereq 5) | Runner mechanism |
 |---|---|
@@ -29,8 +29,9 @@ Capability → proof map (each row is backed by named preflight checks; 40 check
 | Clean profile | fresh per-run `CLAUDE_CONFIG_DIR` containing only `settings.json` + the mounted installation |
 | Worktree isolation | disposable detached `git worktree` at the task's pinned `target-sha`, verified clean and matching, removed after the run |
 | Prompt extraction | only the `## Task prompt` section reaches the session; the marker is required unconditionally — any task without it is refused, never sent whole |
-| Infra vs workflow failure | `InfraFailure` (crash/unparseable/wrong sha) is invalid and **automatically re-executed** (`run_task_with_retries`, bounded by `max_infra_retries`) vs `WorkflowFailure` (timeout/no artifact/registered abort exit → counted, never replaced); `workflow_abort_exit_codes` registers backend exits that mean the workflow itself gave up; failed-run records preserve tree-wide accounting, including nodes harvested from the partial transcript of a timed-out or aborted session |
-| Tree-wide accounting | `account()` sums tokens/tool calls per node, main vs subagent subtotals |
+| Infra vs workflow failure | `InfraFailure` (crash/unparseable/wrong sha) is invalid and **automatically re-executed** (`run_task_with_retries`, bounded by `max_infra_retries`) vs `WorkflowFailure` (timeout/no artifact/registered abort exit → counted, never replaced); `workflow_abort_exit_codes` registers backend exits that mean the workflow itself gave up; failed-run records preserve tree-wide accounting, including nodes harvested from the partial transcript of a timed-out or aborted session. `timeout_seconds` is a **run-level deadline** shared by the initial session and every continuation — a per-session reset would grant stop-prone arms extra compute |
+| Tree-wide accounting | `account()` sums tokens/tool calls per node, main vs subagent subtotals, plus `subagents_spawned` — a count of **distinct** subagent identities (several messages from one subagent ≠ several subagents) |
+| Ritual-stop capture | every pre-artifact response is preserved verbatim in `interventions_log` and mechanically tagged (`question`/`statement`/`empty`), so ritual stops stay countable against the zero-ritual-stop pass bar |
 | Artifact freshness | pre-run snapshot of `thoughts/shared/research/`; only new/modified docs count |
 | Anonymization | scored copy gets random run id + masked fingerprint frontmatter; score mode enforces blinding at its own boundary — raw `run-*-raw.md` artifacts and any document with unmasked fingerprint fields are refused |
 | Fresh pinned judge sessions | `--score` = one new session + profile per judge call via `judge_backend_cmd` (must be **mount-free** — an `{installation}` placeholder in the judge command is refused); judge model/effort pinned via `judge_model`/`judge_effort` and validated per node; the judge's **full response text is preserved** as `judge-<scoring_id>-<n>.json` — the per-invocation id keeps separate scorer/verifier passes from overwriting each other |
