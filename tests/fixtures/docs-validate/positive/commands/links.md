@@ -16,3 +16,10 @@ Paren dest [p](./ok_(v2).md).
 ~~~
 fenced [broken](./ghost.md) link ignored
 ~~~
+
+Setext Title
+============
+
+Setext link [s](#setext-title), spaced ref [w][foo bar].
+
+[foo   bar]: ./ok.md

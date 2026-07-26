@@ -234,29 +234,57 @@ def check_json_manifests(root, errors):
 
 
 def _heading_anchors(path, cache):
-    """GitHub-style anchor IDs for a markdown file's ATX headings."""
+    """GitHub-style anchor IDs for a markdown file's headings, following
+    Markdown heading syntax: ATX (1-6 `#` + whitespace, <=3 leading spaces)
+    and Setext (paragraph line underlined with `=` or `-`). Indented code
+    (>=4 spaces), fenced code, and `#text` without a following space are
+    not headings. YAML frontmatter is skipped."""
     if path in cache:
         return cache[path]
     anchors, counts = set(), {}
+
+    def add(text):
+        text = re.sub(r"`([^`]*)`", r"\1", text)
+        text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
+        anchor = re.sub(r"[^\w\- ]", "", text.lower()).strip().replace(" ", "-")
+        if not anchor:
+            return
+        n = counts.get(anchor, 0)
+        counts[anchor] = n + 1
+        anchors.add(anchor if n == 0 else f"{anchor}-{n}")
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    start = 0
+    if lines and lines[0].strip() == "---":
+        for i in range(1, len(lines)):
+            if lines[i].strip() == "---":
+                start = i + 1
+                break
     fence = None
-    for line in path.read_text(encoding="utf-8").splitlines():
+    prev_paragraph = None
+    for line in lines[start:]:
         stripped = line.strip()
         if fence is None and stripped.startswith(("```", "~~~")):
             fence = stripped[:3]
+            prev_paragraph = None
             continue
         if fence is not None:
             if stripped.startswith(fence):
                 fence = None
             continue
-        if not stripped.startswith("#"):
+        if len(line) - len(line.lstrip(" ")) >= 4:
+            prev_paragraph = None  # indented code block line
             continue
-        text = stripped.lstrip("#").strip()
-        text = re.sub(r"`([^`]*)`", r"\1", text)
-        text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
-        anchor = re.sub(r"[^\w\- ]", "", text.lower()).strip().replace(" ", "-")
-        n = counts.get(anchor, 0)
-        counts[anchor] = n + 1
-        anchors.add(anchor if n == 0 else f"{anchor}-{n}")
+        atx = re.match(r"^ {0,3}#{1,6}(?:\s+(.*?))?\s*#*\s*$", line)
+        if atx:
+            add(atx.group(1) or "")
+            prev_paragraph = None
+            continue
+        if prev_paragraph and re.match(r"^ {0,3}(=+|-+)\s*$", line):
+            add(prev_paragraph)
+            prev_paragraph = None
+            continue
+        prev_paragraph = stripped or None
     cache[path] = anchors
     return anchors
 
@@ -308,7 +336,8 @@ def check_links(root, errors, exclude_fixtures=True):
             content_lines.append(line)
             def_match = REF_DEF_RE.match(line)
             if def_match:
-                definitions[def_match.group(1).strip().lower()] = def_match.group(2)
+                label = re.sub(r"\s+", " ", def_match.group(1)).strip().lower()
+                definitions[label] = def_match.group(2)
         for ref_id, target in definitions.items():
             if target.startswith("<") and target.endswith(">"):
                 target = target[1:-1]
@@ -320,7 +349,7 @@ def check_links(root, errors, exclude_fixtures=True):
             for target in INLINE_LINK_RE.findall(stripped):
                 _check_target(target, path, root, errors, anchor_cache)
             for text_part, ref_id in REF_USE_RE.findall(stripped):
-                key = (ref_id or text_part).strip().lower()
+                key = re.sub(r"\s+", " ", ref_id or text_part).strip().lower()
                 if key and key not in definitions:
                     errors.append(
                         f"{path.relative_to(root)}: undefined link reference `{ref_id or text_part}`"
