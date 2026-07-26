@@ -67,10 +67,13 @@ baseline remains agentic grep/glob — precise and never stale.
 1. **Layer 4 is already ours.** `thoughts/` is the HumanLayer pattern and
    matches SOTA; keep and strengthen (it is the review surface: ~200-line
    plans instead of ~2000-line diffs).
-2. **Kernel/adapter mapping gets concrete.** AGENTS.md is the cross-tool
-   kernel carrier (Codex reads it natively; Claude Code via `@AGENTS.md`
-   import from CLAUDE.md). This resolves how the platform-neutral kernel of
-   conventions v0.1 §1 reaches both harnesses without duplication.
+2. **Kernel/adapter mapping gets concrete.** Reusable workflow kernels are
+   carried by **skill packages** (`skills/<workflow>/` — see
+   `docs/conventions.md` §1); AGENTS.md carries only the durable-rules
+   layer (authority boundaries, conventions, review/reporting policy) and
+   reaches both harnesses without duplication — Codex reads it natively,
+   Claude Code via `@AGENTS.md` import from CLAUDE.md. AGENTS.md is not a
+   workflow carrier.
 3. **The plugin should assume/bootstrap a target-repo ontology** rather than
    grow its own map format: root AGENTS.md (+ CLAUDE.md importing it),
    optional ARCHITECTURE.md for larger repos, nested files in monorepos.

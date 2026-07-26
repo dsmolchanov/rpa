@@ -126,7 +126,8 @@ modern models?
 
 ## Pass bar (pre-registered — fixed before any baseline run)
 
-Candidate passes iff, on the holdout set:
+Deltas below are computed by the pre-registered aggregation and pairing rule
+in Scoring. Candidate passes iff, on the holdout set:
 
 - quality delta ≥ **−0.25 / 10** vs baseline;
 - evidence accuracy delta ≥ **−2 п.п.**;
@@ -140,11 +141,23 @@ rewrite) is revised before retry.
 
 ## Scoring
 
-- **Blind scorer:** a separate model session receiving only the two (or
-  three) anonymized documents + the ground-truth note; no access to this
+- **Blind scorer:** a separate model session with no access to this
   session's context; does not know which arm produced which document.
+- **Every replicate is scored.** Every run of every arm produces a document,
+  and every document is blind-scored independently (anonymized, randomized
+  presentation order, one document per scoring call to avoid
+  cross-anchoring). No post-hoc selection of a "best" run per arm.
+- **Pre-registered aggregation and pairing:** per holdout task and arm, the
+  arm's quality and evidence-accuracy values are the **median across its
+  replicates**; the per-task delta is candidate median minus baseline
+  median; the holdout-level delta compared against the pass bar is the
+  **mean of per-task deltas**. A timed-out/aborted run produces no document
+  and is excluded from the median, but any such run already fails the
+  candidate arm via the pass bar. This rule is fixed here, before any
+  baseline run.
 - **Evidence verifier:** separate role from the scorer, read-only on the
-  frozen repo (see Metrics #2).
+  frozen repo (see Metrics #2); verifies references in **every** scored
+  document, aggregated by the same rule.
 
 ## Artifact compatibility gate
 
