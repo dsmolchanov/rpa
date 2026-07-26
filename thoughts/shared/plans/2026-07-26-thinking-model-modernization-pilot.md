@@ -136,6 +136,15 @@ observed. The minimal-skill third arm runs **only its two designated tasks**
 (see Third arm), 3 replicates each. A timed-out/aborted run counts as a
 failed run and is **not** replaced.
 
+**Driver script (pre-registered):** runs are driven by an automated harness,
+not a human. The first message is the task prompt. If an arm stops to greet,
+ask for the query, or request confirmation before the document exists (the
+frozen baseline's scripted greeting does exactly this), the driver
+immediately replies with the fixed continuation: *"Proceed with the research
+as specified; no additional constraints."* Driver replies add zero
+think-time, so wall-clock reflects agent work, not evaluator behavior; each
+such stop is still counted under the interventions metric.
+
 ## Third arm (2–3 tasks)
 
 A third variant — a **minimal skill** carrying only the artifact contract
@@ -147,6 +156,16 @@ configuration. This answers the strategic question the A/B alone cannot: is
 the value in the contract, or do six standing research agents still earn
 their keep with modern models?
 
+**Pre-registered third-arm decision rule:** the third arm uses the same
+replicate, median, and pairing rules as the A/B arms on its two tasks, and
+the same scorer/verifier. The fleet is judged **not earning its keep on the
+tested archetypes** iff, on **both** designated tasks, the minimal-skill
+arm's quality median is within **0.5/10** of the candidate's and its
+evidence accuracy within **2 п.п.**, while saving **≥30%** tokens or
+**≥20%** wall-time (per-task medians). This verdict is advisory — it shapes
+the next-phase design, not this pilot's pass/fail — but the criterion is
+fixed before the holdout is unsealed.
+
 ## Metrics
 
 1. **Quality** — blind rubric score (coverage, relevance, synthesis) against
@@ -154,11 +173,15 @@ their keep with modern models?
    package — dimensions, weights, score anchors, and scoring instructions —
    fixed before the holdout is unsealed (prerequisite 5).
 2. **Evidence accuracy** — a **separate evidence verifier** (read-only
-   access to the frozen repo@SHA, no knowledge of arms) checks whether cited
-   file:line references actually support the claims; % that do. For the
-   external-context task the verifier also gets the frozen external-source
-   snapshots from the holdout package and checks external claims and
-   citations against them.
+   access to the frozen repo@SHA, no knowledge of arms) identifies every
+   **verifiable claim** in the document. A claim counts as supported only if
+   it both carries a citation (file:line; external citation for the
+   external-context task) **and** the cited source actually supports it.
+   Evidence accuracy = supported claims / **all** verifiable claims — an
+   uncited verifiable claim counts as a failure, so omitting citations
+   lowers the score rather than raising it. For the external-context task
+   the verifier also gets the frozen external-source snapshots from the
+   holdout package and checks external claims and citations against them.
 3. **Critical factual errors** — claims contradicted by the frozen repo or
    the frozen external sources, classified by the **evidence verifier**
    using the error definition fixed in the sealed rubric (see the
