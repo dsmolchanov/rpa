@@ -215,7 +215,13 @@ Three passes, so discovery breadth and reporting policy stop conflicting:
 (Basis: `thoughts/shared/research/2026-07-26-repo-ontology-sota.md`.)
 
 A repo this plugin operates on is assumed to carry a four-layer ontology;
-the plugin's commands read the upper layers first and write only to layer 4:
+the plugin's commands read the upper layers first. **Research and
+documentation workflows write only to layer 4.** Implementation workflows
+(implement-plan, TDD, refactor, debt-apply) additionally write source code
+and tests within their granted authority (§6) — but their own workflow
+artifacts (plans, reports, session logs) still land in layer 4, and no
+workflow hand-edits layers 1–3 except through the drift-maintenance path
+below (proposed as reviewable changes):
 
 1. **Orientation (always loaded):** root `AGENTS.md` for durable repository
    rules, with `CLAUDE.md` importing it (`@AGENTS.md`) for Claude Code.
