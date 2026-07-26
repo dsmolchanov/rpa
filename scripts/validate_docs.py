@@ -311,10 +311,12 @@ class _DocIndex:
             inline = tokens[i + 1] if i + 1 < len(tokens) else None
             text = ""
             if inline is not None and inline.children:
+                # GitHub derives the slug from the full rendered heading
+                # text, including image alt text.
                 text = "".join(
                     child.content
                     for child in inline.children
-                    if child.type in ("text", "code_inline")
+                    if child.type in ("text", "code_inline", "image")
                 )
             anchor = re.sub(r"[^\w\- ]", "", text.lower()).strip().replace(" ", "-")
             if not anchor:

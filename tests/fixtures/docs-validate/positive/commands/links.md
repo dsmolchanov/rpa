@@ -69,3 +69,7 @@ Slug collisions:
 Link to third: [f](#foo-2).
 
 Valid HTML link <a href="./ok.md">ok</a> and external <a href="https://example.com">x</a>.
+
+# Intro ![icon](./icon.png) Guide
+
+Image-alt slug [g](#intro-icon-guide).
