@@ -50,7 +50,11 @@ INLINE_LINK_RE = re.compile(r"\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*
 REF_DEF_RE = re.compile(r"^\s*\[([^\]\^][^\]]*)\]:\s*(\S+)")
 REF_USE_RE = re.compile(r"\[([^\]]+)\]\[([^\]]*)\]")
 EXTERNAL_PREFIXES = ("http://", "https://", "mailto:", "tel:", "#")
-SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+")
+SEMVER_RE = re.compile(
+    r"^\d+\.\d+\.\d+"
+    r"(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?"
+    r"(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$"
+)
 
 
 def parse_frontmatter(text):
@@ -193,12 +197,18 @@ def check_json_manifests(root, errors):
 
 
 def _check_target(target, path, root, errors):
+    """Resolve exactly as Markdown renders: relative to the containing file,
+    or to the repo root only for absolute (`/`-prefixed) targets."""
     if target.startswith(EXTERNAL_PREFIXES):
         return
     clean = target.split("#", 1)[0]
     if not clean:
         return
-    if (path.parent / clean).exists() or (root / clean).exists():
+    if clean.startswith("/"):
+        resolved = root / clean.lstrip("/")
+    else:
+        resolved = path.parent / clean
+    if resolved.exists():
         return
     errors.append(f"{path.relative_to(root)}: broken relative link `{target}`")
 
