@@ -78,6 +78,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install validator dependency
+        run: python3 -m pip install --quiet pyyaml
       - name: Self-test validator against fixtures
         run: python3 scripts/validate_docs.py --self-test
       - name: Validate repository docs

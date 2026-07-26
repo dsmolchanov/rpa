@@ -4,23 +4,26 @@
 Checks (conventions.md §4 — a silently no-op gate is a defect, so every
 check fails loudly when its target set is empty):
 
-  1. commands/*.md   — at least one file; each has YAML frontmatter with a
-                       `description` key.
-  2. agents/*.md     — at least one file; each has frontmatter with `name`,
-                       `description`, and `tools` keys; `name` must match
-                       the filename.
-  3. skills/*/SKILL.md — each has frontmatter with `name` and `description`.
+  1. commands/*.md   — at least one file; each has YAML frontmatter (parsed
+                       with a real YAML parser) whose `description` is a
+                       non-empty string.
+  2. agents/*.md     — at least one file; frontmatter `name` (matching the
+                       filename), `description` (non-empty string), and
+                       `tools` (string or list).
+  3. skills/*/SKILL.md — frontmatter `name` and `description`.
   4. .claude-plugin/plugin.json and marketplace.json — valid JSON with the
                        required keys.
-  5. Relative markdown links (`[text](path.md)` and friends) in all *.md —
-                       the target must exist (checked relative to the file,
-                       then to the repo root). http(s)/mailto/# links are
-                       ignored.
+  5. Relative markdown links (`[text](path.md)`) in all *.md — the target
+                       must exist (relative to the file, then to the repo
+                       root). http(s)/mailto/# links are ignored.
 
-`--self-test` runs the validator against the bundled positive and negative
-fixtures (tests/fixtures/docs-validate/) and fails unless the positive tree
-passes and the negative tree is caught. Fixtures are excluded from normal
-validation.
+`--self-test` proves each check individually: the positive fixture tree
+must pass clean, and every `tests/fixtures/docs-validate/negative/<case>/`
+tree — complete except for exactly one seeded defect — must produce an
+error containing the substring recorded in that case's `EXPECTED` file.
+Fixtures are excluded from normal validation.
+
+Requires PyYAML (`python3 -m pip install pyyaml`).
 """
 
 import argparse
@@ -29,27 +32,55 @@ import re
 import sys
 from pathlib import Path
 
+try:
+    import yaml
+except ImportError:  # pragma: no cover
+    print(
+        "validate_docs.py requires PyYAML: python3 -m pip install pyyaml",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
 EXCLUDED_PARTS = {".git", "node_modules"}
 FIXTURES_REL = Path("tests/fixtures/docs-validate")
-
 LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
-KEY_RE = re.compile(r"^([A-Za-z][A-Za-z0-9_-]*):")
 
 
-def parse_frontmatter_keys(text):
-    """Return the set of top-level frontmatter keys, or None if there is no
-    well-formed frontmatter block."""
+def parse_frontmatter(text):
+    """Return (data, error). data is the parsed frontmatter dict on success;
+    error is a human-readable string on failure."""
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
+        return None, "missing or unterminated YAML frontmatter"
+    for idx in range(1, len(lines)):
+        if lines[idx].strip() == "---":
+            block = "\n".join(lines[1:idx])
+            try:
+                data = yaml.safe_load(block)
+            except yaml.YAMLError as exc:
+                return None, f"invalid YAML frontmatter ({exc.__class__.__name__}: {exc})"
+            if not isinstance(data, dict):
+                return None, "invalid YAML frontmatter (not a mapping)"
+            return data, None
+    return None, "missing or unterminated YAML frontmatter"
+
+
+def check_field(data, key, rel, errors, types=(str,), non_empty=True):
+    if key not in data:
+        errors.append(f"{rel}: frontmatter missing required key `{key}`")
         return None
-    keys = set()
-    for line in lines[1:]:
-        if line.strip() == "---":
-            return keys
-        match = KEY_RE.match(line)
-        if match:
-            keys.add(match.group(1))
-    return None  # unterminated block
+    value = data[key]
+    if not isinstance(value, types):
+        type_names = "/".join(t.__name__ for t in types)
+        errors.append(f"{rel}: frontmatter `{key}` must be {type_names}, got {type(value).__name__}")
+        return None
+    if non_empty and isinstance(value, str) and not value.strip():
+        errors.append(f"{rel}: frontmatter `{key}` is empty")
+        return None
+    if non_empty and isinstance(value, list) and not value:
+        errors.append(f"{rel}: frontmatter `{key}` is empty")
+        return None
+    return value
 
 
 def iter_markdown(root, exclude_fixtures=True):
@@ -62,29 +93,38 @@ def iter_markdown(root, exclude_fixtures=True):
         yield path
 
 
-def check_frontmatter_dir(root, subdir, required, errors, name_matches_file=False):
-    directory = root / subdir
+def check_commands(root, errors):
+    directory = root / "commands"
     files = sorted(directory.glob("*.md")) if directory.is_dir() else []
     if not files:
-        errors.append(f"{subdir}/: no markdown files found (empty target set fails the gate)")
+        errors.append("commands/: no markdown files found (empty target set fails the gate)")
         return
     for path in files:
-        keys = parse_frontmatter_keys(path.read_text(encoding="utf-8"))
         rel = path.relative_to(root)
-        if keys is None:
-            errors.append(f"{rel}: missing or unterminated YAML frontmatter")
+        data, err = parse_frontmatter(path.read_text(encoding="utf-8"))
+        if err:
+            errors.append(f"{rel}: {err}")
             continue
-        for key in required:
-            if key not in keys:
-                errors.append(f"{rel}: frontmatter missing required key `{key}`")
-        if name_matches_file and "name" in keys:
-            name_line = next(
-                (l for l in path.read_text(encoding="utf-8").splitlines() if l.startswith("name:")),
-                "",
-            )
-            declared = name_line.split(":", 1)[1].strip()
-            if declared and declared != path.stem:
-                errors.append(f"{rel}: frontmatter name `{declared}` != filename `{path.stem}`")
+        check_field(data, "description", rel, errors)
+
+
+def check_agents(root, errors):
+    directory = root / "agents"
+    files = sorted(directory.glob("*.md")) if directory.is_dir() else []
+    if not files:
+        errors.append("agents/: no markdown files found (empty target set fails the gate)")
+        return
+    for path in files:
+        rel = path.relative_to(root)
+        data, err = parse_frontmatter(path.read_text(encoding="utf-8"))
+        if err:
+            errors.append(f"{rel}: {err}")
+            continue
+        name = check_field(data, "name", rel, errors)
+        check_field(data, "description", rel, errors)
+        check_field(data, "tools", rel, errors, types=(str, list))
+        if isinstance(name, str) and name != path.stem:
+            errors.append(f"{rel}: frontmatter name `{name}` != filename `{path.stem}`")
 
 
 def check_skills(root, errors):
@@ -95,14 +135,13 @@ def check_skills(root, errors):
     if not skill_files:
         errors.append("skills/: directory exists but contains no */SKILL.md")
     for path in skill_files:
-        keys = parse_frontmatter_keys(path.read_text(encoding="utf-8"))
         rel = path.relative_to(root)
-        if keys is None:
-            errors.append(f"{rel}: missing or unterminated YAML frontmatter")
-        else:
-            for key in ("name", "description"):
-                if key not in keys:
-                    errors.append(f"{rel}: frontmatter missing required key `{key}`")
+        data, err = parse_frontmatter(path.read_text(encoding="utf-8"))
+        if err:
+            errors.append(f"{rel}: {err}")
+            continue
+        check_field(data, "name", rel, errors)
+        check_field(data, "description", rel, errors)
 
 
 def check_json_manifests(root, errors):
@@ -143,15 +182,13 @@ def check_links(root, errors, exclude_fixtures=True):
                     continue
                 if (path.parent / clean).exists() or (root / clean).exists():
                     continue
-                errors.append(
-                    f"{path.relative_to(root)}: broken relative link `{target}`"
-                )
+                errors.append(f"{path.relative_to(root)}: broken relative link `{target}`")
 
 
 def validate(root, exclude_fixtures=True):
     errors = []
-    check_frontmatter_dir(root, "commands", ("description",), errors)
-    check_frontmatter_dir(root, "agents", ("name", "description", "tools"), errors, name_matches_file=True)
+    check_commands(root, errors)
+    check_agents(root, errors)
     check_skills(root, errors)
     check_json_manifests(root, errors)
     check_links(root, errors, exclude_fixtures=exclude_fixtures)
@@ -160,22 +197,44 @@ def validate(root, exclude_fixtures=True):
 
 def self_test(repo_root):
     fixtures = repo_root / FIXTURES_REL
-    positive, negative = fixtures / "positive", fixtures / "negative"
-    for tree in (positive, negative):
-        if not tree.is_dir():
-            print(f"self-test: fixture tree missing: {tree}", file=sys.stderr)
-            return 1
+    positive = fixtures / "positive"
+    negative_root = fixtures / "negative"
+    failed = False
+
     pos_errors = validate(positive, exclude_fixtures=False)
     if pos_errors:
+        failed = True
         print("self-test FAILED: positive fixture should pass but produced:", file=sys.stderr)
         for err in pos_errors:
             print(f"  {err}", file=sys.stderr)
+    else:
+        print("self-test: positive fixture clean")
+
+    cases = sorted(d for d in negative_root.iterdir() if d.is_dir()) if negative_root.is_dir() else []
+    if not cases:
+        print("self-test FAILED: no negative fixture cases found", file=sys.stderr)
         return 1
-    neg_errors = validate(negative, exclude_fixtures=False)
-    if not neg_errors:
-        print("self-test FAILED: negative fixture passed but must be caught", file=sys.stderr)
+    for case in cases:
+        expected_file = case / "EXPECTED"
+        if not expected_file.is_file():
+            failed = True
+            print(f"self-test FAILED: {case.name}: missing EXPECTED file", file=sys.stderr)
+            continue
+        expected = expected_file.read_text(encoding="utf-8").strip()
+        errors = validate(case, exclude_fixtures=False)
+        matching = [e for e in errors if expected in e]
+        if matching:
+            print(f"self-test: negative/{case.name}: caught ({matching[0]})")
+        else:
+            failed = True
+            print(
+                f"self-test FAILED: negative/{case.name}: expected an error containing "
+                f"`{expected}`, got: {errors or '[no errors]'}",
+                file=sys.stderr,
+            )
+    if failed:
         return 1
-    print(f"self-test OK: positive clean, negative caught ({len(neg_errors)} errors)")
+    print(f"self-test OK: positive clean, {len(cases)} negative cases each caught by their check")
     return 0
 
 

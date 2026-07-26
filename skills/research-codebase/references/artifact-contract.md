@@ -61,6 +61,13 @@ replaced with GitHub permalinks
 
 ## Follow-up semantics
 
-Follow-up research appends to the same document and updates frontmatter
-`last_updated`, `last_updated_by`, and (on enhancement) an
-`enhancement_note` — see `/enhance_research`.
+Two distinct update flows, each with its own frontmatter metadata — both
+preserved exactly as in the baseline:
+
+- **Follow-up research** (`/research_codebase`, step 9 of the baseline):
+  appends a `## Follow-up Research [timestamp]` section to the same
+  document, updates `last_updated` and `last_updated_by`, and adds
+  `last_updated_note: "Added follow-up research for [brief description]"`.
+- **Enhancement** (`/enhance_research`): updates `last_updated` /
+  `last_updated_by` and records an `enhancement_note` describing the
+  synthesis applied.
