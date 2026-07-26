@@ -9,11 +9,18 @@ Capability map (each proven by `--preflight` before any scored run):
      installation tree against the registered SHA-256, mounts a copy into
      the run's profile, and passes its path to the backend via the
      `{installation}` placeholder in `backend_cmd`.
-  2. per-node model/effort capture   — every transcript node must record
-     its model and its effective effort; effort is pinned on the backend
-     command line via the `{effort}` placeholder (its absence is refused);
-     any node whose model or effort differs from the registered values —
-     or omits effort entirely — invalidates the run.
+  2. per-node model/effort capture   — every transcript node records its
+     model; effort is pinned on the backend command line via the `{effort}`
+     placeholder (its absence is refused). Nodes that report effort must
+     match the registered value (`per_node` capture); the real Claude
+     stream schema carries no per-node effort field, so an all-absent
+     transcript is accepted on the strength of the mandatory pin and
+     recorded as `command_pin` capture — partial reporting is broken
+     capture and invalidates the run. One shared model/effort is enforced
+     across ALL arms (`validate_arm_parity`): installation content is the
+     only permitted arm difference. Both the synthetic mock schema and the
+     real Claude headless stream (`assistant` events with nested usage,
+     `tool_use` blocks, `parent_tool_use_id` sidechains) are parsed.
   3. clean profile                   — each run uses a runner-created
      CLAUDE_CONFIG_DIR containing only `settings.json` and the mounted
      installation; ambient personal skills/config are never on the load
@@ -22,14 +29,16 @@ Capability map (each proven by `--preflight` before any scored run):
      detached git worktree at the task's pinned `target-sha` (verified),
      removed afterwards; a dirty/wrong checkout can never be researched.
   5. prompt extraction               — only the `## Task prompt` section of
-     a task file reaches the evaluated session; a task carrying ground
-     truth without that marker is refused.
+     a task file reaches the evaluated session; the marker is required
+     unconditionally, so a malformed task fails the run instead of
+     silently sending the whole file.
   6. infra vs workflow failure       — backend crashes / unparseable output
      / wrong SHA are `infra_failure` (run invalid, automatically
      re-executed up to `max_infra_retries` times); timeouts, registered
      abort exits, and missing-artifact completions are `workflow_failure`
      (counted per the failed-run rule, never replaced), and their records
-     preserve full tree-wide accounting for every completed session.
+     preserve tree-wide accounting — including nodes harvested from the
+     partial transcript of a timed-out or aborted session.
   7. tree-wide accounting            — tokens and tool calls are summed over
      every transcript node, main-context and subagent subtotals.
   8. artifact freshness              — only documents created or modified
@@ -38,9 +47,13 @@ Capability map (each proven by `--preflight` before any scored run):
      and masked fingerprint frontmatter; score mode refuses raw
      (fingerprint-bearing) documents at its own boundary, so a CLI mistake
      cannot leak identity to the blind judge.
- 10. fresh pinned judge sessions     — `--score` spawns each judge call as a
-     new backend session in its own fresh profile, and preserves the
-     judge's full response text on disk.
+ 10. fresh pinned judge sessions     — `--score` spawns each judge call as
+     a new backend session in its own fresh profile rooted OUTSIDE the
+     experiment tree, with an empty working directory and filesystem/exec/
+     web tools denied (JUDGE_SETTINGS), so a judge cannot unblind itself
+     by reading run artifacts; every full response is preserved on disk
+     under a unique per-invocation id (`judge-<scoring_id>-<n>.json`), so
+     separate scorer/verifier passes never overwrite each other.
 
 The backend command is configurable (`backend_cmd`); production uses the
 `claude` CLI in headless mode, while `--preflight` uses the bundled
@@ -58,6 +71,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -83,7 +97,25 @@ class InfraFailure(Exception):
 
 
 class WorkflowFailure(Exception):
-    """The evaluated workflow failed (timeout, no artifact): counted, never replaced."""
+    """The evaluated workflow failed (timeout, abort, no artifact): counted,
+    never replaced. `stdout` carries any partial transcript emitted before
+    the failure so the failed run's accounting is preserved."""
+
+    def __init__(self, message, stdout=None):
+        super().__init__(message)
+        self.stdout = stdout
+
+
+# Judges receive the anonymized document inline; filesystem, exec, and web
+# tools are denied in the judge profile so an unsandboxed judge cannot read
+# run artifacts (raw copies, run records) and unblind itself. Exact rule
+# names are validated during the real-backend preflight.
+JUDGE_SETTINGS = {
+    "permissions": {
+        "deny": ["Read", "Glob", "Grep", "Bash", "Write", "Edit",
+                 "NotebookEdit", "WebFetch", "WebSearch", "Task"]
+    }
+}
 
 
 def hash_tree(root):
@@ -115,13 +147,15 @@ def verify_installation(arm_name, arm_cfg):
     return actual
 
 
-def make_profile(workspace, label, installation_dir=None):
+def make_profile(workspace, label, installation_dir=None, settings=None):
     """Create a fresh profile directory used as CLAUDE_CONFIG_DIR so ambient
     personal skills/commands/settings are never on the load path. When an
     installation is given, mount a verified copy inside the profile."""
     profile = Path(workspace) / "profiles" / f"{label}-{uuid.uuid4().hex[:8]}"
     profile.mkdir(parents=True, exist_ok=False)
-    (profile / "settings.json").write_text("{}\n", encoding="utf-8")
+    (profile / "settings.json").write_text(
+        json.dumps(settings or {}) + "\n", encoding="utf-8"
+    )
     mount = None
     expected_entries = ["settings.json"]
     if installation_dir is not None:
@@ -158,19 +192,19 @@ def expand_backend_cmd(backend_cmd, mount, effort=None):
 
 
 def extract_task_prompt(task_path):
-    """Only the `## Task prompt` section may reach an evaluated session."""
+    """Only the `## Task prompt` section may reach an evaluated session.
+    The marker is required unconditionally: a malformed task must fail the
+    run, never silently alter the experiment by sending the whole file."""
     text = Path(task_path).read_text(encoding="utf-8")
     match = re.search(
         r"^## Task prompt\s*\n(.*?)(?=^## |\Z)", text, re.MULTILINE | re.DOTALL
     )
-    if match:
-        return match.group(1).strip(), text
-    if re.search(r"^## Ground truth", text, re.MULTILINE):
+    if not match or not match.group(1).strip():
         raise InfraFailure(
-            f"{task_path}: contains ground truth but no `## Task prompt` "
-            f"marker — refusing to send the whole file to an evaluated run"
+            f"{task_path}: no `## Task prompt` marker — refusing to send "
+            f"the file to an evaluated run"
         )
-    return text.strip(), text
+    return match.group(1).strip(), text
 
 
 def task_target_sha(task_text, task_path):
@@ -228,24 +262,73 @@ def spawn_session(cmd, prompt, cwd, env, timeout, resume=None,
             full, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout
         )
     except subprocess.TimeoutExpired as exc:
-        raise WorkflowFailure(f"session timed out after {timeout}s") from exc
+        partial = exc.stdout
+        if isinstance(partial, bytes):
+            partial = partial.decode("utf-8", errors="replace")
+        raise WorkflowFailure(
+            f"session timed out after {timeout}s", stdout=partial
+        ) from exc
     except OSError as exc:
         raise InfraFailure(f"backend could not be spawned: {exc}") from exc
     if proc.returncode != 0:
         detail = proc.stderr.strip()[:500]
         if proc.returncode in workflow_abort_exits:
+            # Counted experimental outcome: keep the partial transcript so
+            # the failed run's tree-wide accounting survives.
             raise WorkflowFailure(
-                f"workflow aborted (exit {proc.returncode}): {detail}"
+                f"workflow aborted (exit {proc.returncode}): {detail}",
+                stdout=proc.stdout,
             )
         raise InfraFailure(f"backend exited {proc.returncode}: {detail}")
     return proc.stdout
 
 
+def _node_from_event(event):
+    """Derive one accounting node from a stream event, or None.
+
+    Two schemas are understood:
+      * synthetic `type: "node"` records (the mock backend's declared
+        accounting), and
+      * the real Claude Code headless stream, where each `type: "assistant"`
+        event nests `model`/`usage` inside `message`, tool calls appear as
+        `tool_use` content blocks, and a non-null `parent_tool_use_id` marks
+        a subagent (sidechain) node. The real schema carries no per-node
+        effort field — see `validate_efforts` for how the pin is enforced.
+    """
+    if event.get("type") == "node":
+        usage = event.get("usage", {})
+        return {
+            "model": event.get("model"),
+            "effort": event.get("effort"),
+            "input_tokens": int(usage.get("input_tokens", 0)),
+            "output_tokens": int(usage.get("output_tokens", 0)),
+            "tool_calls": int(event.get("tool_calls", 0)),
+            "subagent": bool(event.get("subagent", False)),
+        }
+    if event.get("type") == "assistant" and isinstance(event.get("message"), dict):
+        message = event["message"]
+        usage = message.get("usage") or {}
+        content = message.get("content") or []
+        tool_calls = sum(
+            1 for block in content
+            if isinstance(block, dict) and block.get("type") == "tool_use"
+        )
+        return {
+            "model": message.get("model"),
+            "effort": event.get("effort"),
+            "input_tokens": int(usage.get("input_tokens", 0) or 0),
+            "output_tokens": int(usage.get("output_tokens", 0) or 0),
+            "tool_calls": tool_calls,
+            "subagent": event.get("parent_tool_use_id") is not None,
+        }
+    return None
+
+
 def parse_transcript(stdout):
     """Parse stream-json lines into accounting nodes plus the final response
-    text. Node fields: `model`, `usage.input_tokens`, `usage.output_tokens`,
-    `tool_calls`, `subagent`; `session_id` and optional `result` text on the
-    result line."""
+    text. Understands both the synthetic mock schema and the real Claude
+    headless stream (see `_node_from_event`); `session_id` comes from any
+    event carrying one, response text from the `result` event."""
     nodes, session_id, result_parts = [], None, []
     for line in stdout.splitlines():
         line = line.strip()
@@ -259,23 +342,33 @@ def parse_transcript(stdout):
             session_id = event["session_id"]
         if event.get("type") == "result" and event.get("result"):
             result_parts.append(str(event["result"]))
-        if event.get("type") == "node":
-            usage = event.get("usage", {})
-            nodes.append(
-                {
-                    "model": event.get("model"),
-                    "effort": event.get("effort"),
-                    "input_tokens": int(usage.get("input_tokens", 0)),
-                    "output_tokens": int(usage.get("output_tokens", 0)),
-                    "tool_calls": int(event.get("tool_calls", 0)),
-                    "subagent": bool(event.get("subagent", False)),
-                }
-            )
+        node = _node_from_event(event)
+        if node is not None:
+            nodes.append(node)
     if session_id is None:
         raise InfraFailure("backend output contained no session_id")
     if not nodes:
         raise InfraFailure("backend output contained no accounting nodes")
     return session_id, nodes, "\n".join(result_parts)
+
+
+def parse_nodes_tolerant(stdout):
+    """Best-effort node extraction from a partial transcript (timeout or
+    workflow abort): unparseable lines are skipped, nothing is required.
+    Used only to preserve accounting on already-failed runs."""
+    nodes = []
+    for line in (stdout or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        node = _node_from_event(event)
+        if node is not None:
+            nodes.append(node)
+    return nodes
 
 
 def account(nodes):
@@ -303,23 +396,32 @@ def validate_models(nodes, registered_model):
 
 
 def validate_efforts(nodes, registered_effort):
-    """Every node must report an effective effort matching the registered
-    one. A node that omits effort means the pin was neither applied nor
-    captured — that admits runtime drift, so the run is invalidated."""
-    missing = sum(1 for n in nodes if n.get("effort") in (None, ""))
-    if missing:
+    """Effort parity with two capture modes. Nodes that report an effective
+    effort must all match the registered value (`per_node` capture). The
+    real Claude headless schema exposes no per-node effort field, so a
+    transcript where NO node reports effort is accepted solely on the
+    strength of the mandatory command-line pin (`{effort}`, enforced by
+    `require_effort_pin` before any session is spawned) and recorded as
+    `command_pin` capture. A transcript where only SOME nodes report effort
+    is broken capture and invalidates the run. Returns the capture mode."""
+    reported = [n for n in nodes if n.get("effort") not in (None, "")]
+    if not reported:
+        return "command_pin"
+    if len(reported) != len(nodes):
         raise InfraFailure(
-            f"{missing} node(s) missing effective effort — effort must be "
-            f"pinned and captured per node; run invalidated"
+            f"{len(nodes) - len(reported)} of {len(nodes)} node(s) missing "
+            f"effective effort while others report it — broken effort "
+            f"capture; run invalidated"
         )
     bad = sorted({
-        str(n["effort"]) for n in nodes if n["effort"] != registered_effort
+        str(n["effort"]) for n in reported if n["effort"] != registered_effort
     })
     if bad:
         raise InfraFailure(
             f"effective effort(s) {bad} differ from registered "
             f"`{registered_effort}` — run invalidated"
         )
+    return "per_node"
 
 
 def require_effort_pin(cmd, what):
@@ -329,6 +431,21 @@ def require_effort_pin(cmd, what):
         raise InfraFailure(
             f"{what} must pin effort via the {{effort}} placeholder — "
             f"ambient/default effort is not an accepted pin"
+        )
+
+
+def validate_arm_parity(config):
+    """The registered protocol pins ONE runtime configuration: every arm
+    must share the same model and effort, so plugin/installation content is
+    the only difference between arms. Refuse mixed configs before any run."""
+    arms = config["arms"]
+    models = {arm.get("model") for arm in arms.values()}
+    efforts = {arm.get("effort", "default") for arm in arms.values()}
+    if len(models) > 1 or len(efforts) > 1:
+        raise InfraFailure(
+            f"arms differ in runtime configuration (models={sorted(map(str, models))}, "
+            f"efforts={sorted(map(str, efforts))}) — only installation "
+            f"content may differ between arms"
         )
 
 
@@ -391,6 +508,7 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1):
     all_nodes = []
     started = None
     try:
+        validate_arm_parity(config)
         record["installation_sha256"] = verify_installation(arm_name, arm)
         prompt, task_text = extract_task_prompt(task_path)
         entrypoint = arm.get("entrypoint")
@@ -413,25 +531,41 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1):
         env = backend_env(profile)
         abort_exits = tuple(config.get("workflow_abort_exit_codes", ()))
         before = snapshot_research(worktree)
+        effort_modes = set()
+
+        def _spawn(prompt_text, resume=None):
+            # A timeout/abort WorkflowFailure carries the partial transcript:
+            # harvest its nodes before propagating so the counted failure
+            # keeps the cost it already incurred.
+            try:
+                return spawn_session(cmd, prompt_text, worktree, env,
+                                     config["timeout_seconds"], resume=resume,
+                                     workflow_abort_exits=abort_exits)
+            except WorkflowFailure as wf:
+                all_nodes.extend(parse_nodes_tolerant(wf.stdout))
+                raise
+
         started = time.time()
-        stdout = spawn_session(cmd, prompt, worktree, env,
-                               config["timeout_seconds"],
-                               workflow_abort_exits=abort_exits)
+        stdout = _spawn(prompt)
         session_id, nodes, _ = parse_transcript(stdout)
         validate_models(nodes, arm["model"])
-        validate_efforts(nodes, arm.get("effort", "default"))
+        effort_modes.add(validate_efforts(nodes, arm.get("effort", "default")))
         all_nodes.extend(nodes)
         artifact = find_new_artifact(worktree, before)
         while artifact is None and record["interventions"] < MAX_CONTINUATIONS:
             record["interventions"] += 1
-            stdout = spawn_session(cmd, CONTINUATION_MESSAGE, worktree, env,
-                                   config["timeout_seconds"], resume=session_id,
-                                   workflow_abort_exits=abort_exits)
+            stdout = _spawn(CONTINUATION_MESSAGE, resume=session_id)
             session_id, nodes, _ = parse_transcript(stdout)
             validate_models(nodes, arm["model"])
-            validate_efforts(nodes, arm.get("effort", "default"))
+            effort_modes.add(
+                validate_efforts(nodes, arm.get("effort", "default")))
             all_nodes.extend(nodes)
             artifact = find_new_artifact(worktree, before)
+        if len(effort_modes) > 1:
+            raise InfraFailure(
+                "inconsistent effort capture across sessions — run invalidated"
+            )
+        record["effort_capture"] = effort_modes.pop()
         record["wall_seconds"] = round(time.time() - started, 3)
         record["accounting"] = account(all_nodes)
         record["nodes"] = all_nodes
@@ -536,28 +670,40 @@ def score(config, doc_paths, judge_prompt_path, output_dir):
     doc_texts = [assert_blind_scorable(doc) for doc in doc_paths]
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
+    # Unique per-invocation id: separate scorer and verifier passes into the
+    # same output directory must never overwrite each other's judge files.
+    scoring_id = uuid.uuid4().hex[:8]
     results = []
     for i, (doc, doc_text) in enumerate(zip(doc_paths, doc_texts)):
-        profile, _ = make_profile(output_dir, "judge")
+        # Each judge runs in its own root OUTSIDE the experiment tree, with
+        # an empty working directory: nothing above the cwd leads to run
+        # artifacts, and the judge profile denies filesystem/exec/web tools
+        # (JUDGE_SETTINGS), so the judge cannot unblind itself.
+        judge_root = Path(tempfile.mkdtemp(prefix="rpa-judge-"))
+        profile, _ = make_profile(judge_root, "judge", settings=JUDGE_SETTINGS)
+        workdir = judge_root / "workdir"
+        workdir.mkdir()
         env = backend_env(profile)
         prompt = judge_prompt + "\n\n---\n\n" + doc_text
         stdout = spawn_session(
-            judge_cmd, prompt, str(profile), env, config["timeout_seconds"]
+            judge_cmd, prompt, str(workdir), env, config["timeout_seconds"]
         )
         session_id, nodes, response = parse_transcript(stdout)
         if not response.strip():
             raise InfraFailure(f"judge session {session_id} returned no response text")
         validate_models(nodes, judge_model)
-        validate_efforts(nodes, judge_effort)
+        effort_capture = validate_efforts(nodes, judge_effort)
         result = {
             "doc": str(doc),
             "session_id": session_id,
             "profile": str(profile),
+            "cwd": str(workdir),
             "judge_model": judge_model,
+            "effort_capture": effort_capture,
             "response": response,
             "accounting": account(nodes),
         }
-        (out / f"judge-{i}.json").write_text(
+        (out / f"judge-{scoring_id}-{i}.json").write_text(
             json.dumps(result, indent=2) + "\n", encoding="utf-8"
         )
         results.append(result)

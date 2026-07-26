@@ -68,17 +68,46 @@ def echo(name, value):
         (Path(echo_dir) / name).write_text(value or "", encoding="utf-8")
 
 
-def emit_nodes(model, effort):
-    """`effort=None` emits nodes without an effort field (missing-effort mode)."""
+def emit_nodes(model, main_effort, sub_effort):
+    """`None` for either effort emits that node without an effort field
+    (mixed-effort mode proves broken-capture rejection)."""
     main = {"type": "node", "model": model, "tool_calls": 7,
             "usage": {"input_tokens": 100, "output_tokens": 50}}
     sub = {"type": "node", "model": model, "subagent": True, "tool_calls": 5,
            "usage": {"input_tokens": 40, "output_tokens": 20}}
-    if effort is not None:
-        main["effort"] = effort
-        sub["effort"] = effort
+    if main_effort is not None:
+        main["effort"] = main_effort
+    if sub_effort is not None:
+        sub["effort"] = sub_effort
     emit(main)
     emit(sub)
+
+
+def emit_real_stream(model, session_id):
+    """Emit the real Claude Code headless stream schema with the same
+    declared accounting: `assistant` events with usage/model nested in
+    `message`, tool calls as `tool_use` content blocks, a non-null
+    `parent_tool_use_id` marking the subagent node, and a `result` event.
+    No per-node effort field — exactly like the real CLI."""
+    emit({"type": "system", "subtype": "init", "session_id": session_id,
+          "model": model})
+    emit({"type": "assistant", "session_id": session_id,
+          "parent_tool_use_id": None,
+          "message": {"model": model,
+                      "usage": {"input_tokens": 100, "output_tokens": 50},
+                      "content": [{"type": "tool_use", "id": f"toolu_{i}",
+                                   "name": "Read", "input": {}}
+                                  for i in range(7)]}})
+    emit({"type": "assistant", "session_id": session_id,
+          "parent_tool_use_id": "toolu_0",
+          "message": {"model": model,
+                      "usage": {"input_tokens": 40, "output_tokens": 20},
+                      "content": [{"type": "tool_use", "id": f"toolu_s{i}",
+                                   "name": "Grep", "input": {}}
+                                  for i in range(5)]}})
+    write_artifact()
+    emit({"type": "result", "subtype": "success", "session_id": session_id,
+          "result": "MOCK-VERDICT: coverage 7/10, evidence 9/10"})
 
 
 def main():
@@ -105,9 +134,6 @@ def main():
             sys.exit(3)
         args.mode = "normal"
 
-    if args.mode == "workflow-abort":
-        print("workflow aborted by evaluated agent", file=sys.stderr)
-        sys.exit(21)
     if args.mode == "infra-crash":
         print("mock backend crashed", file=sys.stderr)
         sys.exit(3)
@@ -119,16 +145,27 @@ def main():
         sys.exit(0)
 
     session_id = f"mock-{uuid.uuid4().hex[:8]}"
+
+    if args.mode == "real-stream":
+        emit_real_stream(args.model, session_id)
+        return
+
     emit({"type": "system", "session_id": session_id})
 
     model = "unregistered-model" if args.mode == "wrong-model" else args.model
     if args.mode == "wrong-effort":
-        effort = "low"
-    elif args.mode == "missing-effort":
-        effort = None
+        main_effort = sub_effort = "low"
+    elif args.mode == "mixed-effort":
+        main_effort, sub_effort = args.effort, None
     else:
-        effort = args.effort
-    emit_nodes(model, effort)
+        main_effort = sub_effort = args.effort
+    emit_nodes(model, main_effort, sub_effort)
+
+    if args.mode == "workflow-abort":
+        # Abort AFTER emitting accounting: the runner must preserve the
+        # partial transcript's cost on this counted workflow failure.
+        print("workflow aborted by evaluated agent", file=sys.stderr)
+        sys.exit(21)
 
     if args.mode == "silent-stop":
         # First call: greet-and-wait (no artifact). Only a resumed session

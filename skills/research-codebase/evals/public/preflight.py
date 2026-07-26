@@ -214,12 +214,21 @@ def run_preflight():
             and "effort" in record.get("failure", ""),
             notes)
 
-        record, _, _, _ = run_case(ws, "missing-effort")
+        record, _, _, _ = run_case(ws, "mixed-effort")
         ok &= check(
-            "nodes omitting effective effort rejected",
+            "broken effort capture rejected (only some nodes report effort)",
             record["status"] == "infra_failure"
-            and "missing effective effort" in record.get("failure", ""),
+            and "broken effort capture" in record.get("failure", ""),
             notes)
+
+        record, _, _, _ = run_case(ws, "real-stream")
+        ok &= check(
+            "real Claude stream schema parsed (assistant/result events)",
+            record["status"] == "completed"
+            and record.get("accounting", {}).get("tree") == EXPECTED_TREE
+            and record.get("accounting", {}).get("subagents") == EXPECTED_SUB
+            and record.get("effort_capture") == "command_pin",
+            notes, f"effort_capture={record.get('effort_capture')}")
 
         config, _ = build_config(ws, "normal")
         config["backend_cmd"] = [
@@ -240,6 +249,22 @@ def run_preflight():
             "workflow abort exit counted as workflow failure (not rerun)",
             record["status"] == "workflow_failure"
             and "aborted" in record.get("failure", ""),
+            notes)
+        ok &= check(
+            "workflow abort keeps partial-transcript accounting",
+            record.get("accounting", {}).get("tree") == EXPECTED_TREE
+            and len(record.get("nodes", [])) == 2,
+            notes, json.dumps(record.get("accounting", {}).get("tree")))
+
+        config, _ = build_config(ws, "normal")
+        config["arms"]["second"] = dict(config["arms"]["mock"], effort="low")
+        repo, par_sha = make_git_repo(ws, "arm-parity")
+        task = write_task(ws, "arm-parity", par_sha)
+        record = runner.run_task(config, "mock", task, repo, ws / "out-arm-parity")
+        ok &= check(
+            "arm runtime parity enforced (differing effort across arms refused)",
+            record["status"] == "infra_failure"
+            and "only installation content" in record.get("failure", ""),
             notes)
 
         record, _, _, _ = run_case(ws, "infra-crash")
@@ -294,6 +319,19 @@ def run_preflight():
         record = runner.run_task(config, "mock", gt_only, repo, ws / "out-gt-only")
         ok &= check(
             "ground-truth-only task refused (no prompt marker)",
+            record["status"] == "infra_failure"
+            and "refusing" in record.get("failure", ""),
+            notes)
+
+        no_marker = ws / "task-no-marker.md"
+        no_marker.write_text(
+            f"---\ntask-id: nm\ntarget-sha: {sha}\n---\n\nJust a bare question.\n",
+            encoding="utf-8",
+        )
+        record = runner.run_task(config, "mock", no_marker, repo,
+                                 ws / "out-no-marker")
+        ok &= check(
+            "marker-less task refused (prompt marker required unconditionally)",
             record["status"] == "infra_failure"
             and "refusing" in record.get("failure", ""),
             notes)
@@ -361,6 +399,22 @@ def run_preflight():
             len(judge_files) == 2
             and all("MOCK-VERDICT" in json.loads(
                 f.read_text(encoding="utf-8"))["response"] for f in judge_files),
+            notes)
+        iso_ok = True
+        for r in results:
+            cwd = Path(r["cwd"])
+            settings = json.loads(
+                (Path(r["profile"]) / "settings.json").read_text(encoding="utf-8"))
+            iso_ok &= not str(cwd).startswith(str(ws))
+            iso_ok &= list(cwd.iterdir()) == []
+            iso_ok &= bool(settings.get("permissions", {}).get("deny"))
+        ok &= check(
+            "blind judge isolated (empty cwd outside run tree, fs tools denied)",
+            iso_ok, notes)
+        runner.score(config, docs, judge, judge_out)
+        ok &= check(
+            "judge outputs never overwritten (unique id per score invocation)",
+            len(sorted(judge_out.glob("judge-*.json"))) == 4,
             notes)
 
     width = max(len(name) for name, _, _ in notes)
