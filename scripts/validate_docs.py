@@ -77,11 +77,27 @@ SEMVER_RE = re.compile(
 )
 INVOCATION_VALUES = {"user", "model", "both", "none"}
 PERMISSION_TOKENS = ("read_only", "workspace_write", "external")
+# permission-class grammar: `+`-separated class tokens, each optionally
+# qualified by a parenthesized scope, e.g. "read_only (target repo) +
+# workspace_write (thoughts/shared/research/ only)".
+PERMISSION_PART_RE = re.compile(
+    r"^(?:read_only|workspace_write|external)(?:\s*\([^()]*\))?$"
+)
 SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 # Reference-style usage in rendered TEXT (i.e. left unresolved by the parser).
 REF_USE_RE = re.compile(r"\[([^\]]+)\]\[([^\]]*)\]")
-# href/src attributes inside raw HTML tokens.
-HTML_ATTR_RE = re.compile(r"""(?:href|src)\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
+# href/src attributes inside raw HTML tokens (quoted or valid unquoted).
+HTML_ATTR_RE = re.compile(
+    r"""(?:href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))""",
+    re.IGNORECASE,
+)
+
+
+def _iter_html_targets(html):
+    for quoted_d, quoted_s, unquoted in HTML_ATTR_RE.findall(html):
+        target = quoted_d or quoted_s or unquoted
+        if target:
+            yield target
 
 _MD = MarkdownIt("commonmark")
 
@@ -204,26 +220,21 @@ def check_skills(root, errors):
         check_field(data, "description", rel, errors)
         permission = check_field(data, "permission-class", rel, errors)
         if isinstance(permission, str):
-            words = set(re.findall(r"[a-z_]+", permission))
-            if not words & set(PERMISSION_TOKENS):
-                errors.append(
-                    f"{rel}: frontmatter `permission-class` must contain at least one "
-                    f"complete token of {'/'.join(PERMISSION_TOKENS)}, got {permission!r}"
-                )
+            parts = [p.strip() for p in permission.split("+")]
+            for part in parts:
+                if not part or not PERMISSION_PART_RE.match(part):
+                    errors.append(
+                        f"{rel}: frontmatter `permission-class` part {part!r} must be "
+                        f"one of {'/'.join(PERMISSION_TOKENS)} with an optional "
+                        f"parenthesized qualifier"
+                    )
         invocation = check_field(data, "invocation", rel, errors)
-        if isinstance(invocation, str):
-            items = {part.strip() for part in invocation.split(",") if part.strip()}
-            bad = items - INVOCATION_VALUES
-            if not items or bad:
-                errors.append(
-                    f"{rel}: frontmatter `invocation` must be a comma-separated subset of "
-                    f"{sorted(INVOCATION_VALUES)}, got {invocation!r}"
-                )
-            elif "none" in items and len(items) > 1:
-                errors.append(
-                    f"{rel}: frontmatter `invocation` value `none` must be standalone, "
-                    f"got {invocation!r}"
-                )
+        if isinstance(invocation, str) and invocation.strip() not in INVOCATION_VALUES:
+            errors.append(
+                f"{rel}: frontmatter `invocation` must be exactly one of "
+                f"{sorted(INVOCATION_VALUES)} (`both` already expresses dual "
+                f"invocation), got {invocation!r}"
+            )
 
 
 def _require_json_str(data, key, rel_path, errors, pattern=None, pattern_desc=""):
@@ -371,7 +382,7 @@ def check_links(root, errors, exclude_fixtures=True):
         pending_refs = set()
         for tok in tokens:
             if tok.type == "html_block":
-                for target in HTML_ATTR_RE.findall(tok.content):
+                for target in _iter_html_targets(tok.content):
                     _check_target(target, path, root, errors, index)
                 continue
             if tok.type != "inline" or not tok.children:
@@ -386,7 +397,7 @@ def check_links(root, errors, exclude_fixtures=True):
                     if src:
                         _check_target(src, path, root, errors, index)
                 elif child.type == "html_inline":
-                    for target in HTML_ATTR_RE.findall(child.content):
+                    for target in _iter_html_targets(child.content):
                         _check_target(target, path, root, errors, index)
             # A reference-style usage the parser left as literal text means
             # its label has no definition. Scan the inline token's joined
