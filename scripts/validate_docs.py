@@ -229,6 +229,8 @@ def check_links(root, errors, exclude_fixtures=True):
             if def_match:
                 definitions[def_match.group(1).strip().lower()] = def_match.group(2)
         for ref_id, target in definitions.items():
+            if target.startswith("<") and target.endswith(">"):
+                target = target[1:-1]
             _check_target(target, path, root, errors)
         for line in content_lines:
             if REF_DEF_RE.match(line):
