@@ -2,7 +2,7 @@
 date: 2026-07-26
 topic: SOTA repository-ontology patterns for coding agents (July 2026)
 status: research complete
-informs: docs/conventions.md §11
+informs: docs/conventions.md §12
 ---
 
 # SOTA repository ontology for coding agents — research synthesis
