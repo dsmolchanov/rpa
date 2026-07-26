@@ -57,6 +57,16 @@ timeout path lets a PR pass without a review) — it is not a runtime eval.
 consumable by legacy `/create_plan` and `/enhance_research` (see
 Compatibility below).
 
+**Packaging:** the rewrite PR updates README Quick Install to copy the
+skill directory as well (`mkdir -p ~/.claude/skills && cp -R skills/*
+~/.claude/skills/`), so non-plugin installs receive the workflow kernel;
+plugin installs pick it up automatically. This **explicitly supersedes**
+roadmap item 18 ("defer skills migration",
+`thoughts/shared/plans/2026-06-10-plugin-improvement-roadmap.md`) for the
+research workflow family only — a supersession note is recorded in that
+roadmap. Other command families stay on the deferred decision until their
+own gates.
+
 ## Baseline
 
 - The **entire plugin** frozen at `a7de5f6000225b57eeee1a5c6c0131fb02656d4d`
