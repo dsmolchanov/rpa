@@ -371,6 +371,14 @@ def _normalize_ref_label(label):
     return re.sub(r"\s+", " ", label).strip().upper()
 
 
+def _preceding_backslashes(text, pos):
+    n, i = 0, pos - 1
+    while i >= 0 and text[i] == "\\":
+        n += 1
+        i -= 1
+    return n
+
+
 def check_links(root, errors, exclude_fixtures=True):
     index = _DocIndex()
     for path in iter_markdown(root, exclude_fixtures=exclude_fixtures):
@@ -417,17 +425,25 @@ def check_links(root, errors, exclude_fixtures=True):
             # here; consult the source. For explicit ids, match any
             # unescaped `[label][id]` occurrence positionally; implicit
             # refs fall back to literal counting.
+            # An occurrence counts as escaped only when the opener is
+            # preceded by an ODD run of backslashes (CommonMark parity:
+            # \\[ is an escaped backslash followed by a real opener).
             if ref_id:
-                unescaped = re.search(
-                    r"(?<!\\)\[[^\]]*\]\[" + re.escape(ref_id) + r"\]", body
-                )
-                if not unescaped:
-                    continue  # every source occurrence is escaped
+                pattern = re.compile(r"\[[^\]]*\]\[" + re.escape(ref_id) + r"\]")
+                if not any(
+                    _preceding_backslashes(body, m.start()) % 2 == 0
+                    for m in pattern.finditer(body)
+                ):
+                    continue  # every source occurrence is escaped (or absent)
             else:
                 literal = f"[{text_part}][]"
-                total = body.count(literal)
-                escaped = body.count("\\" + literal)
-                if total > 0 and total - escaped <= 0:
+                positions, start = [], 0
+                while (pos := body.find(literal, start)) != -1:
+                    positions.append(pos)
+                    start = pos + 1
+                if positions and not any(
+                    _preceding_backslashes(body, p) % 2 == 0 for p in positions
+                ):
                     continue
             errors.append(
                 f"{path.relative_to(root)}: undefined link reference "
