@@ -301,6 +301,30 @@ def run_preflight():
             and "hash mismatch" in record.get("failure", ""),
             notes)
 
+        config, _ = build_config(ws, "normal")
+        config["arms"]["mock"]["forbid_subagents"] = True
+        task = write_task(ws, "no-subagent", par_sha)
+        record = runner.run_task(config, "mock", task, repo,
+                                 ws / "out-no-subagent")
+        ok &= check(
+            "ablation no-subagent policy enforced at the harness boundary",
+            record["status"] == "workflow_failure"
+            and "no-subagent policy" in record.get("failure", ""),
+            notes)
+
+        config, _ = build_config(ws, "normal")
+        try:
+            runner.run_task(config, "no-such-arm", task, repo,
+                            ws / "out-bad-arm")
+            arm_ok = False
+        except runner.InfraFailure as exc:
+            arm_ok = "unknown arm" in str(exc)
+        except KeyError:
+            arm_ok = False
+        ok &= check(
+            "unknown arm rejected with classified error (no traceback)",
+            arm_ok, notes)
+
         record, _, _, _ = run_case(ws, "infra-crash")
         ok &= check("infra failure classified (backend crash)",
                     record["status"] == "infra_failure", notes)
@@ -320,6 +344,13 @@ def run_preflight():
         record, _, _, _ = run_case(ws, "timeout", timeout=2)
         ok &= check("workflow failure classified (timeout, not replaced)",
                     record["status"] == "workflow_failure", notes)
+
+        record, _, _, _ = run_case(ws, "hang-silent", timeout=2)
+        ok &= check(
+            "failure without any parity evidence invalidated (empty transcript)",
+            record["status"] == "infra_failure"
+            and "parity evidence" in record.get("failure", ""),
+            notes)
 
         record, _, _, _ = run_case(ws, "slow-no-artifact", timeout=2)
         ok &= check(

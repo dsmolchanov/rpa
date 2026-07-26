@@ -171,7 +171,9 @@ def main():
     if args.mode == "garbage":
         print("this is not json")
         sys.exit(0)
-    if args.mode == "timeout":
+    if args.mode == "hang-silent":
+        # Hangs without emitting ANY event: a failure with zero parity
+        # evidence must be invalidated (infra), never counted.
         time.sleep(30)
         sys.exit(0)
 
@@ -195,6 +197,13 @@ def main():
     else:
         main_effort = sub_effort = args.effort
     emit_nodes(model, main_effort, sub_effort)
+
+    if args.mode == "timeout":
+        # Hangs AFTER emitting accounting: the killed session's partial
+        # transcript carries parity evidence, so this counts as a workflow
+        # failure with its cost preserved.
+        time.sleep(30)
+        sys.exit(0)
 
     if args.mode in ("workflow-abort", "abort-wrong-model"):
         # Abort AFTER emitting accounting: the runner must preserve the

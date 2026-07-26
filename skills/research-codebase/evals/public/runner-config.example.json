@@ -20,7 +20,9 @@
       "sha256": "<recorded at installation build>",
       "model": "opus",
       "effort": "high",
-      "entrypoint": "/research_codebase"
+      "entrypoint": "/research_codebase",
+      "forbid_subagents": true,
+      "_forbid_subagents_note": "Pre-registered third-arm policy: a fleet-ablation run that spawns any subagent is a counted workflow failure."
     }
   },
   "backend_cmd": ["claude", "--model", "opus", "--effort", "{effort}", "--plugin-dir", "{installation}"],

@@ -41,7 +41,12 @@ Capability map (each proven by `--preflight` before any scored run):
      abort exits, and missing-artifact completions are `workflow_failure`
      (counted per the failed-run rule, never replaced), and their records
      preserve tree-wide accounting — including nodes harvested from the
-     partial transcript of a timed-out or aborted session.
+     partial transcript of a timed-out or aborted session, validated for
+     model/effort parity first. A failure whose run produced NO accounting
+     nodes in any session carries no effective-runtime parity evidence and
+     is invalidated (infra) instead of counted. An arm with
+     `forbid_subagents` (the fleet-ablation third arm) fails as a counted
+     workflow failure if its run spawned any subagent.
   7. tree-wide accounting            — tokens and tool calls are summed over
      every transcript node, main-context and subagent subtotals, plus a
      `subagents_spawned` count of DISTINCT subagent identities (several
@@ -555,7 +560,14 @@ def anonymize(text, run_id):
 
 
 def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1):
-    arm = config["arms"][arm_name]
+    arms = config.get("arms", {})
+    if arm_name not in arms:
+        # No record can be attributed to an unknown arm; fail with a
+        # classified, actionable error instead of a KeyError traceback.
+        raise InfraFailure(
+            f"unknown arm `{arm_name}` — configured arms: {sorted(arms)}"
+        )
+    arm = arms[arm_name]
     run_id = uuid.uuid4().hex[:12]
     record = {
         "run_id": run_id,
@@ -634,6 +646,15 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1):
                     effort_modes.add(
                         validate_efforts(partial, arm.get("effort", "default")))
                     all_nodes.extend(partial)
+                elif not all_nodes:
+                    # A counted failure needs effective-runtime evidence from
+                    # SOME session of this run; a completely empty transcript
+                    # proves nothing and must invalidate, not count.
+                    raise InfraFailure(
+                        f"workflow failure with no accounting nodes in any "
+                        f"session — no effective-runtime parity evidence; "
+                        f"run invalidated ({wf})"
+                    ) from wf
                 raise
 
         stdout = _spawn(prompt)
@@ -662,6 +683,15 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1):
         record["wall_seconds"] = round(time.time() - started, 3)
         record["accounting"] = account(all_nodes)
         record["nodes"] = all_nodes
+        if arm.get("forbid_subagents") and record["accounting"]["subagents_spawned"]:
+            # Pre-registered third-arm policy: the fleet-ablation arm may
+            # not delegate at all, or its differences stop being
+            # attributable to fleet removal. Counted, never replaced.
+            raise WorkflowFailure(
+                f"arm `{arm_name}` spawned "
+                f"{record['accounting']['subagents_spawned']} subagent(s) — "
+                f"forbidden by the pre-registered no-subagent policy"
+            )
         if artifact is None:
             raise WorkflowFailure(
                 f"no fresh research artifact after {MAX_CONTINUATIONS} continuations"
@@ -874,9 +904,14 @@ def main():
     if not (args.config and args.arm and args.task and args.repo):
         parser.error("run mode requires --config, --arm, --task, --repo")
     config = load_config(args.config)
-    attempts = run_task_with_retries(
-        config, args.arm, args.task, args.repo, args.output
-    )
+    try:
+        attempts = run_task_with_retries(
+            config, args.arm, args.task, args.repo, args.output
+        )
+    except InfraFailure as exc:
+        # Config-level fault (e.g. unknown arm): classified, no traceback.
+        print(json.dumps({"status": "infra_failure", "failure": str(exc)}))
+        sys.exit(1)
     record = attempts[-1]
     summary = {k: record[k] for k in ("run_id", "status", "interventions")}
     summary["attempts"] = len(attempts)
