@@ -65,15 +65,22 @@ Compatibility below).
   fresh sessions, in disposable worktrees, against the **same target
   repo@SHA**.
 
-## Run capture (recorded for every run, both arms)
+## Runtime configuration (pinned, not merely recorded)
 
-- target repo + SHA
-- plugin SHA (baseline commit vs candidate branch commit)
+At candidate freeze, a single **shared runtime configuration** is
+pre-registered and then held constant for **all** runs of all arms:
+
 - exact model ID
 - Claude Code version
 - effort setting
 - active hooks, MCP servers, permission mode
 - resource ceilings (timeouts, token budget if set)
+
+The **only permitted difference between arms is the plugin content** (frozen
+baseline SHA vs candidate branch SHA vs minimal-skill variant). Every run
+additionally captures the target repo + SHA and its own plugin SHA. If any
+pinned value differs within a paired task's runs, the pair is invalid and is
+rerun — deltas must reflect the workflow rewrite, not runtime drift.
 
 ## Eval set
 
@@ -190,11 +197,15 @@ sanitized examples; raw run artifacts stay in a private location.
 
 1. Prerequisites 1–4.
 2. Ground-truth notes for the dev set.
-3. Baseline runs recorded (all arms' capture fields).
-4. Candidate implementation frozen; holdout unsealed; candidate + third-arm
-   runs recorded.
-5. Blind scoring + evidence verification.
-6. Results doc in `thoughts/shared/research/` (aggregated, sanitized) with a
+3. Dev-set runs (any arm, any order) — used to build and tune the candidate;
+   **never counted toward the pass bar**.
+4. **Candidate frozen** (commit SHA recorded) and shared runtime
+   configuration pre-registered.
+5. **Holdout unsealed only now.** All holdout runs — baseline, candidate,
+   and third arm — executed under the pinned configuration in randomized,
+   interleaved order (≥3 per arm per task).
+6. Blind scoring + evidence verification.
+7. Results doc in `thoughts/shared/research/` (aggregated, sanitized) with a
    go/no-go recommendation — scoped to the Claude-side research pattern.
    Extension to planning / TDD / refactoring families and the Codex skill
    adapter each get their own representative gate.
