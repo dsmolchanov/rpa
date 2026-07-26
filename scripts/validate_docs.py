@@ -10,20 +10,22 @@ check fails loudly when its target set is empty):
   2. agents/*.md     — at least one file; frontmatter `name` (matching the
                        filename), `description` (non-empty string), and
                        `tools` (string or list).
-  3. skills/*/SKILL.md — frontmatter `name` and `description`.
-  4. .claude-plugin/plugin.json and marketplace.json — valid JSON with the
-                       required keys.
-  5. Relative markdown links (`[text](path.md)`) in all *.md — the target
-                       must exist (relative to the file, then to the repo
-                       root). http(s)/mailto/# links are ignored.
+  3. skills/*/SKILL.md — at least one; frontmatter `name` and `description`.
+  4. .claude-plugin/plugin.json and marketplace.json — valid JSON with
+                       required keys AND value shapes (non-empty strings,
+                       semver version, plugins as a list of {name, source}).
+  5. Internal links in all *.md — inline links (with or without titles),
+                       reference definitions, and reference usages. Any
+                       relative target (md, json, scripts, images,
+                       directories) must exist; http(s)/mailto/# ignored.
 
 `--self-test` proves each check individually: the positive fixture tree
 must pass clean, and every `tests/fixtures/docs-validate/negative/<case>/`
 tree — complete except for exactly one seeded defect — must produce an
-error containing the substring recorded in that case's `EXPECTED` file.
+error containing the substring in that case's `EXPECTED` file.
 Fixtures are excluded from normal validation.
 
-Requires PyYAML (`python3 -m pip install pyyaml`).
+Registered dependency (pilot plan, prerequisite 1): PyYAML, pinned in CI.
 """
 
 import argparse
@@ -36,19 +38,23 @@ try:
     import yaml
 except ImportError:  # pragma: no cover
     print(
-        "validate_docs.py requires PyYAML: python3 -m pip install pyyaml",
+        "validate_docs.py requires PyYAML: python3 -m pip install pyyaml==6.0.2",
         file=sys.stderr,
     )
     sys.exit(2)
 
 EXCLUDED_PARTS = {".git", "node_modules"}
 FIXTURES_REL = Path("tests/fixtures/docs-validate")
-LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
+
+INLINE_LINK_RE = re.compile(r"\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
+REF_DEF_RE = re.compile(r"^\s*\[([^\]\^][^\]]*)\]:\s*(\S+)")
+REF_USE_RE = re.compile(r"\[([^\]]+)\]\[([^\]]*)\]")
+EXTERNAL_PREFIXES = ("http://", "https://", "mailto:", "tel:", "#")
+SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+")
 
 
 def parse_frontmatter(text):
-    """Return (data, error). data is the parsed frontmatter dict on success;
-    error is a human-readable string on failure."""
+    """Return (data, error): parsed frontmatter dict, or an error string."""
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
         return None, "missing or unterminated YAML frontmatter"
@@ -74,10 +80,7 @@ def check_field(data, key, rel, errors, types=(str,), non_empty=True):
         type_names = "/".join(t.__name__ for t in types)
         errors.append(f"{rel}: frontmatter `{key}` must be {type_names}, got {type(value).__name__}")
         return None
-    if non_empty and isinstance(value, str) and not value.strip():
-        errors.append(f"{rel}: frontmatter `{key}` is empty")
-        return None
-    if non_empty and isinstance(value, list) and not value:
+    if non_empty and isinstance(value, (str, list)) and not (value.strip() if isinstance(value, str) else value):
         errors.append(f"{rel}: frontmatter `{key}` is empty")
         return None
     return value
@@ -128,12 +131,10 @@ def check_agents(root, errors):
 
 
 def check_skills(root, errors):
-    skills_dir = root / "skills"
-    if not skills_dir.is_dir():
-        return  # skills are optional until the pilot lands them
-    skill_files = sorted(skills_dir.glob("*/SKILL.md"))
+    skill_files = sorted((root / "skills").glob("*/SKILL.md")) if (root / "skills").is_dir() else []
     if not skill_files:
-        errors.append("skills/: directory exists but contains no */SKILL.md")
+        errors.append("skills/: no */SKILL.md found (empty target set fails the gate)")
+        return
     for path in skill_files:
         rel = path.relative_to(root)
         data, err = parse_frontmatter(path.read_text(encoding="utf-8"))
@@ -144,29 +145,68 @@ def check_skills(root, errors):
         check_field(data, "description", rel, errors)
 
 
+def _require_json_str(data, key, rel_path, errors, pattern=None, pattern_desc=""):
+    value = data.get(key)
+    if not isinstance(value, str) or not value.strip():
+        errors.append(f"{rel_path}: `{key}` must be a non-empty string, got {value!r}")
+        return
+    if pattern and not pattern.match(value):
+        errors.append(f"{rel_path}: `{key}` must be {pattern_desc}, got {value!r}")
+
+
 def check_json_manifests(root, errors):
-    manifests = [
-        (".claude-plugin/plugin.json", ("name", "version")),
-        (".claude-plugin/marketplace.json", ("name", "plugins")),
-    ]
-    for rel_path, required in manifests:
-        path = root / rel_path
-        if not path.is_file():
-            errors.append(f"{rel_path}: file not found")
-            continue
+    plugin_rel = ".claude-plugin/plugin.json"
+    plugin_path = root / plugin_rel
+    if not plugin_path.is_file():
+        errors.append(f"{plugin_rel}: file not found")
+    else:
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(plugin_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
-            errors.append(f"{rel_path}: invalid JSON ({exc})")
+            errors.append(f"{plugin_rel}: invalid JSON ({exc})")
+        else:
+            _require_json_str(data, "name", plugin_rel, errors)
+            _require_json_str(data, "version", plugin_rel, errors, SEMVER_RE, "semver (X.Y.Z)")
+
+    market_rel = ".claude-plugin/marketplace.json"
+    market_path = root / market_rel
+    if not market_path.is_file():
+        errors.append(f"{market_rel}: file not found")
+        return
+    try:
+        data = json.loads(market_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        errors.append(f"{market_rel}: invalid JSON ({exc})")
+        return
+    _require_json_str(data, "name", market_rel, errors)
+    plugins = data.get("plugins")
+    if not isinstance(plugins, list):
+        errors.append(f"{market_rel}: `plugins` must be a list, got {type(plugins).__name__}")
+        return
+    for i, entry in enumerate(plugins):
+        if not isinstance(entry, dict):
+            errors.append(f"{market_rel}: plugins[{i}] must be an object, got {type(entry).__name__}")
             continue
-        for key in required:
-            if key not in data:
-                errors.append(f"{rel_path}: missing required key `{key}`")
+        for key in ("name", "source"):
+            if not isinstance(entry.get(key), str) or not entry.get(key).strip():
+                errors.append(f"{market_rel}: plugins[{i}].`{key}` must be a non-empty string")
+
+
+def _check_target(target, path, root, errors):
+    if target.startswith(EXTERNAL_PREFIXES):
+        return
+    clean = target.split("#", 1)[0]
+    if not clean:
+        return
+    if (path.parent / clean).exists() or (root / clean).exists():
+        return
+    errors.append(f"{path.relative_to(root)}: broken relative link `{target}`")
 
 
 def check_links(root, errors, exclude_fixtures=True):
     for path in iter_markdown(root, exclude_fixtures=exclude_fixtures):
         text = path.read_text(encoding="utf-8")
+        lines, definitions, content_lines = [], {}, []
         in_fence = False
         for line in text.splitlines():
             if line.strip().startswith("```"):
@@ -174,15 +214,24 @@ def check_links(root, errors, exclude_fixtures=True):
                 continue
             if in_fence:
                 continue
-            for target in LINK_RE.findall(line):
-                if target.startswith(("http://", "https://", "mailto:", "#")):
-                    continue
-                clean = target.split("#", 1)[0]
-                if not clean or not clean.endswith(".md"):
-                    continue
-                if (path.parent / clean).exists() or (root / clean).exists():
-                    continue
-                errors.append(f"{path.relative_to(root)}: broken relative link `{target}`")
+            content_lines.append(line)
+            def_match = REF_DEF_RE.match(line)
+            if def_match:
+                definitions[def_match.group(1).strip().lower()] = def_match.group(2)
+        for ref_id, target in definitions.items():
+            _check_target(target, path, root, errors)
+        for line in content_lines:
+            if REF_DEF_RE.match(line):
+                continue
+            stripped = re.sub(r"`[^`]*`", "", line)  # ignore inline code spans
+            for target in INLINE_LINK_RE.findall(stripped):
+                _check_target(target, path, root, errors)
+            for text_part, ref_id in REF_USE_RE.findall(stripped):
+                key = (ref_id or text_part).strip().lower()
+                if key and key not in definitions:
+                    errors.append(
+                        f"{path.relative_to(root)}: undefined link reference `{ref_id or text_part}`"
+                    )
 
 
 def validate(root, exclude_fixtures=True):

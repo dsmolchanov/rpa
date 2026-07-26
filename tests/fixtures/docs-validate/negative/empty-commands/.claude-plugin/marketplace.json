@@ -1,4 +1,4 @@
 {
   "name": "fixture-marketplace",
-  "plugins": []
+  "plugins": [{"name": "demo", "source": "./"}]
 }

@@ -313,7 +313,10 @@ sanitized examples; raw run artifacts stay in a private location.
    links, plugin manifest. The job must **fail when zero target files are
    found** and ship positive/negative fixtures proving it catches breakage
    (per conventions §4 — a silently no-op gate is a defect; the existing
-   `ci.yml` jobs are effectively silent no-ops on this repo).
+   `ci.yml` jobs are effectively silent no-ops on this repo). Registered
+   dependency for this gate: **PyYAML, pinned to `6.0.2`** in the CI job —
+   real YAML parsing of frontmatter is required for the schema check; no
+   other new dependencies are authorized by this plan.
 2. Pass bar registered (this document, committed before runs).
 3. **Atomic seal** (see Eval set): one sealing operation producing the
    complete sealed package — tasks + repo@SHA, ground truth, external
