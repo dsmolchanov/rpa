@@ -55,3 +55,5 @@ Escaped-paren dest [e2](./ok_\(v2\).md) and closing-fence literal below:
 [fex](./missing6.md)
 ```x
 ````
+
+Escaped ref-like literal \[example][missing] is not a reference.

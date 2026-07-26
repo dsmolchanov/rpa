@@ -276,7 +276,7 @@ class _DocIndex:
             env = {}
             body = strip_frontmatter(path.read_text(encoding="utf-8"))
             tokens = _MD.parse(body, env)
-            self._parses[path] = (tokens, env)
+            self._parses[path] = (tokens, env, body)
         return self._parses[path]
 
     def anchors(self, path):
@@ -284,7 +284,7 @@ class _DocIndex:
         if path in self._anchors:
             return self._anchors[path]
         anchors, counts = set(), {}
-        tokens, _ = self.tokens_env(path)
+        tokens, _, _ = self.tokens_env(path)
         for i, tok in enumerate(tokens):
             if tok.type != "heading_open":
                 continue
@@ -347,7 +347,7 @@ def _normalize_ref_label(label):
 def check_links(root, errors, exclude_fixtures=True):
     index = _DocIndex()
     for path in iter_markdown(root, exclude_fixtures=exclude_fixtures):
-        tokens, env = index.tokens_env(path)
+        tokens, env, body = index.tokens_env(path)
         references = env.get("references", {}) or {}
         # Reference definitions: validate each recorded destination.
         for ref in references.values():
@@ -371,11 +371,17 @@ def check_links(root, errors, exclude_fixtures=True):
                     # means its label has no definition.
                     for text_part, ref_id in REF_USE_RE.findall(child.content):
                         label = _normalize_ref_label(ref_id or text_part)
-                        if label and label not in references:
-                            errors.append(
-                                f"{path.relative_to(root)}: undefined link reference "
-                                f"`{ref_id or text_part}`"
-                            )
+                        if not label or label in references:
+                            continue
+                        # The parser unescapes text, so a literal like
+                        # \[example][missing] would look identical here;
+                        # check the source for the escaped form.
+                        if f"\\[{text_part}]" in body:
+                            continue
+                        errors.append(
+                            f"{path.relative_to(root)}: undefined link reference "
+                            f"`{ref_id or text_part}`"
+                        )
 
 
 def validate(root, exclude_fixtures=True):
