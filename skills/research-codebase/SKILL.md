@@ -1,14 +1,14 @@
 ---
 name: research-codebase
 description: >
-  Produce a durable research document explaining how part of a codebase
-  works, with file:line evidence, saved to thoughts/shared/research/.
-  Trigger for "research / document / explain how X works" requests that
-  should yield a persistent artifact. Do NOT trigger for quick ad-hoc
-  lookups (plain search or an Explore agent is cheaper) or for
-  planning/implementation work (/create_plan, /implement_plan).
+  STRUCTURAL SKELETON — not yet executable; never select this skill for
+  research requests. The working implementation remains the
+  /research_codebase command (frozen baseline) until the modernization
+  pilot's behavioral rewrite lands here. This package currently carries
+  only the artifact contract and package layout.
+disable-model-invocation: true
 permission-class: "read_only (target repo) + workspace_write (thoughts/shared/research/ only)"
-invocation: "user, model"
+invocation: "user"
 ---
 
 # Research Codebase — kernel (structural skeleton, v0.2.1)
@@ -22,8 +22,12 @@ until then the authoritative behavior remains
 
 Discovery & invocation (conventions §2.0) is declared in the frontmatter
 above (`permission-class`, `invocation` — kernel fields; platform adapters
-map them to their harness's supported fields, e.g. Claude Code
-`allowed-tools` / `disable-model-invocation`).
+map them to their harness's supported fields). The skeleton is deliberately
+**non-invocable**: `disable-model-invocation: true` keeps it out of
+automatic skill selection, and the description warns against selection, so
+fresh plugin installs cannot route research requests here before the
+rewrite. The trigger-rich production description (trigger and non-trigger
+cases) replaces the skeleton notice at candidate freeze.
 
 Kernel sections to be completed in the rewrite, in the §2 anatomy order:
 intent · scope & authority · artifact contract

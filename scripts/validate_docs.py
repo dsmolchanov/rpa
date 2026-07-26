@@ -353,7 +353,9 @@ def _check_target(target, path, root, errors, anchor_cache):
     else:
         resolved = path  # same-document fragment
     if fragment and resolved.is_file() and resolved.suffix == ".md":
-        if fragment.lower() not in _heading_anchors(resolved, anchor_cache):
+        # Fragment identifiers are case-sensitive: generated anchors are
+        # lowercase, so `#Setup` does not navigate to `# Setup`.
+        if fragment not in _heading_anchors(resolved, anchor_cache):
             errors.append(f"{path.relative_to(root)}: broken anchor `{target}`")
 
 
