@@ -69,10 +69,16 @@ def echo(name, value):
 
 
 def emit_nodes(model, effort):
-    emit({"type": "node", "model": model, "effort": effort, "tool_calls": 7,
-          "usage": {"input_tokens": 100, "output_tokens": 50}})
-    emit({"type": "node", "model": model, "effort": effort, "subagent": True,
-          "tool_calls": 5, "usage": {"input_tokens": 40, "output_tokens": 20}})
+    """`effort=None` emits nodes without an effort field (missing-effort mode)."""
+    main = {"type": "node", "model": model, "tool_calls": 7,
+            "usage": {"input_tokens": 100, "output_tokens": 50}}
+    sub = {"type": "node", "model": model, "subagent": True, "tool_calls": 5,
+           "usage": {"input_tokens": 40, "output_tokens": 20}}
+    if effort is not None:
+        main["effort"] = effort
+        sub["effort"] = effort
+    emit(main)
+    emit(sub)
 
 
 def main():
@@ -88,6 +94,16 @@ def main():
 
     echo("prompt.txt", args.prompt)
     echo("plugin-dir.txt", args.plugin_dir)
+
+    if args.mode == "flaky-infra":
+        # Transient fault: crash once (recorded via MOCK_STATE_FILE), then
+        # behave normally, so the runner's auto-retry can be proven.
+        state = os.environ.get("MOCK_STATE_FILE", "")
+        if state and not Path(state).exists():
+            Path(state).write_text("crashed once\n", encoding="utf-8")
+            print("transient mock crash", file=sys.stderr)
+            sys.exit(3)
+        args.mode = "normal"
 
     if args.mode == "workflow-abort":
         print("workflow aborted by evaluated agent", file=sys.stderr)
@@ -106,7 +122,12 @@ def main():
     emit({"type": "system", "session_id": session_id})
 
     model = "unregistered-model" if args.mode == "wrong-model" else args.model
-    effort = "low" if args.mode == "wrong-effort" else args.effort
+    if args.mode == "wrong-effort":
+        effort = "low"
+    elif args.mode == "missing-effort":
+        effort = None
+    else:
+        effort = args.effort
     emit_nodes(model, effort)
 
     if args.mode == "silent-stop":

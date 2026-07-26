@@ -9,9 +9,11 @@ Capability map (each proven by `--preflight` before any scored run):
      installation tree against the registered SHA-256, mounts a copy into
      the run's profile, and passes its path to the backend via the
      `{installation}` placeholder in `backend_cmd`.
-  2. per-node model/effort capture   — every transcript node records its
-     model; effort is pinned in configuration; any node whose model differs
-     from the registered one invalidates the run.
+  2. per-node model/effort capture   — every transcript node must record
+     its model and its effective effort; effort is pinned on the backend
+     command line via the `{effort}` placeholder (its absence is refused);
+     any node whose model or effort differs from the registered values —
+     or omits effort entirely — invalidates the run.
   3. clean profile                   — each run uses a runner-created
      CLAUDE_CONFIG_DIR containing only `settings.json` and the mounted
      installation; ambient personal skills/config are never on the load
@@ -23,15 +25,19 @@ Capability map (each proven by `--preflight` before any scored run):
      a task file reaches the evaluated session; a task carrying ground
      truth without that marker is refused.
   6. infra vs workflow failure       — backend crashes / unparseable output
-     / wrong SHA are `infra_failure` (run invalid, re-executed); timeouts
-     and missing-artifact completions are `workflow_failure` (counted per
-     the failed-run rule, never replaced).
+     / wrong SHA are `infra_failure` (run invalid, automatically
+     re-executed up to `max_infra_retries` times); timeouts, registered
+     abort exits, and missing-artifact completions are `workflow_failure`
+     (counted per the failed-run rule, never replaced), and their records
+     preserve full tree-wide accounting for every completed session.
   7. tree-wide accounting            — tokens and tool calls are summed over
      every transcript node, main-context and subagent subtotals.
   8. artifact freshness              — only documents created or modified
      during the run count; pre-existing research docs are ignored.
   9. anonymization                   — scored copies carry a random run id
-     and masked fingerprint frontmatter.
+     and masked fingerprint frontmatter; score mode refuses raw
+     (fingerprint-bearing) documents at its own boundary, so a CLI mistake
+     cannot leak identity to the blind judge.
  10. fresh pinned judge sessions     — `--score` spawns each judge call as a
      new backend session in its own fresh profile, and preserves the
      judge's full response text on disk.
@@ -57,6 +63,7 @@ import uuid
 from pathlib import Path
 
 MAX_CONTINUATIONS = 3
+DEFAULT_MAX_INFRA_RETRIES = 2
 CONTINUATION_MESSAGE = (
     "Proceed with the research as specified; no additional constraints."
 )
@@ -296,17 +303,32 @@ def validate_models(nodes, registered_model):
 
 
 def validate_efforts(nodes, registered_effort):
-    """Every node reporting an effort must match the registered one; nodes
-    without an effort field inherit the session pin applied via {effort} in
-    the backend command."""
+    """Every node must report an effective effort matching the registered
+    one. A node that omits effort means the pin was neither applied nor
+    captured — that admits runtime drift, so the run is invalidated."""
+    missing = sum(1 for n in nodes if n.get("effort") in (None, ""))
+    if missing:
+        raise InfraFailure(
+            f"{missing} node(s) missing effective effort — effort must be "
+            f"pinned and captured per node; run invalidated"
+        )
     bad = sorted({
-        str(n.get("effort")) for n in nodes
-        if n.get("effort") is not None and n.get("effort") != registered_effort
+        str(n["effort"]) for n in nodes if n["effort"] != registered_effort
     })
     if bad:
         raise InfraFailure(
             f"effective effort(s) {bad} differ from registered "
             f"`{registered_effort}` — run invalidated"
+        )
+
+
+def require_effort_pin(cmd, what):
+    """Effort must be pinned on the command line, never inherited from
+    ambient defaults: refuse a command without the `{effort}` placeholder."""
+    if not any("{effort}" in part for part in cmd):
+        raise InfraFailure(
+            f"{what} must pin effort via the {{effort}} placeholder — "
+            f"ambient/default effort is not an accepted pin"
         )
 
 
@@ -349,7 +371,7 @@ def anonymize(text, run_id):
     return body + ("\n" if not body.endswith("\n") else "")
 
 
-def run_task(config, arm_name, task_path, repo_dir, output_dir):
+def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1):
     arm = config["arms"][arm_name]
     run_id = uuid.uuid4().hex[:12]
     record = {
@@ -361,10 +383,13 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir):
         "effort": arm.get("effort", "default"),
         "status": None,
         "interventions": 0,
+        "attempt": attempt,
     }
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     worktree = None
+    all_nodes = []
+    started = None
     try:
         record["installation_sha256"] = verify_installation(arm_name, arm)
         prompt, task_text = extract_task_prompt(task_path)
@@ -382,6 +407,7 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir):
         mount_hash = hash_tree(mount)
         if mount_hash != arm["sha256"]:
             raise InfraFailure("mounted installation copy hash mismatch")
+        require_effort_pin(config["backend_cmd"], "backend_cmd")
         cmd = expand_backend_cmd(config["backend_cmd"], mount,
                                  arm.get("effort", "default"))
         env = backend_env(profile)
@@ -392,7 +418,9 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir):
                                config["timeout_seconds"],
                                workflow_abort_exits=abort_exits)
         session_id, nodes, _ = parse_transcript(stdout)
-        all_nodes = list(nodes)
+        validate_models(nodes, arm["model"])
+        validate_efforts(nodes, arm.get("effort", "default"))
+        all_nodes.extend(nodes)
         artifact = find_new_artifact(worktree, before)
         while artifact is None and record["interventions"] < MAX_CONTINUATIONS:
             record["interventions"] += 1
@@ -400,17 +428,17 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir):
                                    config["timeout_seconds"], resume=session_id,
                                    workflow_abort_exits=abort_exits)
             session_id, nodes, _ = parse_transcript(stdout)
+            validate_models(nodes, arm["model"])
+            validate_efforts(nodes, arm.get("effort", "default"))
             all_nodes.extend(nodes)
             artifact = find_new_artifact(worktree, before)
         record["wall_seconds"] = round(time.time() - started, 3)
+        record["accounting"] = account(all_nodes)
+        record["nodes"] = all_nodes
         if artifact is None:
             raise WorkflowFailure(
                 f"no fresh research artifact after {MAX_CONTINUATIONS} continuations"
             )
-        validate_models(all_nodes, arm["model"])
-        validate_efforts(all_nodes, arm.get("effort", "default"))
-        record["accounting"] = account(all_nodes)
-        record["nodes"] = all_nodes
         raw = artifact.read_text(encoding="utf-8")
         (out / f"run-{run_id}-raw.md").write_text(raw, encoding="utf-8")
         (out / f"run-{run_id}-anon.md").write_text(
@@ -424,12 +452,68 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir):
         record["status"] = "infra_failure"
         record["failure"] = str(exc)
     finally:
+        # Failed runs still owe their full cost: tree-wide accounting for
+        # every completed session is preserved even when the workflow fails
+        # mid-flight (timeout, abort, no artifact).
+        if all_nodes and "accounting" not in record:
+            record["accounting"] = account(all_nodes)
+            record["nodes"] = all_nodes
+        if started is not None and "wall_seconds" not in record:
+            record["wall_seconds"] = round(time.time() - started, 3)
         if worktree is not None:
             remove_worktree(repo_dir, worktree)
     (out / f"run-{run_id}.json").write_text(
         json.dumps(record, indent=2) + "\n", encoding="utf-8"
     )
     return record
+
+
+def run_task_with_retries(config, arm_name, task_path, repo_dir, output_dir):
+    """Registered protocol: an infrastructure failure invalidates the run and
+    the run is re-executed, automatically and bounded — workflow failures are
+    counted, never replaced. Every attempt's record is written to disk."""
+    max_retries = int(config.get("max_infra_retries", DEFAULT_MAX_INFRA_RETRIES))
+    attempts = []
+    for attempt in range(1, max_retries + 2):
+        record = run_task(config, arm_name, task_path, repo_dir, output_dir,
+                          attempt=attempt)
+        attempts.append(record)
+        if record["status"] != "infra_failure":
+            break
+    return attempts
+
+
+def assert_blind_scorable(doc_path):
+    """Blinding is enforced at the score boundary itself: a raw runner
+    artifact or any document whose fingerprint fields are not masked is
+    refused, so a CLI input mistake cannot leak identity to the judge."""
+    path = Path(doc_path)
+    if path.name.endswith("-raw.md"):
+        raise InfraFailure(
+            f"{doc_path}: raw runner artifact — blind scoring requires the "
+            f"anonymized copy (`run-<id>-anon.md`)"
+        )
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    if lines and lines[0].strip() == "---":
+        for idx in range(1, len(lines)):
+            if lines[idx].strip() == "---":
+                break
+            key = lines[idx].split(":", 1)[0].strip().lower()
+            if key in FINGERPRINT_KEYS and "[anonymized:" not in lines[idx]:
+                raise InfraFailure(
+                    f"{doc_path}: fingerprint key `{key}` is not anonymized "
+                    f"— blind scoring refused"
+                )
+    for match in re.finditer(
+        r"^\*\*(Date|Researcher|Git Commit|Branch)\*\*:(.*)$", text, re.MULTILINE
+    ):
+        if "[anonymized:" not in match.group(2):
+            raise InfraFailure(
+                f"{doc_path}: fingerprint line `**{match.group(1)}**` is not "
+                f"anonymized — blind scoring refused"
+            )
+    return text
 
 
 def score(config, doc_paths, judge_prompt_path, output_dir):
@@ -447,14 +531,16 @@ def score(config, doc_paths, judge_prompt_path, output_dir):
     if not judge_model:
         raise InfraFailure("`judge_model` must be configured for score mode")
     judge_effort = config.get("judge_effort", "default")
+    require_effort_pin(judge_cmd, "judge command")
     judge_cmd = expand_backend_cmd(judge_cmd, None, judge_effort)
+    doc_texts = [assert_blind_scorable(doc) for doc in doc_paths]
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     results = []
-    for i, doc in enumerate(doc_paths):
+    for i, (doc, doc_text) in enumerate(zip(doc_paths, doc_texts)):
         profile, _ = make_profile(output_dir, "judge")
         env = backend_env(profile)
-        prompt = judge_prompt + "\n\n---\n\n" + Path(doc).read_text(encoding="utf-8")
+        prompt = judge_prompt + "\n\n---\n\n" + doc_text
         stdout = spawn_session(
             judge_cmd, prompt, str(profile), env, config["timeout_seconds"]
         )
@@ -513,8 +599,13 @@ def main():
     if not (args.config and args.arm and args.task and args.repo):
         parser.error("run mode requires --config, --arm, --task, --repo")
     config = load_config(args.config)
-    record = run_task(config, args.arm, args.task, args.repo, args.output)
-    print(json.dumps({k: record[k] for k in ("run_id", "status", "interventions")}))
+    attempts = run_task_with_retries(
+        config, args.arm, args.task, args.repo, args.output
+    )
+    record = attempts[-1]
+    summary = {k: record[k] for k in ("run_id", "status", "interventions")}
+    summary["attempts"] = len(attempts)
+    print(json.dumps(summary))
     sys.exit(0 if record["status"] == "completed" else 1)
 
 

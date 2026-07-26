@@ -19,7 +19,7 @@ the list of copies.
 A correct document must contain:
 
 1. Authoritative definition: the module scoring table in
-   `agents/god-module-finder.md:20-29` (Size 30 / Public Surface 20 /
+   `agents/god-module-finder.md:23-30` (Size 30 / Public Surface 20 /
    Fan-In 20 / Fan-Out 10 / Smell Density 10 / Hotspot 10).
 2. Restatement in `commands/refactor_candidates.md:57` (inline weighted
    scoring in the Task prompt).

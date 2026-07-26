@@ -88,7 +88,8 @@ def write_task(workspace, label, sha):
 
 
 def run_case(workspace, mode, label=None, timeout=20, tamper=False,
-             sha_override=None, seed_research=False):
+             sha_override=None, seed_research=False, use_retries=False,
+             extra_env=None):
     label = label or mode
     config, install = build_config(workspace, mode, timeout)
     if tamper:
@@ -98,10 +99,17 @@ def run_case(workspace, mode, label=None, timeout=20, tamper=False,
     out = Path(workspace) / f"out-{label}"
     echo_dir = Path(workspace) / f"echo-{label}"
     os.environ["MOCK_ECHO_DIR"] = str(echo_dir)
+    for key, value in (extra_env or {}).items():
+        os.environ[key] = value
     try:
-        record = runner.run_task(config, "mock", task, repo, out)
+        if use_retries:
+            record = runner.run_task_with_retries(config, "mock", task, repo, out)[-1]
+        else:
+            record = runner.run_task(config, "mock", task, repo, out)
     finally:
         os.environ.pop("MOCK_ECHO_DIR", None)
+        for key in (extra_env or {}):
+            os.environ.pop(key, None)
     return record, out, echo_dir, sha
 
 
@@ -206,6 +214,27 @@ def run_preflight():
             and "effort" in record.get("failure", ""),
             notes)
 
+        record, _, _, _ = run_case(ws, "missing-effort")
+        ok &= check(
+            "nodes omitting effective effort rejected",
+            record["status"] == "infra_failure"
+            and "missing effective effort" in record.get("failure", ""),
+            notes)
+
+        config, _ = build_config(ws, "normal")
+        config["backend_cmd"] = [
+            part for part in config["backend_cmd"]
+            if part not in ("--effort", "{effort}")
+        ]
+        repo, pin_sha = make_git_repo(ws, "no-effort-pin")
+        task = write_task(ws, "no-effort-pin", pin_sha)
+        record = runner.run_task(config, "mock", task, repo, ws / "out-no-effort-pin")
+        ok &= check(
+            "backend command without {effort} pin refused",
+            record["status"] == "infra_failure"
+            and "{effort}" in record.get("failure", ""),
+            notes)
+
         record, _, _, _ = run_case(ws, "workflow-abort")
         ok &= check(
             "workflow abort exit counted as workflow failure (not rerun)",
@@ -216,6 +245,15 @@ def run_preflight():
         record, _, _, _ = run_case(ws, "infra-crash")
         ok &= check("infra failure classified (backend crash)",
                     record["status"] == "infra_failure", notes)
+
+        state_file = ws / "flaky-state"
+        record, _, _, _ = run_case(
+            ws, "flaky-infra", use_retries=True,
+            extra_env={"MOCK_STATE_FILE": str(state_file)})
+        ok &= check(
+            "infra failure auto re-executed (bounded retry completes the run)",
+            record["status"] == "completed" and record.get("attempt") == 2,
+            notes, f"attempt={record.get('attempt')}")
         record, _, _, _ = run_case(ws, "garbage")
         ok &= check("infra failure classified (unparseable output)",
                     record["status"] == "infra_failure", notes)
@@ -230,6 +268,15 @@ def run_preflight():
             record["status"] == "workflow_failure"
             and record["interventions"] == runner.MAX_CONTINUATIONS,
             notes)
+        sessions = 1 + runner.MAX_CONTINUATIONS
+        acc = record.get("accounting", {})
+        ok &= check(
+            "failed-run accounting preserved (workflow failure keeps full cost)",
+            acc.get("tree", {}).get("input_tokens")
+            == sessions * EXPECTED_TREE["input_tokens"]
+            and len(record.get("nodes", [])) == sessions * 2
+            and "wall_seconds" in record,
+            notes, json.dumps(acc.get("tree")))
 
         record, _, _, _ = run_case(ws, "silent-stop")
         ok &= check(
@@ -274,7 +321,7 @@ def run_preflight():
         wrongjudge_cfg = dict(config)
         wrongjudge_cfg["judge_backend_cmd"] = [
             sys.executable, str(HERE / "mock_claude.py"),
-            "--mode", "wrong-model"]
+            "--mode", "wrong-model", "--effort", "{effort}"]
         try:
             runner.score(wrongjudge_cfg, docs, judge, ws / "judge-wrong")
             judge_parity_ok = False
@@ -283,6 +330,24 @@ def run_preflight():
         ok &= check(
             "judge model parity (mismatched judge model rejected)",
             judge_parity_ok, notes)
+        raw_doc = ws / "run-deadbeef-raw.md"
+        raw_doc.write_text(
+            "---\nresearcher: Mock Researcher\ngit_commit: deadbeef\n---\n\n"
+            "**Researcher**: Mock Researcher\n", encoding="utf-8")
+        leaky_doc = ws / "leaky-report.md"
+        leaky_doc.write_text(
+            "---\nresearcher: Mock Researcher\n---\n\n# Report\n",
+            encoding="utf-8")
+        blind_ok = True
+        for bad_doc in (raw_doc, leaky_doc):
+            try:
+                runner.score(config, [bad_doc], judge, ws / "judge-blind")
+                blind_ok = False
+            except runner.InfraFailure as exc:
+                blind_ok &= "blind scoring" in str(exc) or "anonymized copy" in str(exc)
+        ok &= check(
+            "raw/fingerprint-bearing documents refused in score mode",
+            blind_ok, notes)
         results = runner.score(config, docs, judge, judge_out)
         judge_files = sorted(judge_out.glob("judge-*.json"))
         ok &= check(
