@@ -40,6 +40,7 @@ import argparse
 import json
 import re
 import sys
+from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -86,18 +87,38 @@ PERMISSION_PART_RE = re.compile(
 SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 # Reference-style usage in rendered TEXT (i.e. left unresolved by the parser).
 REF_USE_RE = re.compile(r"\[([^\]]+)\]\[([^\]]*)\]")
-# href/src attributes inside raw HTML tokens (quoted or valid unquoted).
-HTML_ATTR_RE = re.compile(
-    r"""(?:href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))""",
-    re.IGNORECASE,
-)
+class _HrefExtractor(HTMLParser):
+    """Extract targets only from real link-bearing attributes of real tags,
+    so comments, script examples, and data-* attributes are ignored."""
+
+    LINK_ATTRS = {
+        ("a", "href"),
+        ("area", "href"),
+        ("link", "href"),
+        ("img", "src"),
+        ("source", "src"),
+        ("video", "src"),
+        ("audio", "src"),
+        ("iframe", "src"),
+    }
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.targets = []
+
+    def handle_starttag(self, tag, attrs):
+        for name, value in attrs:
+            if value and (tag.lower(), name.lower()) in self.LINK_ATTRS:
+                self.targets.append(value)
 
 
 def _iter_html_targets(html):
-    for quoted_d, quoted_s, unquoted in HTML_ATTR_RE.findall(html):
-        target = quoted_d or quoted_s or unquoted
-        if target:
-            yield target
+    parser = _HrefExtractor()
+    try:
+        parser.feed(html)
+    except Exception:
+        return []
+    return parser.targets
 
 _MD = MarkdownIt("commonmark")
 

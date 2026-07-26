@@ -73,3 +73,5 @@ Valid HTML link <a href="./ok.md">ok</a> and external <a href="https://example.c
 # Intro ![icon](./icon.png) Guide
 
 Image-alt slug [g](#intro-icon-guide).
+
+HTML edge cases: <!-- href="./missing7.md" --> and <a data-href="./missing8.md" href="./ok.md">real</a>.
