@@ -1,6 +1,8 @@
-# RPA Design Conventions — v0.2 (working draft)
+# RPA Design Conventions — v0.2.1 (working draft)
 
-Status: **draft, revised 2026-07-26 per protocol review**. Honest validation
+Status: **draft; v0.2 revised 2026-07-26 per protocol review, v0.2.1
+amendments same day per second review (discovery/invocation contract, agent
+contract location, sealed-package semantics)**. Honest validation
 claim: v0.2 is a **Claude-side pilot convention**. Nothing here is
 "platform-neutral validated" until a Codex runtime eval exists. The
 `/research_codebase` pilot
@@ -27,17 +29,23 @@ carrier is a **skill package**, not a Claude command file:
 
 ```
 skills/<workflow>/
-├── SKILL.md                         # intent, scope & authority, process guidance
-├── references/artifact-contract.md  # the artifact contract — single source
-├── references/…                     # methodology, loaded on demand
-├── evals/                           # eval harness: rubric, task specs — never sealed answers
+├── SKILL.md                         # discovery metadata + intent, scope & authority, process guidance
+├── references/
+│   ├── artifact-contract.md         # the artifact contract — single source
+│   ├── agent-contracts/             # platform-neutral subagent contracts, one per agent
+│   └── …                            # methodology, loaded on demand
+├── evals/
+│   └── public/                      # non-sensitive eval harness: runner config, fixtures
 └── scripts/                         # deterministic operations
 ```
 
-Sealed evaluation materials — holdout tasks, ground-truth notes, frozen
-external snapshots — are **never** stored inside an installed plugin copy:
-they live outside every evaluated installation, and an evaluated run
-receives only the task prompt.
+`evals/public/` holds only non-sensitive harness assets. Sealed evaluation
+materials — holdout tasks, ground-truth notes, frozen external snapshots,
+the rubric, and judge (scorer/verifier) prompts and configurations — form a
+separate **sealed judge package** that is **never** stored inside an
+installed plugin copy: it lives outside every evaluated installation, is
+sealed atomically in one operation under a single manifest and package
+hash, and an evaluated run receives only the task prompt.
 
 **Adapters** — platform wiring only:
 
@@ -56,6 +64,15 @@ wiring — nothing else. Workflow substance lives in the kernel once.
 
 A kernel `SKILL.md` (and, transitionally, a command file) contains, in order:
 
+0. **Discovery & invocation contract** — frontmatter metadata the harness
+   reads before the body is ever loaded: `name`; a `description` stating
+   both when to trigger and when **not** to; a permission class
+   (`read_only` / `workspace_write` / `external`); and the invocation mode
+   (user-invocable, model-invocable, both — or `none` for a package
+   shipped in a deliberately non-executable state, e.g. a skeleton). Codex skills require
+   name+description; Claude Code uses the description for automatic skill
+   selection and separately supports disabling model invocation. The kernel
+   states the intent once; adapters map it to platform-specific fields.
 1. **Intent** — the goal and the deliverable.
 2. **Scope & authority** — one short paragraph bounding the task, plus
    explicit out-of-scope items where creep is a real risk. State the
@@ -79,7 +96,14 @@ scope, invariants, and contract pointers.
 
 ## 3. Agent anatomy
 
-Subagents are not small commands; an agent definition specifies:
+The platform-neutral part of an agent definition — trigger,
+when-not-to-use, bounded input, authority, output contract, evidence,
+budget, failure behavior — is kernel material and lives at
+`references/agent-contracts/<agent>.md` inside the owning skill package.
+The platform file (`agents/*.md`) is a thin adapter: tools, model/effort,
+permissions, and a pointer to its kernel contract.
+
+Subagents are not small commands; an agent contract specifies:
 
 1. **Trigger** — when to spawn it, and explicitly **when not to** (the
    nearest cheaper alternative).
@@ -240,7 +264,8 @@ below (proposed as reviewable changes):
    (closest-wins) in monorepos; path-scoped rules where the harness
    supports them; skills/references for on-demand procedure.
 4. **Task memory:** `thoughts/` (this plugin's artifact store) — research,
-   plans, validation reports, handoffs.
+   plans, validation reports, handoffs — and, for repos using the AI-DLC
+   facade, `aidlc-docs/` (its canonical state and stage artifacts).
 
 Rules that follow:
 

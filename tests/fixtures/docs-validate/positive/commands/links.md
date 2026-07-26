@@ -1,0 +1,77 @@
+---
+description: Command exercising valid link forms
+---
+
+# Links
+
+Inline [a](../skills/demo/SKILL.md), titled [b](./ok.md "title"), single [b2](./ok.md 't'), paren [b3](./ok.md (t)),
+reference [c][ref1], implicit [ok.md][], angled [d][ang],
+fragment [e](./ok.md#demo), self [f](#links).
+
+[ref1]: ../agents/demo-agent.md
+[ok.md]: ./ok.md
+[ang]: <./ok.md>
+Paren dest [p](./ok_(v2).md).
+
+~~~
+fenced [broken](./ghost.md) link ignored
+~~~
+
+Setext Title
+============
+
+Setext link [s](#setext-title), spaced ref [w][foo bar].
+
+[foo   bar]: ./ok.md
+
+Angled space [u](<./user guide.md>).
+
+External schemes: [h](HTTPS://example.com/x), [f](ftp://example.com/file), [pr](//example.com/file).
+
+Nested paren dest [n](./ok_(a_(b)).md).
+
+Encoded [u2](./user%20guide.md), query [q](./ok.md?ref=x).
+
+    Indented code example: [ex](./missing-in-code.md)
+
+Bare text example](./missing2.md) and escaped \[ex](./missing3.md) are not links.
+
+Double-backtick span ``[x](./missing5.md)`` is code, not a link.
+
+Four-backtick fence with inner triple:
+
+````
+```
+[ex](./missing4.md)
+```
+````
+
+Back to prose.
+
+Escaped-paren dest [e2](./ok_\(v2\).md) and closing-fence literal below:
+
+````
+```still-code
+[fex](./missing6.md)
+```x
+````
+
+Escaped ref-like literal \[example][missing] is not a reference.
+
+Slug collisions:
+
+# foo
+
+# foo-1
+
+# foo
+
+Link to third: [f](#foo-2).
+
+Valid HTML link <a href="./ok.md">ok</a> and external <a href="https://example.com">x</a>.
+
+# Intro ![icon](./icon.png) Guide
+
+Image-alt slug [g](#intro-icon-guide).
+
+HTML edge cases: <!-- href="./missing7.md" --> and <a data-href="./missing8.md" href="./ok.md">real</a>.

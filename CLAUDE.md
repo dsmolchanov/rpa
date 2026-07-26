@@ -1,3 +1,5 @@
+@AGENTS.md
+
 # AI-DLC Compatibility Bootstrap
 
 This repository includes an AWS AI-DLC-compatible compatibility layer for the `/aidlc_*` command family.
