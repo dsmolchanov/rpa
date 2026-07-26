@@ -170,3 +170,41 @@ test-priority formula (3 copies, 2 incompatible), coverage threshold 80%
 Never instruct reviewers to be conservative or report only high-severity
 findings — literal models under-report. Ask for everything, then filter or
 adversarially verify in a separate pass (§3).
+
+## 11. Repository ontology
+
+(Basis: `thoughts/shared/research/2026-07-26-repo-ontology-sota.md`.)
+
+A repo this plugin operates on is assumed to carry a four-layer ontology;
+the plugin's commands read the upper layers first and write only to layer 4:
+
+1. **Orientation (always loaded):** root `AGENTS.md` as the cross-tool
+   kernel carrier, with `CLAUDE.md` importing it (`@AGENTS.md`) for Claude
+   Code. Under ~200 lines; commands, conventions, and gotchas the agent
+   cannot infer — never directory listings or file-by-file descriptions.
+2. **Stable map:** optional `ARCHITECTURE.md` (matklad-style) for repos
+   large enough to need one: coarse module map, layer boundaries, and
+   invariants — especially invariants expressed as absences. Name symbols,
+   don't link paths; content that changes at most yearly.
+3. **Conditional leaves:** nested per-directory instruction files
+   (closest-wins) in monorepos; path-scoped rules where the harness
+   supports them; skills/references for on-demand procedure.
+4. **Task memory:** `thoughts/` (this plugin's artifact store) — research,
+   plans, validation reports, handoffs.
+
+Rules that follow:
+
+- **No generated exhaustive maps.** Auto-generated context files that
+  restate discoverable structure measurably reduce agent success. Maps are
+  hand-curated, agent-*maintained* (drift detected, fixes proposed as
+  reviewable changes), never bulk-generated.
+- **Pointers over copies** everywhere: `file:line` references to
+  authoritative sources, no pasted snippets that can rot.
+- **Promote invariants to mechanism** when repeatedly violated: a rule the
+  map states in prose becomes a linter, structural test, or hook.
+- **Address-level precision comes from tools** (grep/glob baseline; LSP or
+  code-graph tools where available), not from prompt-stuffed indexes.
+- `/research_codebase` cites layers 1–2 when present and flags observed
+  drift; `docs-auditor` owns layer-1/2 drift detection (named symbols still
+  exist, documented commands still run) and reports it through
+  `/tech_debt_sweep`.
