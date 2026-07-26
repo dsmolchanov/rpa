@@ -31,6 +31,13 @@ Conclusion: the goal is not "one big map file". It is a **small always-loaded
 orientation layer + a stable hand-curated map of what cannot be inferred +
 everything else on demand or via tools**.
 
+Scope note on the evidence: the ETH/DeepMind result concerns LLM-generated
+repo context files of the AGENTS.md kind. It does **not** establish that
+every generated artifact is harmful (task-scoped ephemeral maps like
+Windsurf Codemaps are a distinct category with their own results); the safe
+generalization is narrower — generated always-loaded context that restates
+discoverable structure is net-negative.
+
 ## 2. The four-layer consensus (mid-2026)
 
 | Layer | Role | Mechanisms across harnesses |

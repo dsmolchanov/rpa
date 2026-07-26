@@ -71,3 +71,14 @@ jobs:
           elif [ -f pyproject.toml ]; then
             pip install -e . pytest-cov && pytest --cov=. --cov-report=term
           fi
+
+  # Deterministic docs gate (conventions.md §4): fails on zero target files,
+  # self-tests against positive/negative fixtures before validating.
+  docs-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Self-test validator against fixtures
+        run: python3 scripts/validate_docs.py --self-test
+      - name: Validate repository docs
+        run: python3 scripts/validate_docs.py --root .
