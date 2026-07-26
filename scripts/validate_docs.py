@@ -135,7 +135,7 @@ SEMVER_RE = re.compile(
     r"(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?"
     r"(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$"
 )
-INVOCATION_VALUES = {"user", "model", "both"}
+INVOCATION_VALUES = {"user", "model", "both", "none"}
 PERMISSION_TOKENS = ("read_only", "workspace_write", "external")
 
 
@@ -256,6 +256,11 @@ def check_skills(root, errors):
                     f"{rel}: frontmatter `invocation` must be a comma-separated subset of "
                     f"{sorted(INVOCATION_VALUES)}, got {invocation!r}"
                 )
+            elif "none" in items and len(items) > 1:
+                errors.append(
+                    f"{rel}: frontmatter `invocation` value `none` must be standalone, "
+                    f"got {invocation!r}"
+                )
 
 
 def _require_json_str(data, key, rel_path, errors, pattern=None, pattern_desc=""):
@@ -336,15 +341,16 @@ def _heading_anchors(path, cache):
     prev_paragraph = None
     for line in lines[start:]:
         stripped = line.strip()
-        if fence is None and stripped.startswith(("```", "~~~")):
+        indent = len(line) - len(line.lstrip(" "))
+        if fence is None and indent < 4 and stripped.startswith(("```", "~~~")):
             fence = stripped[:3]
             prev_paragraph = None
             continue
         if fence is not None:
-            if stripped.startswith(fence):
+            if indent < 4 and stripped.startswith(fence):
                 fence = None
             continue
-        if len(line) - len(line.lstrip(" ")) >= 4:
+        if indent >= 4:
             prev_paragraph = None  # indented code block line
             continue
         atx = re.match(r"^ {0,3}#{1,6}(?:\s+(.*?))?\s*#*\s*$", line)
@@ -404,7 +410,12 @@ def check_links(root, errors, exclude_fixtures=True):
         prev_blank, list_context, in_indented_code = True, False, False
         for line in text.splitlines():
             stripped_line = line.strip()
-            if fence is None and stripped_line.startswith(("```", "~~~")):
+            indent = len(line) - len(line.lstrip(" "))
+            if (
+                fence is None
+                and (indent < 4 or list_context)
+                and stripped_line.startswith(("```", "~~~"))
+            ):
                 fence = stripped_line[:3]
                 prev_blank = False
                 continue
@@ -415,7 +426,6 @@ def check_links(root, errors, exclude_fixtures=True):
             if not stripped_line:
                 prev_blank = True
                 continue
-            indent = len(line) - len(line.lstrip(" "))
             if indent >= 4:
                 # Indented code only when preceded by a blank line outside a
                 # list; inside a list, 4-space continuation is still prose.

@@ -68,7 +68,8 @@ A kernel `SKILL.md` (and, transitionally, a command file) contains, in order:
    reads before the body is ever loaded: `name`; a `description` stating
    both when to trigger and when **not** to; a permission class
    (`read_only` / `workspace_write` / `external`); and the invocation mode
-   (user-invocable, model-invocable, or both). Codex skills require
+   (user-invocable, model-invocable, both — or `none` for a package
+   shipped in a deliberately non-executable state, e.g. a skeleton). Codex skills require
    name+description; Claude Code uses the description for automatic skill
    selection and separately supports disabling model invocation. The kernel
    states the intent once; adapters map it to platform-specific fields.

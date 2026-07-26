@@ -8,7 +8,7 @@ description: >
   only the artifact contract and package layout.
 disable-model-invocation: true
 permission-class: "read_only (target repo) + workspace_write (thoughts/shared/research/ only)"
-invocation: "user"
+invocation: "none"
 ---
 
 # Research Codebase — kernel (structural skeleton, v0.2.1)
@@ -23,11 +23,13 @@ until then the authoritative behavior remains
 Discovery & invocation (conventions §2.0) is declared in the frontmatter
 above (`permission-class`, `invocation` — kernel fields; platform adapters
 map them to their harness's supported fields). The skeleton is deliberately
-**non-invocable**: `disable-model-invocation: true` keeps it out of
-automatic skill selection, and the description warns against selection, so
-fresh plugin installs cannot route research requests here before the
-rewrite. The trigger-rich production description (trigger and non-trigger
-cases) replaces the skeleton notice at candidate freeze.
+**non-invocable in both directions**: `invocation: none` declares it closed
+to user invocation as well, `disable-model-invocation: true` keeps it out
+of automatic skill selection, and the description warns against selection —
+so fresh plugin installs cannot route research requests here before the
+rewrite; the working entry point remains `/research_codebase`. The
+trigger-rich production description and real invocation modes arrive at
+candidate freeze.
 
 Kernel sections to be completed in the rewrite, in the §2 anatomy order:
 intent · scope & authority · artifact contract
