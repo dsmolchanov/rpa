@@ -2,9 +2,15 @@
 """Deterministic mock backend for the eval-runner preflight.
 
 Emulates the headless-backend contract the runner depends on (stream-json
-node/accounting lines, a session id, an artifact written under
-thoughts/shared/research/) with fixed, declared numbers so the preflight can
-assert exact tree-wide accounting. Failure modes are selected with --mode.
+node/accounting lines, a session id, a result text, an artifact written
+under thoughts/shared/research/ in the cwd worktree) with fixed, declared
+numbers so the preflight can assert exact tree-wide accounting. Failure
+modes are selected with --mode.
+
+Echo files: when MOCK_ECHO_DIR is set, the received prompt and --plugin-dir
+value are written there (`prompt.txt`, `plugin-dir.txt`) so the preflight
+can assert what actually reached the backend even after the disposable
+worktree is removed.
 
 Declared accounting per invocation:
   main node:     model=<--model>, input 100, output 50, tool_calls 7
@@ -13,6 +19,7 @@ Declared accounting per invocation:
 
 import argparse
 import json
+import os
 import sys
 import time
 import uuid
@@ -54,6 +61,13 @@ def write_artifact():
     (research / "mock-research.md").write_text(ARTIFACT, encoding="utf-8")
 
 
+def echo(name, value):
+    echo_dir = os.environ.get("MOCK_ECHO_DIR")
+    if echo_dir:
+        Path(echo_dir).mkdir(parents=True, exist_ok=True)
+        (Path(echo_dir) / name).write_text(value or "", encoding="utf-8")
+
+
 def emit_nodes(model):
     emit({"type": "node", "model": model, "tool_calls": 7,
           "usage": {"input_tokens": 100, "output_tokens": 50}})
@@ -65,10 +79,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", default="normal")
     parser.add_argument("--model", default="opus")
+    parser.add_argument("--plugin-dir")
     parser.add_argument("--resume")
     parser.add_argument("-p", dest="prompt", required=True)
     parser.add_argument("--output-format", default="stream-json")
     args = parser.parse_args()
+
+    echo("prompt.txt", args.prompt)
+    echo("plugin-dir.txt", args.plugin_dir)
 
     if args.mode == "infra-crash":
         print("mock backend crashed", file=sys.stderr)
@@ -96,7 +114,8 @@ def main():
     else:
         write_artifact()
 
-    emit({"type": "result", "session_id": session_id})
+    emit({"type": "result", "session_id": session_id,
+          "result": "MOCK-VERDICT: coverage 7/10, evidence 9/10"})
 
 
 if __name__ == "__main__":

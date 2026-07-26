@@ -20,6 +20,7 @@
       "effort": "default"
     }
   },
-  "backend_cmd": ["claude", "--model", "opus"],
+  "backend_cmd": ["claude", "--model", "opus", "--plugin-dir", "{installation}"],
+  "_backend_cmd_note": "{installation} expands per run to the verified installation copy mounted inside the run's clean profile; adjust the flag to whatever the pinned Claude Code version uses for local plugin loading, validated during the real-backend preflight.",
   "timeout_seconds": 3600
 }
