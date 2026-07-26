@@ -9,7 +9,8 @@ Capability map (each proven by `--preflight` before any scored run):
      installation tree against its registered SHA-256 (drift in any arm
      halts the experiment), mounts a copy of the selected arm into the
      run's profile, and passes its path to the backend via the
-     `{installation}` placeholder in `backend_cmd`.
+     `{installation}` placeholder in `backend_cmd` (a command without the
+     placeholder is refused — a bare backend would never exercise the arm).
   2. per-node model/effort capture   — every transcript node records its
      model; effort is pinned on the backend command line via the `{effort}`
      placeholder (its absence is refused). Nodes that report effort must
@@ -70,6 +71,13 @@ Capability map (each proven by `--preflight` before any scored run):
      on disk under a unique per-invocation id
      (`judge-<scoring_id>-<n>.json`), so separate scorer/verifier passes
      never overwrite each other.
+ 11. pre-registered run schedule    — `--make-schedule` emits a balanced,
+     seed-recorded, randomized interleaving of every arm x task x
+     replicate (arms may carry pre-registered `schedule_tasks` scoping);
+     `--run-schedule` executes it in recorded order, refuses tampered or
+     unbalanced schedule files, and writes a completion manifest — the
+     registered protocol cannot be replaced by manual, outcome-dependent
+     invocation.
 
 The backend command is configurable (`backend_cmd`); production uses the
 `claude` CLI in headless mode, while `--preflight` uses the bundled
@@ -82,6 +90,7 @@ Stdlib only.
 import argparse
 import hashlib
 import json
+import random
 import re
 import os
 import shutil
@@ -254,8 +263,11 @@ def _git(repo, *args):
 
 
 def make_worktree(repo_dir, sha, workspace):
-    """Disposable detached worktree at the pinned SHA, verified."""
-    dest = Path(workspace) / "worktrees" / uuid.uuid4().hex[:12]
+    """Disposable detached worktree at the pinned SHA, verified. The
+    destination is resolved to an absolute path BEFORE reaching git:
+    `git -C <repo>` resolves relative destinations under the repo while the
+    caller would resolve them under its own cwd — two different places."""
+    dest = (Path(workspace) / "worktrees" / uuid.uuid4().hex[:12]).resolve()
     dest.parent.mkdir(parents=True, exist_ok=True)
     _git(repo_dir, "worktree", "add", "--detach", str(dest), sha)
     head = _git(dest, "rev-parse", "HEAD")
@@ -481,6 +493,18 @@ def require_effort_pin(cmd, what):
         )
 
 
+def require_installation_mount(cmd):
+    """An arm run must actually load its installation: refuse a backend
+    command without the `{installation}` placeholder, or every arm would
+    silently run the same bare backend and the comparison would never
+    exercise the evaluated plugin content."""
+    if not any("{installation}" in part for part in cmd):
+        raise InfraFailure(
+            "backend_cmd must mount the arm installation via the "
+            "{installation} placeholder"
+        )
+
+
 def validate_arm_parity(config):
     """The registered protocol pins ONE runtime configuration: every arm
     must share the same model, effort, and workflow entrypoint, so
@@ -568,6 +592,10 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1):
             f"unknown arm `{arm_name}` — configured arms: {sorted(arms)}"
         )
     arm = arms[arm_name]
+    # Absolute from the start: relative paths would resolve differently for
+    # git (under the repo) and for this process (under the caller's cwd).
+    output_dir = Path(output_dir).resolve()
+    repo_dir = Path(repo_dir).resolve()
     run_id = uuid.uuid4().hex[:12]
     record = {
         "run_id": run_id,
@@ -611,6 +639,7 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1):
         if mount_hash != arm["sha256"]:
             raise InfraFailure("mounted installation copy hash mismatch")
         require_effort_pin(config["backend_cmd"], "backend_cmd")
+        require_installation_mount(config["backend_cmd"])
         cmd = expand_backend_cmd(config["backend_cmd"], mount,
                                  arm.get("effort", "default"))
         env = backend_env(profile)
@@ -738,6 +767,102 @@ def run_task_with_retries(config, arm_name, task_path, repo_dir, output_dir):
         if record["status"] != "infra_failure":
             break
     return attempts
+
+
+def make_schedule(config, task_paths, replicates, seed):
+    """Pre-registered run schedule: every arm x its task list x `replicates`,
+    randomized and interleaved with a RECORDED seed, so the execution order
+    is fixed before any run and reproducible afterwards. An arm may restrict
+    its task list via `schedule_tasks` (the pre-registered third-arm
+    scoping); manual per-run invocation cannot produce a balanced,
+    outcome-independent order — this artifact is what `--run-schedule`
+    executes and validates against."""
+    validate_arm_parity(config)
+    tasks = [str(Path(t)) for t in task_paths]
+    entries = []
+    for arm_name in sorted(config["arms"]):
+        arm = config["arms"][arm_name]
+        arm_tasks = [str(Path(t)) for t in arm.get("schedule_tasks", tasks)]
+        unknown = [t for t in arm_tasks if t not in tasks]
+        if unknown:
+            raise InfraFailure(
+                f"arm `{arm_name}` schedule_tasks not in the task list: {unknown}"
+            )
+        for task in arm_tasks:
+            entries.extend(
+                {"arm": arm_name, "task": task} for _ in range(replicates)
+            )
+    rng = random.Random(seed)
+    rng.shuffle(entries)
+    for index, entry in enumerate(entries):
+        entry["index"] = index
+    return {
+        "seed": seed,
+        "replicates": replicates,
+        "tasks": tasks,
+        "arms": sorted(config["arms"]),
+        "entries": entries,
+    }
+
+
+def run_schedule(config, schedule_path, repo_dir, output_dir):
+    """Execute a pre-registered schedule in its recorded order, then record
+    completion. The schedule must still be the balanced, seed-registered
+    artifact — a tampered, truncated, or reordered file is refused, so
+    unbalanced or outcome-dependent execution cannot masquerade as the
+    registered protocol."""
+    schedule = json.loads(Path(schedule_path).read_text(encoding="utf-8"))
+    entries = schedule.get("entries", [])
+    expected = {}
+    for arm_name in schedule["arms"]:
+        arm = config.get("arms", {}).get(arm_name, {})
+        arm_tasks = [str(Path(t))
+                     for t in arm.get("schedule_tasks", schedule["tasks"])]
+        for task in arm_tasks:
+            expected[(arm_name, task)] = schedule["replicates"]
+    counts = {}
+    for entry in entries:
+        key = (entry["arm"], entry["task"])
+        counts[key] = counts.get(key, 0) + 1
+    if counts != expected:
+        raise InfraFailure(
+            "schedule is unbalanced or tampered — every arm/task cell must "
+            "hold exactly `replicates` entries; regenerate with --make-schedule"
+        )
+    if [entry.get("index") for entry in entries] != list(range(len(entries))):
+        raise InfraFailure("schedule entry order corrupted — regenerate")
+    results = []
+    for entry in entries:
+        attempts = run_task_with_retries(
+            config, entry["arm"], entry["task"], repo_dir, output_dir
+        )
+        final = attempts[-1]
+        results.append({
+            "index": entry["index"],
+            "arm": entry["arm"],
+            "task": entry["task"],
+            "run_id": final["run_id"],
+            "status": final["status"],
+            "attempts": len(attempts),
+        })
+        if final["status"] == "infra_failure":
+            raise InfraFailure(
+                f"schedule aborted at entry {entry['index']} "
+                f"({entry['arm']} / {entry['task']}): infra retries exhausted"
+            )
+    manifest = {
+        "schedule": str(schedule_path),
+        "seed": schedule["seed"],
+        "replicates": schedule["replicates"],
+        "results": results,
+        "complete": True,
+    }
+    out = Path(output_dir).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "schedule-manifest.json").write_text(
+        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+    )
+    return manifest
 
 
 def assert_blind_scorable(doc_path):
@@ -882,12 +1007,53 @@ def main():
     parser.add_argument("--evidence-sha",
                         help="pinned sha for --evidence-repo (the task's target-sha)")
     parser.add_argument("--output", default="runs", help="output directory")
+    parser.add_argument("--make-schedule", action="store_true",
+                        help="write a pre-registered randomized schedule "
+                             "(requires --config, --tasks, --seed)")
+    parser.add_argument("--tasks", nargs="+",
+                        help="task files for --make-schedule")
+    parser.add_argument("--replicates", type=int, default=3,
+                        help="replicates per arm/task cell (default 3, per plan)")
+    parser.add_argument("--seed", type=int,
+                        help="recorded randomization seed for --make-schedule")
+    parser.add_argument("--schedule-out", default="schedule.json",
+                        help="where --make-schedule writes the schedule")
+    parser.add_argument("--run-schedule",
+                        help="execute a pre-registered schedule file "
+                             "(requires --config, --repo)")
     args = parser.parse_args()
 
     if args.preflight:
         from preflight import run_preflight  # noqa: PLC0415 — colocated module
 
         sys.exit(run_preflight())
+
+    if args.make_schedule:
+        if not (args.config and args.tasks and args.seed is not None):
+            parser.error("--make-schedule requires --config, --tasks, --seed")
+        schedule = make_schedule(load_config(args.config), args.tasks,
+                                 args.replicates, args.seed)
+        Path(args.schedule_out).write_text(
+            json.dumps(schedule, indent=2) + "\n", encoding="utf-8"
+        )
+        print(json.dumps({"schedule": args.schedule_out,
+                          "entries": len(schedule["entries"]),
+                          "seed": args.seed}))
+        sys.exit(0)
+
+    if args.run_schedule:
+        if not (args.config and args.repo):
+            parser.error("--run-schedule requires --config and --repo")
+        config = load_config(args.config)
+        try:
+            manifest = run_schedule(config, args.run_schedule, args.repo,
+                                    args.output)
+        except InfraFailure as exc:
+            print(json.dumps({"status": "infra_failure", "failure": str(exc)}))
+            sys.exit(1)
+        print(json.dumps({"complete": manifest["complete"],
+                          "runs": len(manifest["results"])}))
+        sys.exit(0)
 
     if args.score:
         if not (args.config and args.docs and args.judge_prompt):

@@ -325,6 +325,82 @@ def run_preflight():
             "unknown arm rejected with classified error (no traceback)",
             arm_ok, notes)
 
+        config, _ = build_config(ws, "normal")
+        config["backend_cmd"] = [
+            part for part in config["backend_cmd"]
+            if part not in ("--plugin-dir", "{installation}")
+        ]
+        task = write_task(ws, "no-mount", par_sha)
+        record = runner.run_task(config, "mock", task, repo, ws / "out-no-mount")
+        ok &= check(
+            "backend command without {installation} mount refused",
+            record["status"] == "infra_failure"
+            and "{installation}" in record.get("failure", ""),
+            notes)
+
+        config, _ = build_config(ws, "normal")
+        config["arms"]["second"] = dict(config["arms"]["mock"],
+                                        schedule_tasks=["t-a.md"])
+        s1 = runner.make_schedule(config, ["t-a.md", "t-b.md"], 3, seed=42)
+        s2 = runner.make_schedule(config, ["t-a.md", "t-b.md"], 3, seed=42)
+        cell_counts = {}
+        for entry in s1["entries"]:
+            key = (entry["arm"], entry["task"])
+            cell_counts[key] = cell_counts.get(key, 0) + 1
+        ok &= check(
+            "pre-registered schedule balanced, scoped, seed-deterministic",
+            s1 == s2
+            and len(s1["entries"]) == 9
+            and cell_counts == {("mock", "t-a.md"): 3, ("mock", "t-b.md"): 3,
+                                ("second", "t-a.md"): 3},
+            notes)
+
+        config, _ = build_config(ws, "normal")
+        repo_s, sha_s = make_git_repo(ws, "sched")
+        task_s = write_task(ws, "sched", sha_s)
+        sched = runner.make_schedule(config, [str(task_s)], 2, seed=7)
+        sched_path = ws / "schedule.json"
+        sched_path.write_text(json.dumps(sched), encoding="utf-8")
+        manifest = runner.run_schedule(config, sched_path, repo_s,
+                                       ws / "out-sched")
+        ok &= check(
+            "schedule executor runs every entry in order, records completion",
+            manifest["complete"] is True
+            and len(manifest["results"]) == 2
+            and all(r["status"] == "completed" for r in manifest["results"])
+            and (ws / "out-sched" / "schedule-manifest.json").exists(),
+            notes)
+
+        bad = dict(sched)
+        bad["entries"] = sched["entries"][:-1]
+        bad_path = ws / "schedule-bad.json"
+        bad_path.write_text(json.dumps(bad), encoding="utf-8")
+        try:
+            runner.run_schedule(config, bad_path, repo_s, ws / "out-sched-bad")
+            sched_ok = False
+        except runner.InfraFailure as exc:
+            sched_ok = "unbalanced or tampered" in str(exc)
+        ok &= check(
+            "tampered/unbalanced schedule refused before any run",
+            sched_ok, notes)
+
+        config, _ = build_config(ws, "normal")
+        repo_r, sha_r = make_git_repo(ws, "relout")
+        task_r = write_task(ws, "relout", sha_r)
+        old_cwd = os.getcwd()
+        os.chdir(ws)
+        try:
+            record = runner.run_task(config, "mock", task_r, repo_r,
+                                     "rel-out-dir")
+        finally:
+            os.chdir(old_cwd)
+        ok &= check(
+            "relative --output resolved (worktree verified and removed)",
+            record["status"] == "completed"
+            and Path(record["worktree"]).is_absolute()
+            and not Path(record["worktree"]).exists(),
+            notes)
+
         record, _, _, _ = run_case(ws, "infra-crash")
         ok &= check("infra failure classified (backend crash)",
                     record["status"] == "infra_failure", notes)
