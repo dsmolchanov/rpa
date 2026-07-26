@@ -432,6 +432,39 @@ def run_preflight():
             sched_ok, notes)
 
         config, _ = build_config(ws, "normal")
+        config["arms"]["mock"]["model"] = "uniformly-changed"
+        config["arms"]["mock"]["effort"] = "low"
+        try:
+            runner.run_schedule(config, sched_path, repo_s,
+                                ws / "out-sched-drift", [str(task_s)])
+            bind_ok = False
+        except runner.InfraFailure as exc:
+            bind_ok = "config digest mismatch" in str(exc)
+        ok &= check(
+            "schedule bound to registered config (uniform drift refused)",
+            bind_ok, notes)
+
+        config, _ = build_config(ws, "normal")
+        task_ret = write_task(ws, "retries", par_sha)
+        config["max_infra_retries"] = -1
+        try:
+            runner.run_task_with_retries(config, "mock", task_ret, repo,
+                                         ws / "out-neg-retries")
+            retries_ok = False
+        except runner.InfraFailure as exc:
+            retries_ok = "nonnegative integer" in str(exc)
+        config["max_infra_retries"] = "many"
+        try:
+            runner.run_task_with_retries(config, "mock", task_ret, repo,
+                                         ws / "out-bad-retries")
+            retries_ok = False
+        except runner.InfraFailure as exc:
+            retries_ok = retries_ok and "nonnegative integer" in str(exc)
+        ok &= check(
+            "invalid max_infra_retries rejected as classified infra failure",
+            retries_ok, notes)
+
+        config, _ = build_config(ws, "normal")
         config["backend_version"] = "other-version 9.9"
         task_v = write_task(ws, "ver-mismatch", par_sha)
         record = runner.run_task(config, "mock", task_v, repo, ws / "out-ver")
@@ -642,6 +675,11 @@ def run_preflight():
         ok &= check(
             "scorer judge role recorded (blind, evidence-free)",
             all(r.get("role") == "scorer" for r in results),
+            notes)
+        ok &= check(
+            "backend version re-probed and recorded per judge session",
+            all(r.get("backend_version") == "mock-claude 1.0.0"
+                for r in results),
             notes)
         ev_repo, ev_sha = make_git_repo(ws, "evidence")
         echo_dir = ws / "echo-verifier"

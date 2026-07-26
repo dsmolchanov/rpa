@@ -184,6 +184,35 @@ def load_config(path):
         return json.load(fh)
 
 
+def config_digest(config):
+    """Digest of the registered runtime configuration a schedule binds to.
+    A uniform change (model, effort, entrypoint, backend command/version,
+    installation hashes, judge pins, retry/timeout policy) would slip past
+    arm parity — which only compares arms with each other — so the digest
+    pins the WHOLE configuration for the schedule's lifetime. Installation
+    directories are identified by their registered sha256, not their path."""
+    material = {
+        "arms": {
+            name: {key: arm.get(key)
+                   for key in ("model", "effort", "entrypoint", "sha256",
+                               "forbid_subagents", "schedule_tasks")}
+            for name, arm in config.get("arms", {}).items()
+        },
+        "backend_cmd": config.get("backend_cmd"),
+        "backend_version": config.get("backend_version"),
+        "backend_version_cmd": config.get("backend_version_cmd"),
+        "judge_backend_cmd": config.get("judge_backend_cmd"),
+        "judge_model": config.get("judge_model"),
+        "judge_effort": config.get("judge_effort"),
+        "workflow_abort_exit_codes": config.get("workflow_abort_exit_codes"),
+        "max_infra_retries": config.get("max_infra_retries"),
+        "timeout_seconds": config.get("timeout_seconds"),
+    }
+    return hashlib.sha256(
+        json.dumps(material, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
 def verify_backend_version(config):
     """The pinned-runtime protocol includes the exact backend (Claude Code)
     version: it is registered in the config and probed before EVERY run and
@@ -800,7 +829,19 @@ def run_task_with_retries(config, arm_name, task_path, repo_dir, output_dir):
     """Registered protocol: an infrastructure failure invalidates the run and
     the run is re-executed, automatically and bounded — workflow failures are
     counted, never replaced. Every attempt's record is written to disk."""
-    max_retries = int(config.get("max_infra_retries", DEFAULT_MAX_INFRA_RETRIES))
+    raw_retries = config.get("max_infra_retries", DEFAULT_MAX_INFRA_RETRIES)
+    try:
+        max_retries = int(raw_retries)
+    except (TypeError, ValueError) as exc:
+        raise InfraFailure(
+            f"`max_infra_retries` must be a nonnegative integer, "
+            f"got {raw_retries!r}"
+        ) from exc
+    if max_retries < 0:
+        raise InfraFailure(
+            f"`max_infra_retries` must be a nonnegative integer, "
+            f"got {raw_retries!r}"
+        )
     attempts = []
     for attempt in range(1, max_retries + 2):
         record = run_task(config, arm_name, task_path, repo_dir, output_dir,
@@ -865,6 +906,7 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
         "nonstandard_replicates": replicates != REGISTERED_REPLICATES,
         "tasks": tasks,
         "arms": sorted(config["arms"]),
+        "config_digest": config_digest(config),
         "entries": entries,
     }
 
@@ -880,6 +922,13 @@ def run_schedule(config, schedule_path, repo_dir, output_dir, task_paths):
     from index 0, so no extra runs are created after outcomes were
     observed."""
     schedule = json.loads(Path(schedule_path).read_text(encoding="utf-8"))
+    if schedule.get("config_digest") != config_digest(config):
+        raise InfraFailure(
+            "registered runtime configuration changed since this schedule "
+            "was created (config digest mismatch) — a schedule binds ONE "
+            "pre-registered configuration for the whole experiment; "
+            "regenerate the schedule if the change was intentional"
+        )
     rebuilt = make_schedule(
         config, task_paths, schedule.get("replicates"), schedule.get("seed"),
         allow_nonstandard=schedule.get("nonstandard_replicates", False),
@@ -1014,7 +1063,6 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
     if not judge_model:
         raise InfraFailure("`judge_model` must be configured for score mode")
     judge_effort = config.get("judge_effort", "default")
-    verify_backend_version(config)
     require_effort_pin(judge_cmd, "judge command")
     judge_cmd = expand_backend_cmd(judge_cmd, None, judge_effort)
     doc_texts = [assert_blind_scorable(doc) for doc in doc_paths]
@@ -1026,6 +1074,10 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
     results = []
     role = "verifier" if evidence_repo else "scorer"
     for i, (doc, doc_text) in enumerate(zip(doc_paths, doc_texts)):
+        # Every judge session is a pinned session: the backend version is
+        # re-probed per document, so an installation change mid-batch
+        # cannot slip later documents onto an unregistered version.
+        backend_version = verify_backend_version(config)
         # Each judge runs in its own root OUTSIDE the experiment tree:
         # nothing above the cwd leads to run artifacts. A scorer gets an
         # empty cwd and no inspection tools (JUDGE_SETTINGS); a verifier
@@ -1061,6 +1113,7 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             "profile": str(profile),
             "cwd": str(workdir),
             "role": role,
+            "backend_version": backend_version,
             "judge_model": judge_model,
             "effort_capture": effort_capture,
             "response": response,
