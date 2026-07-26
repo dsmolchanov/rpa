@@ -72,6 +72,9 @@ def build_config(workspace, mode, timeout=20):
         "judge_model": "opus",
         "judge_effort": "high",
         "workflow_abort_exit_codes": [21],
+        "backend_version": "mock-claude 1.0.0",
+        "backend_version_cmd": [sys.executable, str(HERE / "mock_claude.py"),
+                                "--version"],
         "timeout_seconds": timeout,
     }, install
 
@@ -356,13 +359,40 @@ def run_preflight():
             notes)
 
         config, _ = build_config(ws, "normal")
+        try:
+            runner.make_schedule(config, ["t-a.md"], 2, seed=1)
+            rep_ok = False
+        except runner.InfraFailure as exc:
+            rep_ok = "replicates" in str(exc)
+        ok &= check(
+            "nonstandard replicate count refused without explicit override",
+            rep_ok, notes)
+
+        config, _ = build_config(ws, "normal")
+        config["arms"]["ablation"] = dict(config["arms"]["mock"],
+                                          forbid_subagents=True)
+        try:
+            runner.make_schedule(config, ["t-a.md", "t-b.md"], 3, seed=1)
+            abl_ok = False
+        except runner.InfraFailure as exc:
+            abl_ok = "schedule_tasks" in str(exc)
+        config["arms"]["ablation"]["schedule_tasks"] = ["t-a.md", "t-b.md"]
+        s_abl = runner.make_schedule(config, ["t-a.md", "t-b.md"], 3, seed=1)
+        ok &= check(
+            "ablation arm requires explicit two-task scoping",
+            abl_ok and sum(
+                1 for e in s_abl["entries"] if e["arm"] == "ablation") == 6,
+            notes)
+
+        config, _ = build_config(ws, "normal")
         repo_s, sha_s = make_git_repo(ws, "sched")
         task_s = write_task(ws, "sched", sha_s)
-        sched = runner.make_schedule(config, [str(task_s)], 2, seed=7)
+        sched = runner.make_schedule(config, [str(task_s)], 2, seed=7,
+                                     allow_nonstandard=True)
         sched_path = ws / "schedule.json"
         sched_path.write_text(json.dumps(sched), encoding="utf-8")
         manifest = runner.run_schedule(config, sched_path, repo_s,
-                                       ws / "out-sched")
+                                       ws / "out-sched", [str(task_s)])
         ok &= check(
             "schedule executor runs every entry in order, records completion",
             manifest["complete"] is True
@@ -371,18 +401,55 @@ def run_preflight():
             and (ws / "out-sched" / "schedule-manifest.json").exists(),
             notes)
 
+        manifest_path = ws / "out-sched" / "schedule-manifest.json"
+        m = json.loads(manifest_path.read_text(encoding="utf-8"))
+        m["results"] = m["results"][:1]
+        m["complete"] = False
+        manifest_path.write_text(json.dumps(m), encoding="utf-8")
+        runs_before = len(list((ws / "out-sched").glob("run-*.json")))
+        manifest2 = runner.run_schedule(config, sched_path, repo_s,
+                                        ws / "out-sched", [str(task_s)])
+        runs_after = len(list((ws / "out-sched").glob("run-*.json")))
+        ok &= check(
+            "schedule progress persisted and resumed (no duplicate reruns)",
+            manifest2["complete"] is True
+            and len(manifest2["results"]) == 2
+            and runs_after == runs_before + 1,
+            notes)
+
         bad = dict(sched)
         bad["entries"] = sched["entries"][:-1]
         bad_path = ws / "schedule-bad.json"
         bad_path.write_text(json.dumps(bad), encoding="utf-8")
         try:
-            runner.run_schedule(config, bad_path, repo_s, ws / "out-sched-bad")
+            runner.run_schedule(config, bad_path, repo_s,
+                                ws / "out-sched-bad", [str(task_s)])
             sched_ok = False
         except runner.InfraFailure as exc:
-            sched_ok = "unbalanced or tampered" in str(exc)
+            sched_ok = "reconstructed" in str(exc)
         ok &= check(
-            "tampered/unbalanced schedule refused before any run",
+            "edited schedule refused (reconstructed from registered config)",
             sched_ok, notes)
+
+        config, _ = build_config(ws, "normal")
+        config["backend_version"] = "other-version 9.9"
+        task_v = write_task(ws, "ver-mismatch", par_sha)
+        record = runner.run_task(config, "mock", task_v, repo, ws / "out-ver")
+        ok &= check(
+            "backend version drift blocked before the run",
+            record["status"] == "infra_failure"
+            and "version" in record.get("failure", "")
+            and "differs from registered" in record.get("failure", ""),
+            notes)
+
+        config, _ = build_config(ws, "normal")
+        config.pop("backend_version")
+        record = runner.run_task(config, "mock", task_v, repo, ws / "out-ver2")
+        ok &= check(
+            "unregistered backend version refused",
+            record["status"] == "infra_failure"
+            and "backend_version" in record.get("failure", ""),
+            notes)
 
         config, _ = build_config(ws, "normal")
         repo_r, sha_r = make_git_repo(ws, "relout")

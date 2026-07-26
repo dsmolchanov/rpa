@@ -135,6 +135,8 @@ def emit_real_stream(model, session_id):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--version", action="version",
+                        version="mock-claude 1.0.0")
     parser.add_argument("--mode", default="normal")
     parser.add_argument("--model", default="opus")
     parser.add_argument("--effort", default="high")

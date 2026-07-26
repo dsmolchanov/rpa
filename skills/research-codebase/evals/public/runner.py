@@ -73,11 +73,19 @@ Capability map (each proven by `--preflight` before any scored run):
      never overwrite each other.
  11. pre-registered run schedule    — `--make-schedule` emits a balanced,
      seed-recorded, randomized interleaving of every arm x task x
-     replicate (arms may carry pre-registered `schedule_tasks` scoping);
-     `--run-schedule` executes it in recorded order, refuses tampered or
-     unbalanced schedule files, and writes a completion manifest — the
-     registered protocol cannot be replaced by manual, outcome-dependent
-     invocation.
+     replicate; the protocol fixes REGISTERED_REPLICATES per cell (other
+     counts must be explicitly marked nonstandard, dev-set tuning only)
+     and a no-subagent ablation arm must be explicitly scoped to exactly
+     its two designated tasks. `--run-schedule` RECONSTRUCTS the expected
+     schedule from the registered config, the operator-supplied task set,
+     and the recorded seed — the file's own arms/tasks/entries are never
+     trusted — executes in recorded order, persists progress to the
+     manifest after every entry, and resumes an interrupted schedule at
+     the first unfinished entry.
+ 12. pinned backend version         — the exact Claude Code version is
+     registered (`backend_version` + `backend_version_cmd`) and probed
+     before every run and judge pass; drift between interleaved entries
+     blocks the run.
 
 The backend command is configurable (`backend_cmd`); production uses the
 `claude` CLI in headless mode, while `--preflight` uses the bundled
@@ -103,6 +111,9 @@ from pathlib import Path
 
 MAX_CONTINUATIONS = 3
 DEFAULT_MAX_INFRA_RETRIES = 2
+# The pilot protocol fixes the replicate count; schedules that deviate must
+# be explicitly marked nonstandard (dev-set tuning only, never holdout).
+REGISTERED_REPLICATES = 3
 CONTINUATION_MESSAGE = (
     "Proceed with the research as specified; no additional constraints."
 )
@@ -171,6 +182,36 @@ def hash_tree(root):
 def load_config(path):
     with open(path, encoding="utf-8") as fh:
         return json.load(fh)
+
+
+def verify_backend_version(config):
+    """The pinned-runtime protocol includes the exact backend (Claude Code)
+    version: it is registered in the config and probed before EVERY run and
+    every judge pass, so a backend upgrade between interleaved schedule
+    entries cannot mix runtime versions inside one comparison."""
+    expected = config.get("backend_version")
+    probe = config.get("backend_version_cmd")
+    if not expected or not probe:
+        raise InfraFailure(
+            "config must register `backend_version` and `backend_version_cmd` "
+            "— the pinned-runtime protocol requires a per-run version check"
+        )
+    try:
+        proc = subprocess.run(probe, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise InfraFailure(f"backend version probe failed: {exc}") from exc
+    if proc.returncode != 0:
+        raise InfraFailure(
+            f"backend version probe exited {proc.returncode}: "
+            f"{proc.stderr.strip()[:200]}"
+        )
+    actual = proc.stdout.strip()
+    if actual != expected:
+        raise InfraFailure(
+            f"backend version `{actual}` differs from registered "
+            f"`{expected}` — run blocked"
+        )
+    return actual
 
 
 def verify_installation(arm_name, arm_cfg):
@@ -616,6 +657,7 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1):
     started = None
     try:
         validate_arm_parity(config)
+        record["backend_version"] = verify_backend_version(config)
         # Every registered installation is verified before EVERY run, so
         # drift in any arm halts the experiment before more data is
         # collected — not only when that arm happens to be selected.
@@ -769,19 +811,40 @@ def run_task_with_retries(config, arm_name, task_path, repo_dir, output_dir):
     return attempts
 
 
-def make_schedule(config, task_paths, replicates, seed):
+def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False):
     """Pre-registered run schedule: every arm x its task list x `replicates`,
     randomized and interleaved with a RECORDED seed, so the execution order
-    is fixed before any run and reproducible afterwards. An arm may restrict
-    its task list via `schedule_tasks` (the pre-registered third-arm
-    scoping); manual per-run invocation cannot produce a balanced,
-    outcome-independent order — this artifact is what `--run-schedule`
-    executes and validates against."""
+    is fixed before any run and reproducible afterwards. The protocol fixes
+    REGISTERED_REPLICATES per cell — any other count must be explicitly
+    marked nonstandard (dev-set tuning only) and the schedule carries that
+    mark. A no-subagent (ablation) arm must be EXPLICITLY scoped to its two
+    designated tasks via `schedule_tasks` — defaulting it to the full task
+    list would silently widen the pre-registered third-arm comparison."""
+    if replicates != REGISTERED_REPLICATES and not allow_nonstandard:
+        raise InfraFailure(
+            f"the registered protocol fixes {REGISTERED_REPLICATES} "
+            f"replicates per arm/task cell (got {replicates}); nonstandard "
+            f"counts are for dev-set tuning only and must be explicitly "
+            f"allowed"
+        )
     validate_arm_parity(config)
     tasks = [str(Path(t)) for t in task_paths]
     entries = []
     for arm_name in sorted(config["arms"]):
         arm = config["arms"][arm_name]
+        if arm.get("forbid_subagents"):
+            if "schedule_tasks" not in arm:
+                raise InfraFailure(
+                    f"arm `{arm_name}` (no-subagent ablation) requires "
+                    f"explicit `schedule_tasks` — the plan scopes the third "
+                    f"arm to its two designated tasks"
+                )
+            if len(arm["schedule_tasks"]) != 2:
+                raise InfraFailure(
+                    f"arm `{arm_name}` (no-subagent ablation) must be scoped "
+                    f"to exactly 2 designated tasks, got "
+                    f"{len(arm['schedule_tasks'])}"
+                )
         arm_tasks = [str(Path(t)) for t in arm.get("schedule_tasks", tasks)]
         unknown = [t for t in arm_tasks if t not in tasks]
         if unknown:
@@ -799,44 +862,86 @@ def make_schedule(config, task_paths, replicates, seed):
     return {
         "seed": seed,
         "replicates": replicates,
+        "nonstandard_replicates": replicates != REGISTERED_REPLICATES,
         "tasks": tasks,
         "arms": sorted(config["arms"]),
         "entries": entries,
     }
 
 
-def run_schedule(config, schedule_path, repo_dir, output_dir):
-    """Execute a pre-registered schedule in its recorded order, then record
-    completion. The schedule must still be the balanced, seed-registered
-    artifact — a tampered, truncated, or reordered file is refused, so
-    unbalanced or outcome-dependent execution cannot masquerade as the
-    registered protocol."""
+def run_schedule(config, schedule_path, repo_dir, output_dir, task_paths):
+    """Execute a pre-registered schedule in its recorded order. The expected
+    schedule is RECONSTRUCTED from the registered config, the operator-
+    supplied task set, and the recorded seed/replicates — the schedule
+    file's own arms/tasks/entries are never trusted, so an edited file
+    (dropped arm or task, truncated entries, reordering) is refused before
+    any run. Progress is persisted to the manifest after every entry, and
+    an interrupted schedule resumes at the first unfinished entry — never
+    from index 0, so no extra runs are created after outcomes were
+    observed."""
     schedule = json.loads(Path(schedule_path).read_text(encoding="utf-8"))
-    entries = schedule.get("entries", [])
-    expected = {}
-    for arm_name in schedule["arms"]:
-        arm = config.get("arms", {}).get(arm_name, {})
-        arm_tasks = [str(Path(t))
-                     for t in arm.get("schedule_tasks", schedule["tasks"])]
-        for task in arm_tasks:
-            expected[(arm_name, task)] = schedule["replicates"]
-    counts = {}
-    for entry in entries:
-        key = (entry["arm"], entry["task"])
-        counts[key] = counts.get(key, 0) + 1
-    if counts != expected:
+    rebuilt = make_schedule(
+        config, task_paths, schedule.get("replicates"), schedule.get("seed"),
+        allow_nonstandard=schedule.get("nonstandard_replicates", False),
+    )
+    if rebuilt != schedule:
         raise InfraFailure(
-            "schedule is unbalanced or tampered — every arm/task cell must "
-            "hold exactly `replicates` entries; regenerate with --make-schedule"
+            "schedule does not match the one reconstructed from the "
+            "registered configuration, task set, replicates, and seed — "
+            "edited/tampered schedules are refused; regenerate with "
+            "--make-schedule"
         )
-    if [entry.get("index") for entry in entries] != list(range(len(entries))):
-        raise InfraFailure("schedule entry order corrupted — regenerate")
+    entries = schedule["entries"]
+    out = Path(output_dir).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    manifest_path = out / "schedule-manifest.json"
     results = []
-    for entry in entries:
+    if manifest_path.exists():
+        prior = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if prior.get("seed") != schedule["seed"]:
+            raise InfraFailure(
+                "existing manifest in the output directory belongs to a "
+                "different schedule (seed mismatch)"
+            )
+        results = list(prior.get("results", []))
+        if len(results) > len(entries):
+            raise InfraFailure("existing manifest is longer than the schedule")
+        for done, entry in zip(results, entries):
+            if (done.get("index"), done.get("arm"), done.get("task")) != (
+                    entry["index"], entry["arm"], entry["task"]):
+                raise InfraFailure(
+                    "existing manifest does not match the schedule prefix"
+                )
+
+    def write_manifest(complete):
+        manifest = {
+            "schedule": str(schedule_path),
+            "seed": schedule["seed"],
+            "replicates": schedule["replicates"],
+            "nonstandard_replicates": schedule.get("nonstandard_replicates",
+                                                   False),
+            "results": results,
+            "complete": complete,
+        }
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+        )
+        return manifest
+
+    for entry in entries[len(results):]:
         attempts = run_task_with_retries(
             config, entry["arm"], entry["task"], repo_dir, output_dir
         )
         final = attempts[-1]
+        if final["status"] == "infra_failure":
+            # Entry unfinished: persist progress so a re-run resumes HERE.
+            write_manifest(False)
+            raise InfraFailure(
+                f"schedule interrupted at entry {entry['index']} "
+                f"({entry['arm']} / {entry['task']}): infra retries "
+                f"exhausted; progress persisted — re-run --run-schedule to "
+                f"resume at this entry"
+            )
         results.append({
             "index": entry["index"],
             "arm": entry["arm"],
@@ -845,24 +950,8 @@ def run_schedule(config, schedule_path, repo_dir, output_dir):
             "status": final["status"],
             "attempts": len(attempts),
         })
-        if final["status"] == "infra_failure":
-            raise InfraFailure(
-                f"schedule aborted at entry {entry['index']} "
-                f"({entry['arm']} / {entry['task']}): infra retries exhausted"
-            )
-    manifest = {
-        "schedule": str(schedule_path),
-        "seed": schedule["seed"],
-        "replicates": schedule["replicates"],
-        "results": results,
-        "complete": True,
-    }
-    out = Path(output_dir).resolve()
-    out.mkdir(parents=True, exist_ok=True)
-    (out / "schedule-manifest.json").write_text(
-        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
-    )
-    return manifest
+        write_manifest(False)
+    return write_manifest(True)
 
 
 def assert_blind_scorable(doc_path):
@@ -925,6 +1014,7 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
     if not judge_model:
         raise InfraFailure("`judge_model` must be configured for score mode")
     judge_effort = config.get("judge_effort", "default")
+    verify_backend_version(config)
     require_effort_pin(judge_cmd, "judge command")
     judge_cmd = expand_backend_cmd(judge_cmd, None, judge_effort)
     doc_texts = [assert_blind_scorable(doc) for doc in doc_paths]
@@ -1013,7 +1103,13 @@ def main():
     parser.add_argument("--tasks", nargs="+",
                         help="task files for --make-schedule")
     parser.add_argument("--replicates", type=int, default=3,
-                        help="replicates per arm/task cell (default 3, per plan)")
+                        help="replicates per arm/task cell (the protocol "
+                             "fixes 3; other values need "
+                             "--allow-nonstandard-replicates)")
+    parser.add_argument("--allow-nonstandard-replicates", action="store_true",
+                        help="dev-set tuning only: permit a replicate count "
+                             "other than 3; the schedule is marked "
+                             "nonstandard and cannot pass as holdout")
     parser.add_argument("--seed", type=int,
                         help="recorded randomization seed for --make-schedule")
     parser.add_argument("--schedule-out", default="schedule.json",
@@ -1031,8 +1127,15 @@ def main():
     if args.make_schedule:
         if not (args.config and args.tasks and args.seed is not None):
             parser.error("--make-schedule requires --config, --tasks, --seed")
-        schedule = make_schedule(load_config(args.config), args.tasks,
-                                 args.replicates, args.seed)
+        try:
+            schedule = make_schedule(
+                load_config(args.config), args.tasks, args.replicates,
+                args.seed,
+                allow_nonstandard=args.allow_nonstandard_replicates,
+            )
+        except InfraFailure as exc:
+            print(json.dumps({"status": "infra_failure", "failure": str(exc)}))
+            sys.exit(1)
         Path(args.schedule_out).write_text(
             json.dumps(schedule, indent=2) + "\n", encoding="utf-8"
         )
@@ -1042,12 +1145,14 @@ def main():
         sys.exit(0)
 
     if args.run_schedule:
-        if not (args.config and args.repo):
-            parser.error("--run-schedule requires --config and --repo")
+        if not (args.config and args.repo and args.tasks):
+            parser.error("--run-schedule requires --config, --repo, and "
+                         "--tasks (the registered task set, compared against "
+                         "the schedule)")
         config = load_config(args.config)
         try:
             manifest = run_schedule(config, args.run_schedule, args.repo,
-                                    args.output)
+                                    args.output, args.tasks)
         except InfraFailure as exc:
             print(json.dumps({"status": "infra_failure", "failure": str(exc)}))
             sys.exit(1)
