@@ -54,7 +54,8 @@ INLINE_LINK_RE = re.compile(
 SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 REF_DEF_RE = re.compile(r"^\s*\[([^\]\^][^\]]*)\]:\s*(<[^<>]*>|\S+)")
 REF_USE_RE = re.compile(r"\[([^\]]+)\]\[([^\]]*)\]")
-EXTERNAL_PREFIXES = ("http://", "https://", "mailto:", "tel:")
+# Any RFC 3986 scheme (case-insensitive) or protocol-relative URL is external.
+URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 # Official semver.org regex: forbids empty identifiers and leading zeroes in
 # numeric prerelease identifiers.
 SEMVER_RE = re.compile(
@@ -293,7 +294,7 @@ def _check_target(target, path, root, errors, anchor_cache):
     """Resolve exactly as Markdown renders: relative to the containing file,
     or to the repo root only for absolute (`/`-prefixed) targets. Fragments
     are verified against the target file's heading anchors."""
-    if target.startswith(EXTERNAL_PREFIXES):
+    if URI_SCHEME_RE.match(target) or target.startswith("//"):
         return
     clean, _, fragment = target.partition("#")
     if clean:
