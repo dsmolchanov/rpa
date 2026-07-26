@@ -49,12 +49,17 @@ FIXTURES_REL = Path("tests/fixtures/docs-validate")
 INLINE_LINK_RE = re.compile(r"\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
 REF_DEF_RE = re.compile(r"^\s*\[([^\]\^][^\]]*)\]:\s*(\S+)")
 REF_USE_RE = re.compile(r"\[([^\]]+)\]\[([^\]]*)\]")
-EXTERNAL_PREFIXES = ("http://", "https://", "mailto:", "tel:", "#")
+EXTERNAL_PREFIXES = ("http://", "https://", "mailto:", "tel:")
+# Official semver.org regex: forbids empty identifiers and leading zeroes in
+# numeric prerelease identifiers.
 SEMVER_RE = re.compile(
-    r"^\d+\.\d+\.\d+"
-    r"(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?"
-    r"(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$"
+    r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
+    r"(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)"
+    r"(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?"
+    r"(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$"
 )
+INVOCATION_VALUES = {"user", "model", "both"}
+PERMISSION_TOKENS = ("read_only", "workspace_write", "external")
 
 
 def parse_frontmatter(text):
@@ -147,6 +152,21 @@ def check_skills(root, errors):
             continue
         check_field(data, "name", rel, errors)
         check_field(data, "description", rel, errors)
+        permission = check_field(data, "permission-class", rel, errors)
+        if isinstance(permission, str) and not any(t in permission for t in PERMISSION_TOKENS):
+            errors.append(
+                f"{rel}: frontmatter `permission-class` must reference at least one of "
+                f"{'/'.join(PERMISSION_TOKENS)}, got {permission!r}"
+            )
+        invocation = check_field(data, "invocation", rel, errors)
+        if isinstance(invocation, str):
+            items = {part.strip() for part in invocation.split(",") if part.strip()}
+            bad = items - INVOCATION_VALUES
+            if not items or bad:
+                errors.append(
+                    f"{rel}: frontmatter `invocation` must be a comma-separated subset of "
+                    f"{sorted(INVOCATION_VALUES)}, got {invocation!r}"
+                )
 
 
 def _require_json_str(data, key, rel_path, errors, pattern=None, pattern_desc=""):
@@ -196,27 +216,57 @@ def check_json_manifests(root, errors):
                 errors.append(f"{market_rel}: plugins[{i}].`{key}` must be a non-empty string")
 
 
-def _check_target(target, path, root, errors):
+def _heading_anchors(path, cache):
+    """GitHub-style anchor IDs for a markdown file's ATX headings."""
+    if path in cache:
+        return cache[path]
+    anchors, counts = set(), {}
+    in_fence = False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence or not stripped.startswith("#"):
+            continue
+        text = stripped.lstrip("#").strip()
+        text = re.sub(r"`([^`]*)`", r"\1", text)
+        text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
+        anchor = re.sub(r"[^\w\- ]", "", text.lower()).strip().replace(" ", "-")
+        n = counts.get(anchor, 0)
+        counts[anchor] = n + 1
+        anchors.add(anchor if n == 0 else f"{anchor}-{n}")
+    cache[path] = anchors
+    return anchors
+
+
+def _check_target(target, path, root, errors, anchor_cache):
     """Resolve exactly as Markdown renders: relative to the containing file,
-    or to the repo root only for absolute (`/`-prefixed) targets."""
+    or to the repo root only for absolute (`/`-prefixed) targets. Fragments
+    are verified against the target file's heading anchors."""
     if target.startswith(EXTERNAL_PREFIXES):
         return
-    clean = target.split("#", 1)[0]
-    if not clean:
-        return
-    if clean.startswith("/"):
-        resolved = root / clean.lstrip("/")
+    clean, _, fragment = target.partition("#")
+    if clean:
+        if clean.startswith("/"):
+            resolved = root / clean.lstrip("/")
+        else:
+            resolved = path.parent / clean
+        if not resolved.exists():
+            errors.append(f"{path.relative_to(root)}: broken relative link `{target}`")
+            return
     else:
-        resolved = path.parent / clean
-    if resolved.exists():
-        return
-    errors.append(f"{path.relative_to(root)}: broken relative link `{target}`")
+        resolved = path  # same-document fragment
+    if fragment and resolved.is_file() and resolved.suffix == ".md":
+        if fragment.lower() not in _heading_anchors(resolved, anchor_cache):
+            errors.append(f"{path.relative_to(root)}: broken anchor `{target}`")
 
 
 def check_links(root, errors, exclude_fixtures=True):
+    anchor_cache = {}
     for path in iter_markdown(root, exclude_fixtures=exclude_fixtures):
         text = path.read_text(encoding="utf-8")
-        lines, definitions, content_lines = [], {}, []
+        definitions, content_lines = {}, []
         in_fence = False
         for line in text.splitlines():
             if line.strip().startswith("```"):
@@ -231,13 +281,13 @@ def check_links(root, errors, exclude_fixtures=True):
         for ref_id, target in definitions.items():
             if target.startswith("<") and target.endswith(">"):
                 target = target[1:-1]
-            _check_target(target, path, root, errors)
+            _check_target(target, path, root, errors, anchor_cache)
         for line in content_lines:
             if REF_DEF_RE.match(line):
                 continue
             stripped = re.sub(r"`[^`]*`", "", line)  # ignore inline code spans
             for target in INLINE_LINK_RE.findall(stripped):
-                _check_target(target, path, root, errors)
+                _check_target(target, path, root, errors, anchor_cache)
             for text_part, ref_id in REF_USE_RE.findall(stripped):
                 key = (ref_id or text_part).strip().lower()
                 if key and key not in definitions:
