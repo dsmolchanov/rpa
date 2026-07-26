@@ -4,7 +4,7 @@ description: Command exercising valid link forms
 
 # Links
 
-Inline [a](../skills/demo/SKILL.md), titled [b](./ok.md "title"),
+Inline [a](../skills/demo/SKILL.md), titled [b](./ok.md "title"), single [b2](./ok.md 't'), paren [b3](./ok.md (t)),
 reference [c][ref1], implicit [ok.md][], angled [d][ang],
 fragment [e](./ok.md#demo), self [f](#links).
 

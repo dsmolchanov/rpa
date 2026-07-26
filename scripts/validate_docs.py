@@ -46,7 +46,12 @@ except ImportError:  # pragma: no cover
 EXCLUDED_PARTS = {".git", "node_modules"}
 FIXTURES_REL = Path("tests/fixtures/docs-validate")
 
-INLINE_LINK_RE = re.compile(r"\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
+INLINE_LINK_RE = re.compile(
+    r"\[[^\]]*\]\(\s*<?([^)\s>]+)>?"
+    r"(?:\s+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?"
+    r"\s*\)"
+)
+SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 REF_DEF_RE = re.compile(r"^\s*\[([^\]\^][^\]]*)\]:\s*(\S+)")
 REF_USE_RE = re.compile(r"\[([^\]]+)\]\[([^\]]*)\]")
 EXTERNAL_PREFIXES = ("http://", "https://", "mailto:", "tel:")
@@ -150,7 +155,17 @@ def check_skills(root, errors):
         if err:
             errors.append(f"{rel}: {err}")
             continue
-        check_field(data, "name", rel, errors)
+        name = check_field(data, "name", rel, errors)
+        if isinstance(name, str):
+            if not SKILL_NAME_RE.match(name):
+                errors.append(
+                    f"{rel}: frontmatter `name` must be lowercase kebab-case "
+                    f"([a-z0-9-]), got {name!r}"
+                )
+            elif name != path.parent.name:
+                errors.append(
+                    f"{rel}: frontmatter name `{name}` != skill directory `{path.parent.name}`"
+                )
         check_field(data, "description", rel, errors)
         permission = check_field(data, "permission-class", rel, errors)
         if isinstance(permission, str) and not any(t in permission for t in PERMISSION_TOKENS):
