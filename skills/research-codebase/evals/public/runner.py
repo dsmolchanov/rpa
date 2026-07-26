@@ -620,13 +620,20 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1):
                 )
             # A timeout/abort WorkflowFailure carries the partial transcript:
             # harvest its nodes before propagating so the counted failure
-            # keeps the cost it already incurred.
+            # keeps the cost it already incurred. Runtime drift outranks the
+            # workflow verdict — partial nodes on the wrong model/effort mean
+            # the run is invalid (infra, re-executed), not a counted outcome.
             try:
                 return spawn_session(cmd, prompt_text, worktree, env,
                                      remaining, resume=resume,
                                      workflow_abort_exits=abort_exits)
             except WorkflowFailure as wf:
-                all_nodes.extend(parse_nodes_tolerant(wf.stdout))
+                partial = parse_nodes_tolerant(wf.stdout)
+                if partial:
+                    validate_models(partial, arm["model"])
+                    effort_modes.add(
+                        validate_efforts(partial, arm.get("effort", "default")))
+                    all_nodes.extend(partial)
                 raise
 
         stdout = _spawn(prompt)

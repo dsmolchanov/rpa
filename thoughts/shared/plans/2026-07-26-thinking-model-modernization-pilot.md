@@ -353,14 +353,26 @@ sanitized examples; raw run artifacts stay in a private location.
    (byte-identical except `name:`).
 5. **Eval-runner harness**, proven by a synthetic preflight run on a
    throwaway task (not the dev set), that: verifies the hash of each of the
-   three installation artifacts before every run; records model and effort
-   for every node of the agent tree; runs in a clean profile with ambient
-   personal skills/config excluded; distinguishes **infrastructure
-   failure** (harness/environment fault — run invalidated and re-executed)
-   from **workflow failure** (timeout/abort — counted per the failed-run
-   rule, never replaced); collects tree-wide token/tool-call accounting;
-   anonymizes documents before scoring; and launches scorer and verifier in
-   fresh pinned sessions.
+   three installation artifacts before every run; records the effective
+   model for every node of the agent tree and enforces the **registered
+   effort policy** — effort is always pinned on the backend command line
+   (a command without the pin is refused); nodes that report an effective
+   effort are validated against the registered value (`per_node` capture);
+   when the backend's stream schema exposes no per-node effort field (the
+   current Claude headless schema does not), the run is accepted solely on
+   the strength of the command-line pin and recorded as `command_pin`
+   capture; partial reporting is broken capture and invalidates the run;
+   the **real-backend preflight must additionally demonstrate that the
+   pinned CLI applies the effort flag to the whole session tree (main
+   context and subagents)** — if it cannot, the pilot is blocked until it
+   can; runs in a clean profile with ambient personal skills/config
+   excluded; distinguishes **infrastructure failure** (harness/environment
+   fault — run invalidated and re-executed) from **workflow failure**
+   (timeout/abort — counted per the failed-run rule, never replaced), with
+   partial transcripts from timeouts/aborts validated for model/effort
+   parity first (runtime drift invalidates instead of counting); collects
+   tree-wide token/tool-call accounting; anonymizes documents before
+   scoring; and launches scorer and verifier in fresh pinned sessions.
 
 **Prerequisite status (2026-07-26):**
 
@@ -372,8 +384,13 @@ sanitized examples; raw run artifacts stay in a private location.
 5. Eval-runner — harness landed at
    `skills/research-codebase/evals/public/` (`runner.py`, `mock_claude.py`,
    `preflight.py`); the synthetic preflight proves all capabilities against
-   the deterministic mock backend (13/13). The **real-backend preflight**
-   on the throwaway task remains required once before baseline runs.
+   the deterministic mock backend (capability→proof map in
+   `evals/public/README.md`). Per-node effort capture is bounded by the
+   backend stream schema; the two-mode effort policy in prerequisite 5
+   above is the authoritative requirement (revised 2026-07-26 in response
+   to review). The **real-backend preflight** on the throwaway task
+   remains required once before baseline runs and must demonstrate the
+   effort pin propagates to the whole session tree.
 
 **Dev set status (Sequence step 2):** authored. Public tasks dev-3/dev-4
 (target: this repo) live at `skills/research-codebase/evals/public/dev-set/`;

@@ -183,7 +183,11 @@ def main():
 
     emit({"type": "system", "session_id": session_id})
 
-    model = "unregistered-model" if args.mode == "wrong-model" else args.model
+    model = (
+        "unregistered-model"
+        if args.mode in ("wrong-model", "abort-wrong-model")
+        else args.model
+    )
     if args.mode == "wrong-effort":
         main_effort = sub_effort = "low"
     elif args.mode == "mixed-effort":
@@ -192,9 +196,11 @@ def main():
         main_effort = sub_effort = args.effort
     emit_nodes(model, main_effort, sub_effort)
 
-    if args.mode == "workflow-abort":
+    if args.mode in ("workflow-abort", "abort-wrong-model"):
         # Abort AFTER emitting accounting: the runner must preserve the
-        # partial transcript's cost on this counted workflow failure.
+        # partial transcript's cost on this counted workflow failure —
+        # and must invalidate it instead when those nodes show runtime
+        # drift (abort-wrong-model).
         print("workflow aborted by evaluated agent", file=sys.stderr)
         sys.exit(21)
 

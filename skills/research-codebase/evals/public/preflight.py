@@ -261,6 +261,13 @@ def run_preflight():
             and len(record.get("nodes", [])) == 2,
             notes, json.dumps(record.get("accounting", {}).get("tree")))
 
+        record, _, _, _ = run_case(ws, "abort-wrong-model")
+        ok &= check(
+            "runtime drift in partial transcript invalidates (not counted)",
+            record["status"] == "infra_failure"
+            and "differ from registered" in record.get("failure", ""),
+            notes)
+
         config, _ = build_config(ws, "normal")
         config["arms"]["second"] = dict(config["arms"]["mock"], effort="low")
         repo, par_sha = make_git_repo(ws, "arm-parity")
