@@ -47,12 +47,12 @@ EXCLUDED_PARTS = {".git", "node_modules"}
 FIXTURES_REL = Path("tests/fixtures/docs-validate")
 
 INLINE_LINK_RE = re.compile(
-    r"\[[^\]]*\]\(\s*<?((?:[^()\s>]|\([^()\s]*\))+)>?"
+    r"\[[^\]]*\]\(\s*(?:<([^<>]+)>|((?:[^()\s>]|\([^()\s]*\))+))"
     r"(?:\s+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?"
     r"\s*\)"
 )
 SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-REF_DEF_RE = re.compile(r"^\s*\[([^\]\^][^\]]*)\]:\s*(\S+)")
+REF_DEF_RE = re.compile(r"^\s*\[([^\]\^][^\]]*)\]:\s*(<[^<>]*>|\S+)")
 REF_USE_RE = re.compile(r"\[([^\]]+)\]\[([^\]]*)\]")
 EXTERNAL_PREFIXES = ("http://", "https://", "mailto:", "tel:")
 # Official semver.org regex: forbids empty identifiers and leading zeroes in
@@ -346,8 +346,8 @@ def check_links(root, errors, exclude_fixtures=True):
             if REF_DEF_RE.match(line):
                 continue
             stripped = re.sub(r"`[^`]*`", "", line)  # ignore inline code spans
-            for target in INLINE_LINK_RE.findall(stripped):
-                _check_target(target, path, root, errors, anchor_cache)
+            for angled, plain in INLINE_LINK_RE.findall(stripped):
+                _check_target(angled or plain, path, root, errors, anchor_cache)
             for text_part, ref_id in REF_USE_RE.findall(stripped):
                 key = re.sub(r"\s+", " ", ref_id or text_part).strip().lower()
                 if key and key not in definitions:

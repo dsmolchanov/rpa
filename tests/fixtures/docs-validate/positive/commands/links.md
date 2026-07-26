@@ -23,3 +23,5 @@ Setext Title
 Setext link [s](#setext-title), spaced ref [w][foo bar].
 
 [foo   bar]: ./ok.md
+
+Angled space [u](<./user guide.md>).
