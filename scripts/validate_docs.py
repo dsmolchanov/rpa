@@ -372,25 +372,38 @@ def check_links(root, errors, exclude_fixtures=True):
                     src = child.attrGet("src")
                     if src:
                         _check_target(src, path, root, errors, index)
-                elif child.type == "text":
-                    # A reference-style usage the parser left as literal text
-                    # means its label has no definition.
-                    for text_part, ref_id in REF_USE_RE.findall(child.content):
-                        label = _normalize_ref_label(ref_id or text_part)
-                        if label and label not in references:
-                            pending_refs.add((text_part, ref_id))
+            # A reference-style usage the parser left as literal text means
+            # its label has no definition. Scan the inline token's joined
+            # plain text so labels containing inline formatting (split
+            # across child tokens) are still seen.
+            joined = "".join(
+                child.content for child in tok.children if child.type == "text"
+            )
+            for text_part, ref_id in REF_USE_RE.findall(joined):
+                label = _normalize_ref_label(ref_id or text_part)
+                if label and label not in references:
+                    pending_refs.add((text_part, ref_id))
         for text_part, ref_id in sorted(pending_refs):
             # The parser unescapes text, so escaped literals look identical
-            # here. Count source occurrences per form: flag only if at least
-            # one occurrence is NOT the escaped form.
-            literal = f"[{text_part}][{ref_id}]"
-            total = body.count(literal)
-            escaped = body.count("\\" + literal)
-            if total == 0 or total - escaped > 0:
-                errors.append(
-                    f"{path.relative_to(root)}: undefined link reference "
-                    f"`{ref_id or text_part}`"
+            # here; consult the source. For explicit ids, match any
+            # unescaped `[label][id]` occurrence positionally; implicit
+            # refs fall back to literal counting.
+            if ref_id:
+                unescaped = re.search(
+                    r"(?<!\\)\[[^\]]*\]\[" + re.escape(ref_id) + r"\]", body
                 )
+                if not unescaped:
+                    continue  # every source occurrence is escaped
+            else:
+                literal = f"[{text_part}][]"
+                total = body.count(literal)
+                escaped = body.count("\\" + literal)
+                if total > 0 and total - escaped <= 0:
+                    continue
+            errors.append(
+                f"{path.relative_to(root)}: undefined link reference "
+                f"`{ref_id or text_part}`"
+            )
 
 
 def validate(root, exclude_fixtures=True):
