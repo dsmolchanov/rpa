@@ -46,11 +46,49 @@ except ImportError:  # pragma: no cover
 EXCLUDED_PARTS = {".git", "node_modules"}
 FIXTURES_REL = Path("tests/fixtures/docs-validate")
 
-INLINE_LINK_RE = re.compile(
-    r"\[[^\]]*\]\(\s*(?:<([^<>]+)>|((?:[^()\s>]|\([^()\s]*\))+))"
-    r"(?:\s+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?"
-    r"\s*\)"
-)
+def _iter_inline_targets(line):
+    """Yield inline-link destinations from a line, using a balanced scanner
+    so destinations may contain arbitrarily nested parentheses; angle-bracket
+    destinations may contain spaces. Titles (quoted or parenthesized) after
+    the destination are ignored."""
+    i = 0
+    while True:
+        j = line.find("](", i)
+        if j == -1:
+            return
+        k = j + 2
+        while k < len(line) and line[k] in " \t":
+            k += 1
+        if k < len(line) and line[k] == "<":
+            end = line.find(">", k + 1)
+            if end == -1:
+                i = j + 2
+                continue
+            if end > k + 1:
+                yield line[k + 1:end]
+            i = end
+            continue
+        depth, start, end = 0, k, None
+        while k < len(line):
+            char = line[k]
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                if depth == 0:
+                    end = k
+                    break
+                depth -= 1
+            elif char in " \t":
+                end = k  # whitespace ends the destination; a title may follow
+                break
+            k += 1
+        if end is None:
+            i = j + 2
+            continue
+        target = line[start:end]
+        if target:
+            yield target
+        i = end
 SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 REF_DEF_RE = re.compile(r"^\s*\[([^\]\^][^\]]*)\]:\s*(<[^<>]*>|\S+)")
 REF_USE_RE = re.compile(r"\[([^\]]+)\]\[([^\]]*)\]")
@@ -347,8 +385,8 @@ def check_links(root, errors, exclude_fixtures=True):
             if REF_DEF_RE.match(line):
                 continue
             stripped = re.sub(r"`[^`]*`", "", line)  # ignore inline code spans
-            for angled, plain in INLINE_LINK_RE.findall(stripped):
-                _check_target(angled or plain, path, root, errors, anchor_cache)
+            for target in _iter_inline_targets(stripped):
+                _check_target(target, path, root, errors, anchor_cache)
             for text_part, ref_id in REF_USE_RE.findall(stripped):
                 key = re.sub(r"\s+", " ", ref_id or text_part).strip().lower()
                 if key and key not in definitions:

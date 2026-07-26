@@ -27,3 +27,5 @@ Setext link [s](#setext-title), spaced ref [w][foo bar].
 Angled space [u](<./user guide.md>).
 
 External schemes: [h](HTTPS://example.com/x), [f](ftp://example.com/file), [pr](//example.com/file).
+
+Nested paren dest [n](./ok_(a_(b)).md).

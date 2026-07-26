@@ -76,6 +76,15 @@ research workflow family only — a supersession note is recorded in that
 roadmap. Other command families stay on the deferred decision until their
 own gates.
 
+**Owner-approved repository integration fixes (2026-07-26, second review):**
+landed with the prerequisite PR and recorded here as the authoritative
+authorization — `CLAUDE.md` imports `@AGENTS.md` (Claude Code does not read
+AGENTS.md natively; the import is the official interop path). This is a
+repo-wide instruction-loading change, explicitly requested by the owner
+alongside the CI gate, and is not part of the pilot's evaluated surface:
+both baseline and candidate installations carry it identically, so it
+cannot confound arm comparisons.
+
 ## Baseline
 
 - The **entire plugin** frozen at `a7de5f6000225b57eeee1a5c6c0131fb02656d4d`
