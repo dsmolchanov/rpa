@@ -5,9 +5,10 @@ Implements prerequisite 5 of
 `thoughts/shared/plans/2026-07-26-thinking-model-modernization-pilot.md`.
 Capability map (each proven by `--preflight` before any scored run):
 
-  1. installation-hash verification  — every run hashes the arm's
-     installation tree against the registered SHA-256, mounts a copy into
-     the run's profile, and passes its path to the backend via the
+  1. installation-hash verification  — every run hashes EVERY arm's
+     installation tree against its registered SHA-256 (drift in any arm
+     halts the experiment), mounts a copy of the selected arm into the
+     run's profile, and passes its path to the backend via the
      `{installation}` placeholder in `backend_cmd`.
   2. per-node model/effort capture   — every transcript node records its
      model; effort is pinned on the backend command line via the `{effort}`
@@ -16,11 +17,13 @@ Capability map (each proven by `--preflight` before any scored run):
      stream schema carries no per-node effort field, so an all-absent
      transcript is accepted on the strength of the mandatory pin and
      recorded as `command_pin` capture — partial reporting is broken
-     capture and invalidates the run. One shared model/effort is enforced
-     across ALL arms (`validate_arm_parity`): installation content is the
-     only permitted arm difference. Both the synthetic mock schema and the
-     real Claude headless stream (`assistant` events with nested usage,
-     `tool_use` blocks, `parent_tool_use_id` sidechains) are parsed.
+     capture and invalidates the run. One shared model/effort/entrypoint
+     is enforced across ALL arms (`validate_arm_parity`): installation
+     content is the only permitted arm difference. Both the synthetic mock
+     schema and the real Claude headless stream (`assistant` events with
+     nested usage, `tool_use` blocks, `parent_tool_use_id` sidechains) are
+     parsed, and ALL input-token categories — including cache creation and
+     cache reads — count toward tree-wide cost.
   3. clean profile                   — each run uses a runner-created
      CLAUDE_CONFIG_DIR containing only `settings.json` and the mounted
      installation; ambient personal skills/config are never on the load
@@ -49,11 +52,15 @@ Capability map (each proven by `--preflight` before any scored run):
      cannot leak identity to the blind judge.
  10. fresh pinned judge sessions     — `--score` spawns each judge call as
      a new backend session in its own fresh profile rooted OUTSIDE the
-     experiment tree, with an empty working directory and filesystem/exec/
-     web tools denied (JUDGE_SETTINGS), so a judge cannot unblind itself
-     by reading run artifacts; every full response is preserved on disk
-     under a unique per-invocation id (`judge-<scoring_id>-<n>.json`), so
-     separate scorer/verifier passes never overwrite each other.
+     experiment tree. Blind SCORERS get an empty working directory with
+     filesystem/exec/web tools denied (JUDGE_SETTINGS) so they cannot
+     unblind themselves; evidence VERIFIERS (`--evidence-repo` +
+     `--evidence-sha`) get a disposable read-only worktree of the frozen
+     evidence at the pinned sha (VERIFIER_SETTINGS) so file-and-line
+     citations can actually be checked. Every full response is preserved
+     on disk under a unique per-invocation id
+     (`judge-<scoring_id>-<n>.json`), so separate scorer/verifier passes
+     never overwrite each other.
 
 The backend command is configurable (`backend_cmd`); production uses the
 `claude` CLI in headless mode, while `--preflight` uses the bundled
@@ -106,14 +113,26 @@ class WorkflowFailure(Exception):
         self.stdout = stdout
 
 
-# Judges receive the anonymized document inline; filesystem, exec, and web
-# tools are denied in the judge profile so an unsandboxed judge cannot read
-# run artifacts (raw copies, run records) and unblind itself. Exact rule
-# names are validated during the real-backend preflight.
+# Blind SCORERS receive the anonymized document inline; filesystem, exec,
+# and web tools are denied in the scorer profile so an unsandboxed judge
+# cannot read run artifacts (raw copies, run records) and unblind itself.
+# Exact rule names are validated during the real-backend preflight.
 JUDGE_SETTINGS = {
     "permissions": {
         "deny": ["Read", "Glob", "Grep", "Bash", "Write", "Edit",
                  "NotebookEdit", "WebFetch", "WebSearch", "Task"]
+    }
+}
+
+# Evidence VERIFIERS must independently check file-and-line citations, so
+# read-only inspection tools stay available; anything that could mutate the
+# evidence or reach outside it (write/exec/web/subagents) is denied. The
+# verifier's cwd is a disposable worktree of the frozen evidence repo at the
+# pinned sha — never the experiment output tree.
+VERIFIER_SETTINGS = {
+    "permissions": {
+        "deny": ["Bash", "Write", "Edit", "NotebookEdit",
+                 "WebFetch", "WebSearch", "Task"]
     }
 }
 
@@ -313,10 +332,19 @@ def _node_from_event(event):
             1 for block in content
             if isinstance(block, dict) and block.get("type") == "tool_use"
         )
+        # The real CLI reports cached prompt tokens SEPARATELY from
+        # `input_tokens`; all input categories must count toward tree-wide
+        # cost, or cached runs undercount (differently per arm) and can
+        # fake the token-savings pass bar.
+        input_total = (
+            int(usage.get("input_tokens", 0) or 0)
+            + int(usage.get("cache_creation_input_tokens", 0) or 0)
+            + int(usage.get("cache_read_input_tokens", 0) or 0)
+        )
         return {
             "model": message.get("model"),
             "effort": event.get("effort"),
-            "input_tokens": int(usage.get("input_tokens", 0) or 0),
+            "input_tokens": input_total,
             "output_tokens": int(usage.get("output_tokens", 0) or 0),
             "tool_calls": tool_calls,
             "subagent": event.get("parent_tool_use_id") is not None,
@@ -436,8 +464,9 @@ def require_effort_pin(cmd, what):
 
 def validate_arm_parity(config):
     """The registered protocol pins ONE runtime configuration: every arm
-    must share the same model and effort, so plugin/installation content is
-    the only difference between arms. Refuse mixed configs before any run."""
+    must share the same model, effort, and workflow entrypoint, so
+    plugin/installation content is the only difference between arms.
+    Refuse mixed configs before any run."""
     arms = config["arms"]
     models = {arm.get("model") for arm in arms.values()}
     efforts = {arm.get("effort", "default") for arm in arms.values()}
@@ -446,6 +475,13 @@ def validate_arm_parity(config):
             f"arms differ in runtime configuration (models={sorted(map(str, models))}, "
             f"efforts={sorted(map(str, efforts))}) — only installation "
             f"content may differ between arms"
+        )
+    entrypoints = {arm.get("entrypoint") for arm in arms.values()}
+    if len(entrypoints) > 1 or not next(iter(entrypoints), None):
+        raise InfraFailure(
+            "arms must share one non-empty workflow `entrypoint` — a bare "
+            "or divergent entrypoint would compare different workflows, "
+            "not the arms' installation content"
         )
 
 
@@ -509,7 +545,13 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1):
     started = None
     try:
         validate_arm_parity(config)
-        record["installation_sha256"] = verify_installation(arm_name, arm)
+        # Every registered installation is verified before EVERY run, so
+        # drift in any arm halts the experiment before more data is
+        # collected — not only when that arm happens to be selected.
+        for other_name, other_arm in sorted(config["arms"].items()):
+            digest = verify_installation(other_name, other_arm)
+            if other_name == arm_name:
+                record["installation_sha256"] = digest
         prompt, task_text = extract_task_prompt(task_path)
         entrypoint = arm.get("entrypoint")
         if entrypoint:
@@ -650,10 +692,22 @@ def assert_blind_scorable(doc_path):
     return text
 
 
-def score(config, doc_paths, judge_prompt_path, output_dir):
+def score(config, doc_paths, judge_prompt_path, output_dir,
+          evidence_repo=None, evidence_sha=None):
     """One fresh pinned backend session per document. The judge's full
     response text is preserved on disk — it IS the scoring artifact. Judge
-    prompts live in the sealed package and are passed in at runtime."""
+    prompts live in the sealed package and are passed in at runtime.
+
+    Two roles: without `evidence_repo` the judge is a blind SCORER (empty
+    cwd outside the experiment tree, all inspection tools denied). With
+    `evidence_repo` + `evidence_sha` the judge is an evidence VERIFIER: its
+    cwd is a disposable worktree of the frozen evidence repo at the pinned
+    sha, read-only tools allowed, so file-and-line citations can actually
+    be checked."""
+    if evidence_repo and not evidence_sha:
+        raise InfraFailure(
+            "evidence_repo requires evidence_sha (the task's pinned target-sha)"
+        )
     judge_prompt = Path(judge_prompt_path).read_text(encoding="utf-8")
     judge_cmd = config.get("judge_backend_cmd", config["backend_cmd"])
     if any("{installation}" in part for part in judge_cmd):
@@ -674,20 +728,32 @@ def score(config, doc_paths, judge_prompt_path, output_dir):
     # same output directory must never overwrite each other's judge files.
     scoring_id = uuid.uuid4().hex[:8]
     results = []
+    role = "verifier" if evidence_repo else "scorer"
     for i, (doc, doc_text) in enumerate(zip(doc_paths, doc_texts)):
-        # Each judge runs in its own root OUTSIDE the experiment tree, with
-        # an empty working directory: nothing above the cwd leads to run
-        # artifacts, and the judge profile denies filesystem/exec/web tools
-        # (JUDGE_SETTINGS), so the judge cannot unblind itself.
+        # Each judge runs in its own root OUTSIDE the experiment tree:
+        # nothing above the cwd leads to run artifacts. A scorer gets an
+        # empty cwd and no inspection tools (JUDGE_SETTINGS); a verifier
+        # gets a disposable worktree of the frozen evidence at the pinned
+        # sha with read-only tools (VERIFIER_SETTINGS).
         judge_root = Path(tempfile.mkdtemp(prefix="rpa-judge-"))
-        profile, _ = make_profile(judge_root, "judge", settings=JUDGE_SETTINGS)
-        workdir = judge_root / "workdir"
-        workdir.mkdir()
+        if evidence_repo:
+            profile, _ = make_profile(judge_root, "judge",
+                                      settings=VERIFIER_SETTINGS)
+            workdir = make_worktree(evidence_repo, evidence_sha, judge_root)
+        else:
+            profile, _ = make_profile(judge_root, "judge",
+                                      settings=JUDGE_SETTINGS)
+            workdir = judge_root / "workdir"
+            workdir.mkdir()
         env = backend_env(profile)
         prompt = judge_prompt + "\n\n---\n\n" + doc_text
-        stdout = spawn_session(
-            judge_cmd, prompt, str(workdir), env, config["timeout_seconds"]
-        )
+        try:
+            stdout = spawn_session(
+                judge_cmd, prompt, str(workdir), env, config["timeout_seconds"]
+            )
+        finally:
+            if evidence_repo:
+                remove_worktree(evidence_repo, workdir)
         session_id, nodes, response = parse_transcript(stdout)
         if not response.strip():
             raise InfraFailure(f"judge session {session_id} returned no response text")
@@ -698,11 +764,14 @@ def score(config, doc_paths, judge_prompt_path, output_dir):
             "session_id": session_id,
             "profile": str(profile),
             "cwd": str(workdir),
+            "role": role,
             "judge_model": judge_model,
             "effort_capture": effort_capture,
             "response": response,
             "accounting": account(nodes),
         }
+        if evidence_repo:
+            result["evidence_sha"] = evidence_sha
         (out / f"judge-{scoring_id}-{i}.json").write_text(
             json.dumps(result, indent=2) + "\n", encoding="utf-8"
         )
@@ -726,6 +795,11 @@ def main():
                         help="judge mode: score documents in fresh sessions")
     parser.add_argument("--docs", nargs="+", help="documents to score")
     parser.add_argument("--judge-prompt", help="judge prompt file (from the sealed package)")
+    parser.add_argument("--evidence-repo",
+                        help="score mode, verifier role: frozen evidence repo; "
+                             "the judge gets a read-only worktree at --evidence-sha")
+    parser.add_argument("--evidence-sha",
+                        help="pinned sha for --evidence-repo (the task's target-sha)")
     parser.add_argument("--output", default="runs", help="output directory")
     args = parser.parse_args()
 
@@ -737,8 +811,12 @@ def main():
     if args.score:
         if not (args.config and args.docs and args.judge_prompt):
             parser.error("score mode requires --config, --docs, --judge-prompt")
+        if args.evidence_repo and not args.evidence_sha:
+            parser.error("--evidence-repo requires --evidence-sha")
         config = load_config(args.config)
-        results = score(config, args.docs, args.judge_prompt, args.output)
+        results = score(config, args.docs, args.judge_prompt, args.output,
+                        evidence_repo=args.evidence_repo,
+                        evidence_sha=args.evidence_sha)
         print(json.dumps([{k: r[k] for k in ("doc", "session_id")} for r in results]))
         sys.exit(0)
 

@@ -91,17 +91,26 @@ def emit_real_stream(model, session_id):
     No per-node effort field — exactly like the real CLI."""
     emit({"type": "system", "subtype": "init", "session_id": session_id,
           "model": model})
+    # Input usage is split across the real CLI's three categories (fresh +
+    # cache creation + cache read); the declared totals stay 100/40, so the
+    # preflight only passes if the parser sums ALL input categories.
     emit({"type": "assistant", "session_id": session_id,
           "parent_tool_use_id": None,
           "message": {"model": model,
-                      "usage": {"input_tokens": 100, "output_tokens": 50},
+                      "usage": {"input_tokens": 60,
+                                "cache_creation_input_tokens": 30,
+                                "cache_read_input_tokens": 10,
+                                "output_tokens": 50},
                       "content": [{"type": "tool_use", "id": f"toolu_{i}",
                                    "name": "Read", "input": {}}
                                   for i in range(7)]}})
     emit({"type": "assistant", "session_id": session_id,
           "parent_tool_use_id": "toolu_0",
           "message": {"model": model,
-                      "usage": {"input_tokens": 40, "output_tokens": 20},
+                      "usage": {"input_tokens": 20,
+                                "cache_creation_input_tokens": 12,
+                                "cache_read_input_tokens": 8,
+                                "output_tokens": 20},
                       "content": [{"type": "tool_use", "id": f"toolu_s{i}",
                                    "name": "Grep", "input": {}}
                                   for i in range(5)]}})
@@ -123,6 +132,8 @@ def main():
 
     echo("prompt.txt", args.prompt)
     echo("plugin-dir.txt", args.plugin_dir)
+    echo("cwd-listing.txt",
+         "\n".join(sorted(p.name for p in Path(".").iterdir())))
 
     if args.mode == "flaky-infra":
         # Transient fault: crash once (recorded via MOCK_STATE_FILE), then

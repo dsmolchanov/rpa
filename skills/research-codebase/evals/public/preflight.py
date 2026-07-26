@@ -223,7 +223,7 @@ def run_preflight():
 
         record, _, _, _ = run_case(ws, "real-stream")
         ok &= check(
-            "real Claude stream schema parsed (assistant/result events)",
+            "real Claude stream parsed (cached input categories counted)",
             record["status"] == "completed"
             and record.get("accounting", {}).get("tree") == EXPECTED_TREE
             and record.get("accounting", {}).get("subagents") == EXPECTED_SUB
@@ -265,6 +265,28 @@ def run_preflight():
             "arm runtime parity enforced (differing effort across arms refused)",
             record["status"] == "infra_failure"
             and "only installation content" in record.get("failure", ""),
+            notes)
+
+        config, _ = build_config(ws, "normal")
+        config["arms"]["second"] = dict(config["arms"]["mock"],
+                                        entrypoint="/other-workflow")
+        task = write_task(ws, "ep-parity", par_sha)
+        record = runner.run_task(config, "mock", task, repo, ws / "out-ep-parity")
+        ok &= check(
+            "arm entrypoint parity enforced (divergent entrypoint refused)",
+            record["status"] == "infra_failure"
+            and "entrypoint" in record.get("failure", ""),
+            notes)
+
+        config, _ = build_config(ws, "normal")
+        config["arms"]["second"] = dict(config["arms"]["mock"], sha256="0" * 64)
+        task = write_task(ws, "all-arms", par_sha)
+        record = runner.run_task(config, "mock", task, repo, ws / "out-all-arms")
+        ok &= check(
+            "every arm installation verified before each run",
+            record["status"] == "infra_failure"
+            and "second" in record.get("failure", "")
+            and "hash mismatch" in record.get("failure", ""),
             notes)
 
         record, _, _, _ = run_case(ws, "infra-crash")
@@ -415,6 +437,30 @@ def run_preflight():
         ok &= check(
             "judge outputs never overwritten (unique id per score invocation)",
             len(sorted(judge_out.glob("judge-*.json"))) == 4,
+            notes)
+        ok &= check(
+            "scorer judge role recorded (blind, evidence-free)",
+            all(r.get("role") == "scorer" for r in results),
+            notes)
+        ev_repo, ev_sha = make_git_repo(ws, "evidence")
+        echo_dir = ws / "echo-verifier"
+        os.environ["MOCK_ECHO_DIR"] = str(echo_dir)
+        try:
+            vres = runner.score(config, [docs[0]], judge, ws / "judge-verify",
+                                evidence_repo=ev_repo, evidence_sha=ev_sha)
+        finally:
+            os.environ.pop("MOCK_ECHO_DIR", None)
+        listing = (echo_dir / "cwd-listing.txt").read_text(encoding="utf-8")
+        vdeny = json.loads(
+            (Path(vres[0]["profile"]) / "settings.json").read_text(
+                encoding="utf-8")).get("permissions", {}).get("deny", [])
+        ok &= check(
+            "verifier judge gets read-only evidence worktree at pinned sha",
+            vres[0].get("role") == "verifier"
+            and vres[0].get("evidence_sha") == ev_sha
+            and "README.md" in listing
+            and not Path(vres[0]["cwd"]).exists()
+            and "Read" not in vdeny and "Bash" in vdeny and "Write" in vdeny,
             notes)
 
     width = max(len(name) for name, _, _ in notes)
