@@ -80,6 +80,8 @@ PERMISSION_TOKENS = ("read_only", "workspace_write", "external")
 SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 # Reference-style usage in rendered TEXT (i.e. left unresolved by the parser).
 REF_USE_RE = re.compile(r"\[([^\]]+)\]\[([^\]]*)\]")
+# href/src attributes inside raw HTML tokens.
+HTML_ATTR_RE = re.compile(r"""(?:href|src)\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
 
 _MD = MarkdownIt("commonmark")
 
@@ -165,7 +167,14 @@ def check_agents(root, errors):
             continue
         name = check_field(data, "name", rel, errors)
         check_field(data, "description", rel, errors)
-        check_field(data, "tools", rel, errors, types=(str, list))
+        tools = check_field(data, "tools", rel, errors, types=(str, list))
+        if isinstance(tools, list):
+            for i, item in enumerate(tools):
+                if not isinstance(item, str) or not item.strip():
+                    errors.append(
+                        f"{rel}: frontmatter `tools[{i}]` must be a non-empty string, "
+                        f"got {item!r}"
+                    )
         if isinstance(name, str) and name != path.stem:
             errors.append(f"{rel}: frontmatter name `{name}` != filename `{path.stem}`")
 
@@ -361,6 +370,10 @@ def check_links(root, errors, exclude_fixtures=True):
                 _check_target(href, path, root, errors, index)
         pending_refs = set()
         for tok in tokens:
+            if tok.type == "html_block":
+                for target in HTML_ATTR_RE.findall(tok.content):
+                    _check_target(target, path, root, errors, index)
+                continue
             if tok.type != "inline" or not tok.children:
                 continue
             for child in tok.children:
@@ -372,6 +385,9 @@ def check_links(root, errors, exclude_fixtures=True):
                     src = child.attrGet("src")
                     if src:
                         _check_target(src, path, root, errors, index)
+                elif child.type == "html_inline":
+                    for target in HTML_ATTR_RE.findall(child.content):
+                        _check_target(target, path, root, errors, index)
             # A reference-style usage the parser left as literal text means
             # its label has no definition. Scan the inline token's joined
             # plain text so labels containing inline formatting (split
