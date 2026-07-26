@@ -33,6 +33,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from urllib.parse import unquote
 
 try:
     import yaml
@@ -335,6 +336,9 @@ def _check_target(target, path, root, errors, anchor_cache):
     if URI_SCHEME_RE.match(target) or target.startswith("//"):
         return
     clean, _, fragment = target.partition("#")
+    # URL semantics: drop the query string, percent-decode path and fragment.
+    clean = unquote(clean.partition("?")[0])
+    fragment = unquote(fragment)
     if clean:
         if clean.startswith("/"):
             resolved = root / clean.lstrip("/")
@@ -374,6 +378,8 @@ def check_links(root, errors, exclude_fixtures=True):
                 if stripped_line.startswith(fence):
                     fence = None
                 continue
+            if len(line) - len(line.lstrip(" ")) >= 4:
+                continue  # indented code block line (CommonMark approximation)
             content_lines.append(line)
             def_match = REF_DEF_RE.match(line)
             if def_match:

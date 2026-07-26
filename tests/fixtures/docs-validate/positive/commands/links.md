@@ -29,3 +29,7 @@ Angled space [u](<./user guide.md>).
 External schemes: [h](HTTPS://example.com/x), [f](ftp://example.com/file), [pr](//example.com/file).
 
 Nested paren dest [n](./ok_(a_(b)).md).
+
+Encoded [u2](./user%20guide.md), query [q](./ok.md?ref=x).
+
+    Indented code example: [ex](./missing-in-code.md)
