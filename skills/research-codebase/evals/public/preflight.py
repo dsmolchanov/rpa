@@ -445,6 +445,23 @@ def run_preflight():
             bind_ok, notes)
 
         config, _ = build_config(ws, "normal")
+        m2 = json.loads(manifest_path.read_text(encoding="utf-8"))
+        m2["config_digest"] = "0" * 64
+        manifest_path.write_text(json.dumps(m2), encoding="utf-8")
+        try:
+            runner.run_schedule(config, sched_path, repo_s,
+                                ws / "out-sched", [str(task_s)])
+            resume_ok = False
+        except runner.InfraFailure as exc:
+            resume_ok = "config digest mismatch" in str(exc)
+        manifest_path.write_text(json.dumps(m2 | {"config_digest":
+                                                  sched["config_digest"]}),
+                                 encoding="utf-8")
+        ok &= check(
+            "resumed manifest bound to schedule identity (digest checked)",
+            resume_ok, notes)
+
+        config, _ = build_config(ws, "normal")
         task_ret = write_task(ws, "retries", par_sha)
         config["max_infra_retries"] = -1
         try:
@@ -551,6 +568,13 @@ def run_preflight():
             and len(record.get("nodes", [])) == sessions * 2
             and "wall_seconds" in record,
             notes, json.dumps(acc.get("tree")))
+        stops = record.get("interventions_log", [])
+        ok &= check(
+            "final unanswered stop recorded on exhausted runs",
+            len(stops) == sessions
+            and all(s["answered"] for s in stops[:-1])
+            and stops[-1]["answered"] is False,
+            notes, f"{len(stops)} stops")
 
         record, _, _, _ = run_case(ws, "silent-stop")
         ok &= check(
@@ -605,7 +629,8 @@ def run_preflight():
         placeholder_cfg = dict(config)
         placeholder_cfg.pop("judge_backend_cmd")
         try:
-            runner.score(placeholder_cfg, docs, judge, ws / "judge-bad")
+            runner.score(placeholder_cfg, docs, judge, ws / "judge-bad",
+                         scoring_seed=5)
             guard_ok = False
         except runner.InfraFailure as exc:
             guard_ok = "mount-free" in str(exc)
@@ -617,7 +642,8 @@ def run_preflight():
             sys.executable, str(HERE / "mock_claude.py"),
             "--mode", "wrong-model", "--effort", "{effort}"]
         try:
-            runner.score(wrongjudge_cfg, docs, judge, ws / "judge-wrong")
+            runner.score(wrongjudge_cfg, docs, judge, ws / "judge-wrong",
+                         scoring_seed=5)
             judge_parity_ok = False
         except runner.InfraFailure as exc:
             judge_parity_ok = "differ from registered" in str(exc)
@@ -635,14 +661,15 @@ def run_preflight():
         blind_ok = True
         for bad_doc in (raw_doc, leaky_doc):
             try:
-                runner.score(config, [bad_doc], judge, ws / "judge-blind")
+                runner.score(config, [bad_doc], judge, ws / "judge-blind",
+                             scoring_seed=5)
                 blind_ok = False
             except runner.InfraFailure as exc:
                 blind_ok &= "blind scoring" in str(exc) or "anonymized copy" in str(exc)
         ok &= check(
             "raw/fingerprint-bearing documents refused in score mode",
             blind_ok, notes)
-        results = runner.score(config, docs, judge, judge_out)
+        results = runner.score(config, docs, judge, judge_out, scoring_seed=5)
         judge_files = sorted(judge_out.glob("judge-*.json"))
         ok &= check(
             "fresh pinned judge sessions (distinct session + profile per call)",
@@ -667,7 +694,7 @@ def run_preflight():
         ok &= check(
             "blind judge isolated (empty cwd outside run tree, fs tools denied)",
             iso_ok, notes)
-        runner.score(config, docs, judge, judge_out)
+        runner.score(config, docs, judge, judge_out, scoring_seed=5)
         ok &= check(
             "judge outputs never overwritten (unique id per score invocation)",
             len(sorted(judge_out.glob("judge-*.json"))) == 4,
@@ -681,12 +708,36 @@ def run_preflight():
             all(r.get("backend_version") == "mock-claude 1.0.0"
                 for r in results),
             notes)
+        import random as _random
+        expected_order = list(range(len(docs)))
+        _random.Random(5).shuffle(expected_order)
+        results2 = runner.score(config, docs, judge, ws / "judge-order",
+                                scoring_seed=5)
+        ok &= check(
+            "scoring order randomized from recorded seed (reproducible)",
+            [r["doc"] for r in results]
+            == [str(docs[i]) for i in expected_order]
+            and [r["doc"] for r in results2] == [r["doc"] for r in results]
+            and all(r.get("scoring_seed") == 5
+                    and r.get("presentation_index") == i
+                    for i, r in enumerate(results)),
+            notes)
+        try:
+            runner.score(config, docs, judge, ws / "judge-halfpair",
+                         evidence_sha="deadbeef", scoring_seed=5)
+            pair_ok = False
+        except runner.InfraFailure as exc:
+            pair_ok = "all-or-nothing" in str(exc)
+        ok &= check(
+            "evidence repo/sha accepted only as a pair",
+            pair_ok, notes)
         ev_repo, ev_sha = make_git_repo(ws, "evidence")
         echo_dir = ws / "echo-verifier"
         os.environ["MOCK_ECHO_DIR"] = str(echo_dir)
         try:
             vres = runner.score(config, [docs[0]], judge, ws / "judge-verify",
-                                evidence_repo=ev_repo, evidence_sha=ev_sha)
+                                evidence_repo=ev_repo, evidence_sha=ev_sha,
+                                scoring_seed=5)
         finally:
             os.environ.pop("MOCK_ECHO_DIR", None)
         listing = (echo_dir / "cwd-listing.txt").read_text(encoding="utf-8")

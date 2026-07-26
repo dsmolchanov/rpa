@@ -598,12 +598,13 @@ def validate_arm_parity(config):
         )
 
 
-def classify_stop(response):
+def classify_stop(response, answered=True):
     """A pre-artifact stop is preserved verbatim and mechanically tagged so
     the analysis stage can count ritual stops (question-shaped pauses)
     against the zero-ritual-stop pass bar. Final semantic classification
     belongs to the sealed analysis, not the harness — this tag only keeps
-    stops distinguishable and reviewable."""
+    stops distinguishable and reviewable. `answered=False` marks the final
+    stop of an exhausted run, which received no further continuation."""
     text = (response or "").strip()
     if not text:
         kind = "empty"
@@ -611,7 +612,7 @@ def classify_stop(response):
         kind = "question"
     else:
         kind = "statement"
-    return {"response": text, "classification": kind}
+    return {"response": text, "classification": kind, "answered": answered}
 
 
 def snapshot_research(worktree):
@@ -783,6 +784,12 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1):
         record["wall_seconds"] = round(time.time() - started, 3)
         record["accounting"] = account(all_nodes)
         record["nodes"] = all_nodes
+        if artifact is None:
+            # The exhausted run's final response is itself a pre-artifact
+            # stop — unanswered, but it must still be counted or the
+            # intervention/ritual-stop metrics underreport by one.
+            record["interventions_log"].append(
+                classify_stop(response, answered=False))
         if arm.get("forbid_subagents") and record["accounting"]["subagents_spawned"]:
             # Pre-registered third-arm policy: the fleet-ablation arm may
             # not delegate at all, or its differences stop being
@@ -947,10 +954,16 @@ def run_schedule(config, schedule_path, repo_dir, output_dir, task_paths):
     results = []
     if manifest_path.exists():
         prior = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if prior.get("seed") != schedule["seed"]:
+        if (prior.get("seed") != schedule["seed"]
+                or prior.get("config_digest") != schedule["config_digest"]):
+            # Same seed + task set under a changed config reproduces the
+            # same entries — only the digest distinguishes them, so it is
+            # part of the resume identity.
             raise InfraFailure(
                 "existing manifest in the output directory belongs to a "
-                "different schedule (seed mismatch)"
+                "different schedule (seed or config digest mismatch) — "
+                "results from different registered configurations must not "
+                "be mixed"
             )
         results = list(prior.get("results", []))
         if len(results) > len(entries):
@@ -966,6 +979,7 @@ def run_schedule(config, schedule_path, repo_dir, output_dir, task_paths):
         manifest = {
             "schedule": str(schedule_path),
             "seed": schedule["seed"],
+            "config_digest": schedule["config_digest"],
             "replicates": schedule["replicates"],
             "nonstandard_replicates": schedule.get("nonstandard_replicates",
                                                    False),
@@ -1037,20 +1051,31 @@ def assert_blind_scorable(doc_path):
 
 
 def score(config, doc_paths, judge_prompt_path, output_dir,
-          evidence_repo=None, evidence_sha=None):
+          evidence_repo=None, evidence_sha=None, scoring_seed=None):
     """One fresh pinned backend session per document. The judge's full
     response text is preserved on disk — it IS the scoring artifact. Judge
     prompts live in the sealed package and are passed in at runtime.
+    Documents are presented in a RANDOMIZED order derived from the recorded
+    `scoring_seed`, so time-dependent judge/service drift cannot stay
+    correlated with an arm, and the sequence stays reproducible.
 
     Two roles: without `evidence_repo` the judge is a blind SCORER (empty
     cwd outside the experiment tree, all inspection tools denied). With
     `evidence_repo` + `evidence_sha` the judge is an evidence VERIFIER: its
     cwd is a disposable worktree of the frozen evidence repo at the pinned
     sha, read-only tools allowed, so file-and-line citations can actually
-    be checked."""
-    if evidence_repo and not evidence_sha:
+    be checked. The two evidence arguments are all-or-nothing: one without
+    the other is an operator mistake, never a silent role choice."""
+    if bool(evidence_repo) != bool(evidence_sha):
         raise InfraFailure(
-            "evidence_repo requires evidence_sha (the task's pinned target-sha)"
+            "evidence_repo and evidence_sha must be supplied together "
+            "(all-or-nothing) — one without the other silently changes the "
+            "judge role"
+        )
+    if scoring_seed is None:
+        raise InfraFailure(
+            "`scoring_seed` is required — the presentation order must be "
+            "randomized from a recorded seed"
         )
     judge_prompt = Path(judge_prompt_path).read_text(encoding="utf-8")
     judge_cmd = config.get("judge_backend_cmd", config["backend_cmd"])
@@ -1073,7 +1098,10 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
     scoring_id = uuid.uuid4().hex[:8]
     results = []
     role = "verifier" if evidence_repo else "scorer"
-    for i, (doc, doc_text) in enumerate(zip(doc_paths, doc_texts)):
+    order = list(range(len(doc_paths)))
+    random.Random(scoring_seed).shuffle(order)
+    for i, doc_index in enumerate(order):
+        doc, doc_text = doc_paths[doc_index], doc_texts[doc_index]
         # Every judge session is a pinned session: the backend version is
         # re-probed per document, so an installation change mid-batch
         # cannot slip later documents onto an unregistered version.
@@ -1114,6 +1142,8 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             "cwd": str(workdir),
             "role": role,
             "backend_version": backend_version,
+            "scoring_seed": scoring_seed,
+            "presentation_index": i,
             "judge_model": judge_model,
             "effort_capture": effort_capture,
             "response": response,
@@ -1149,6 +1179,9 @@ def main():
                              "the judge gets a read-only worktree at --evidence-sha")
     parser.add_argument("--evidence-sha",
                         help="pinned sha for --evidence-repo (the task's target-sha)")
+    parser.add_argument("--scoring-seed", type=int,
+                        help="score mode: recorded seed randomizing the "
+                             "document presentation order")
     parser.add_argument("--output", default="runs", help="output directory")
     parser.add_argument("--make-schedule", action="store_true",
                         help="write a pre-registered randomized schedule "
@@ -1216,12 +1249,17 @@ def main():
     if args.score:
         if not (args.config and args.docs and args.judge_prompt):
             parser.error("score mode requires --config, --docs, --judge-prompt")
-        if args.evidence_repo and not args.evidence_sha:
-            parser.error("--evidence-repo requires --evidence-sha")
+        if bool(args.evidence_repo) != bool(args.evidence_sha):
+            parser.error("--evidence-repo and --evidence-sha must be "
+                         "supplied together (all-or-nothing)")
+        if args.scoring_seed is None:
+            parser.error("score mode requires --scoring-seed (recorded "
+                         "randomization of the presentation order)")
         config = load_config(args.config)
         results = score(config, args.docs, args.judge_prompt, args.output,
                         evidence_repo=args.evidence_repo,
-                        evidence_sha=args.evidence_sha)
+                        evidence_sha=args.evidence_sha,
+                        scoring_seed=args.scoring_seed)
         print(json.dumps([{k: r[k] for k in ("doc", "session_id")} for r in results]))
         sys.exit(0)
 
