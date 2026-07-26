@@ -168,11 +168,13 @@ def check_skills(root, errors):
                 )
         check_field(data, "description", rel, errors)
         permission = check_field(data, "permission-class", rel, errors)
-        if isinstance(permission, str) and not any(t in permission for t in PERMISSION_TOKENS):
-            errors.append(
-                f"{rel}: frontmatter `permission-class` must reference at least one of "
-                f"{'/'.join(PERMISSION_TOKENS)}, got {permission!r}"
-            )
+        if isinstance(permission, str):
+            words = set(re.findall(r"[a-z_]+", permission))
+            if not words & set(PERMISSION_TOKENS):
+                errors.append(
+                    f"{rel}: frontmatter `permission-class` must contain at least one "
+                    f"complete token of {'/'.join(PERMISSION_TOKENS)}, got {permission!r}"
+                )
         invocation = check_field(data, "invocation", rel, errors)
         if isinstance(invocation, str):
             items = {part.strip() for part in invocation.split(",") if part.strip()}
@@ -267,6 +269,13 @@ def _check_target(target, path, root, errors, anchor_cache):
             resolved = root / clean.lstrip("/")
         else:
             resolved = path.parent / clean
+        try:
+            resolved.resolve().relative_to(root.resolve())
+        except ValueError:
+            errors.append(
+                f"{path.relative_to(root)}: link target escapes the repository `{target}`"
+            )
+            return
         if not resolved.exists():
             errors.append(f"{path.relative_to(root)}: broken relative link `{target}`")
             return

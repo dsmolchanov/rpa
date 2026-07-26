@@ -42,8 +42,11 @@ last_updated_by: [Researcher name]
    git commit, branch, repository.
 2. `## Research Question` — the original user query.
 3. `## Summary` — high-level answer describing what exists.
-4. `## Detailed Findings` — per component/area; every claim carries a
-   `file.ext:line` reference; description without evaluation.
+4. `## Detailed Findings` — one subsection per component/area, each
+   documenting (as in the frozen template): a description of what exists
+   with its `file.ext:line` reference; **how it connects to other
+   components**; and **current implementation details** — all without
+   evaluation.
 5. `## Code References` — `path/to/file.py:123` list with one-line
    descriptions.
 6. `## Architecture Documentation` — patterns and conventions found.
