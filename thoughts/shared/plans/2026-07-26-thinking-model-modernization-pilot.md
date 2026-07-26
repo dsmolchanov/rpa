@@ -362,6 +362,25 @@ sanitized examples; raw run artifacts stay in a private location.
    anonymizes documents before scoring; and launches scorer and verifier in
    fresh pinned sessions.
 
+**Prerequisite status (2026-07-26):**
+
+1. CI validation gate — **done** (merged with the v0.2.1 prerequisites PR;
+   `docs-validate` green in CI).
+2. Pass bar — **done** (registered in this document before any runs).
+3. Atomic seal — **pending**; must be authored in a separate session.
+4. Skeleton + `research-v2-*` copies — **done** (v0.2.1 prerequisites PR).
+5. Eval-runner — harness landed at
+   `skills/research-codebase/evals/public/` (`runner.py`, `mock_claude.py`,
+   `preflight.py`); the synthetic preflight proves all capabilities against
+   the deterministic mock backend (13/13). The **real-backend preflight**
+   on the throwaway task remains required once before baseline runs.
+
+**Dev set status (Sequence step 2):** authored. Public tasks dev-3/dev-4
+(target: this repo) live at `skills/research-codebase/evals/public/dev-set/`;
+private tasks dev-1/dev-5 (livekit-voice-agent @ `9d65fff`) and dev-2
+(neomenu @ `aa8b8d1`) were delivered to the owner for the private eval
+workspace per the privacy rule and are not committed here.
+
 ## Sequence
 
 1. Prerequisites 1–5.
