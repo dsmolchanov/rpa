@@ -16,8 +16,10 @@ legacy `/create_plan` and `/enhance_research` keep consuming them.
 - Examples: `2025-01-08-ENG-1478-parent-child-tracking.md`,
   `2025-01-08-authentication-flow.md`
 
-Metadata comes from `scripts/spec_metadata.sh` when available, otherwise
-gathered manually (date, git commit, branch, repo name).
+Metadata comes from `~/.claude/scripts/spec_metadata.sh` — the installed
+copy of this plugin's `scripts/spec_metadata.sh`, exactly as the frozen
+baseline invokes it — and, if absent, is gathered manually (date, git
+commit, branch, repo name).
 
 ## Frontmatter (YAML, required)
 

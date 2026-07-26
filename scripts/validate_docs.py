@@ -47,7 +47,7 @@ EXCLUDED_PARTS = {".git", "node_modules"}
 FIXTURES_REL = Path("tests/fixtures/docs-validate")
 
 INLINE_LINK_RE = re.compile(
-    r"\[[^\]]*\]\(\s*<?([^)\s>]+)>?"
+    r"\[[^\]]*\]\(\s*<?((?:[^()\s>]|\([^()\s]*\))+)>?"
     r"(?:\s+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?"
     r"\s*\)"
 )
@@ -238,13 +238,17 @@ def _heading_anchors(path, cache):
     if path in cache:
         return cache[path]
     anchors, counts = set(), {}
-    in_fence = False
+    fence = None
     for line in path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
-        if stripped.startswith("```"):
-            in_fence = not in_fence
+        if fence is None and stripped.startswith(("```", "~~~")):
+            fence = stripped[:3]
             continue
-        if in_fence or not stripped.startswith("#"):
+        if fence is not None:
+            if stripped.startswith(fence):
+                fence = None
+            continue
+        if not stripped.startswith("#"):
             continue
         text = stripped.lstrip("#").strip()
         text = re.sub(r"`([^`]*)`", r"\1", text)
@@ -291,12 +295,15 @@ def check_links(root, errors, exclude_fixtures=True):
     for path in iter_markdown(root, exclude_fixtures=exclude_fixtures):
         text = path.read_text(encoding="utf-8")
         definitions, content_lines = {}, []
-        in_fence = False
+        fence = None
         for line in text.splitlines():
-            if line.strip().startswith("```"):
-                in_fence = not in_fence
+            stripped_line = line.strip()
+            if fence is None and stripped_line.startswith(("```", "~~~")):
+                fence = stripped_line[:3]
                 continue
-            if in_fence:
+            if fence is not None:
+                if stripped_line.startswith(fence):
+                    fence = None
                 continue
             content_lines.append(line)
             def_match = REF_DEF_RE.match(line)

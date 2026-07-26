@@ -9,7 +9,7 @@ baseline_plugin_sha: a7de5f6000225b57eeee1a5c6c0131fb02656d4d
 
 # Pilot: modernize /research_codebase for reasoning-era models
 
-Validate `docs/conventions.md` v0.2 on one workflow family with a
+Validate `docs/conventions.md` v0.2.1 on one workflow family with a
 reproducible A/B experiment. No other files are rewritten until this pilot's
 results are reviewed.
 
@@ -96,14 +96,14 @@ pre-registered and then held constant for **all** runs of all arms:
 - resource ceilings (timeouts, token budget if set)
 
 The **only permitted difference between arms is the plugin content** (frozen
-baseline SHA vs candidate branch SHA vs minimal-skill variant). Every run
+baseline SHA vs candidate branch SHA vs fleet-ablation variant). Every run
 additionally captures the target repo + SHA and its own plugin SHA. If any
 pinned value differs within a paired task's runs, the pair is invalid and is
 rerun — deltas must reflect the workflow rewrite, not runtime drift.
 
 **Effective-model parity:** the frozen baseline command carries
 `model: opus`; to prevent the arms resolving to different models, the
-candidate wrapper (and the minimal-skill arm) carry the **same explicit
+candidate wrapper (and the fleet-ablation arm) carry the **same explicit
 model pin** as the baseline for the duration of the pilot — a pilot-only
 parity control that supersedes conventions §5 until adoption. Every run's
 harness-reported effective model is validated against the registered model;
@@ -164,7 +164,7 @@ Question archetypes across both sets:
 **Run protocol:** randomized, interleaved order per task; **exactly 3 runs
 each for the baseline and candidate arms on every holdout task**,
 pre-registered — no runs are added or discarded after outcomes are
-observed. The minimal-skill third arm runs **only its two designated tasks**
+observed. The fleet-ablation third arm runs **only its two designated tasks**
 (see Third arm), 3 replicates each. A timed-out/aborted run counts as a
 failed run and is **not** replaced.
 
@@ -195,10 +195,10 @@ their keep with modern models?
 **Pre-registered third-arm decision rule:** the third arm uses the same
 replicate, median, and pairing rules as the A/B arms on its two tasks, and
 the same scorer/verifier. The fleet is judged **not earning its keep on the
-tested archetypes** iff, on **both** designated tasks, the minimal-skill
+tested archetypes** iff, on **both** designated tasks, the fleet-ablation
 arm's quality median is **no more than 0.5/10 below** the candidate's and
 its evidence accuracy **no more than 2 п.п. below** (one-sided
-non-inferiority bounds — a minimal arm that matches *or beats* the
+non-inferiority bounds — an ablation arm that matches *or beats* the
 candidate satisfies them), while saving **≥30%** tokens or **≥20%**
 wall-time (per-task medians). This verdict is advisory — it shapes
 the next-phase design, not this pilot's pass/fail — but the criterion is

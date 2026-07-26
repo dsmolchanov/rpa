@@ -11,3 +11,8 @@ fragment [e](./ok.md#demo), self [f](#links).
 [ref1]: ../agents/demo-agent.md
 [ok.md]: ./ok.md
 [ang]: <./ok.md>
+Paren dest [p](./ok_(v2).md).
+
+~~~
+fenced [broken](./ghost.md) link ignored
+~~~
