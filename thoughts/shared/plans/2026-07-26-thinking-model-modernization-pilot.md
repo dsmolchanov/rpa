@@ -170,9 +170,11 @@ their keep with modern models?
 replicate, median, and pairing rules as the A/B arms on its two tasks, and
 the same scorer/verifier. The fleet is judged **not earning its keep on the
 tested archetypes** iff, on **both** designated tasks, the minimal-skill
-arm's quality median is within **0.5/10** of the candidate's and its
-evidence accuracy within **2 п.п.**, while saving **≥30%** tokens or
-**≥20%** wall-time (per-task medians). This verdict is advisory — it shapes
+arm's quality median is **no more than 0.5/10 below** the candidate's and
+its evidence accuracy **no more than 2 п.п. below** (one-sided
+non-inferiority bounds — a minimal arm that matches *or beats* the
+candidate satisfies them), while saving **≥30%** tokens or **≥20%**
+wall-time (per-task medians). This verdict is advisory — it shapes
 the next-phase design, not this pilot's pass/fail — but the criterion is
 fixed before the holdout is unsealed.
 
@@ -243,12 +245,14 @@ rewrite) is revised before retry.
   verdict and is re-run with a fresh sealed holdout — the pass calculation
   never proceeds on partial baselines.
 - **Critical-error gate (pre-registered):** the evidence verifier classifies
-  critical errors using the definition fixed in the sealed rubric. An error
-  counts as **introduced** iff it appears in at least one candidate
-  replicate of a task and in no baseline replicate of the same task
-  (set-level comparison of verifier-confirmed errors, per task). One
-  introduced critical error anywhere fails the candidate. Errors present in
-  both arms are recorded but not counted as introduced.
+  critical errors using the definition fixed in the sealed rubric. For each
+  distinct critical error and each task, occurrences are **counted** across
+  that arm's 3 replicates. The candidate fails if any error's candidate
+  occurrence count **exceeds** its baseline count on the same task — this
+  covers both introduced errors (baseline count 0, candidate ≥1) and
+  frequency regressions of pre-existing errors (e.g. 1/3 baseline vs 3/3
+  candidate). Errors whose candidate count is ≤ the baseline count are
+  recorded in the results doc but do not fail the arm.
 - **Cost and latency aggregation (same pairing):** per task and arm, the
   **median total tokens** (tree-wide) and **median wall-clock** across
   replicates; the per-task delta is the percentage change of the candidate
