@@ -26,7 +26,7 @@ commit, branch, repo name).
 ```yaml
 ---
 date: [Current date and time with timezone in ISO format]
-researcher: [Researcher name]
+researcher: [Researcher name from thoughts status]
 git_commit: [Current commit hash]
 branch: [Current branch name]
 repository: [Repository name]
@@ -38,25 +38,52 @@ last_updated_by: [Researcher name]
 ---
 ```
 
-## Body sections (in order)
+## Body template (verbatim from the frozen baseline)
 
-1. `# Research: [Topic]` — header block repeating date, researcher,
-   git commit, branch, repository.
-2. `## Research Question` — the original user query.
-3. `## Summary` — high-level answer describing what exists.
-4. `## Detailed Findings` — one subsection per component/area, each
-   documenting (as in the frozen template): a description of what exists
-   with its `file.ext:line` reference; **how it connects to other
-   components**; and **current implementation details** — all without
-   evaluation.
-5. `## Code References` — `path/to/file.py:123` list with one-line
-   descriptions.
-6. `## Architecture Documentation` — patterns and conventions found.
-7. `## Historical Context (from thoughts/)` — insights with `thoughts/`
-   paths (paths exclude `searchable/`).
-8. `## Related Research` — links to other docs in
-   `thoughts/shared/research/`.
-9. `## Open Questions` — areas needing further investigation.
+```markdown
+# Research: [User's Question/Topic]
+
+**Date**: [Current date and time with timezone from step 4]
+**Researcher**: [Researcher name from thoughts status]
+**Git Commit**: [Current commit hash from step 4]
+**Branch**: [Current branch name from step 4]
+**Repository**: [Repository name]
+
+## Research Question
+[Original user query]
+
+## Summary
+[High-level documentation of what was found, answering the user's question by describing what exists]
+
+## Detailed Findings
+
+### [Component/Area 1]
+- Description of what exists ([file.ext:line](link))
+- How it connects to other components
+- Current implementation details (without evaluation)
+
+### [Component/Area 2]
+...
+
+## Code References
+- `path/to/file.py:123` - Description of what's there
+- `another/file.ts:45-67` - Description of the code block
+
+## Architecture Documentation
+[Current patterns, conventions, and design implementations found in the codebase]
+
+## Historical Context (from thoughts/)
+[Relevant insights from thoughts/ directory with references]
+- `thoughts/shared/something.md` - Historical decision about X
+- `thoughts/local/notes.md` - Past exploration of Y
+Note: Paths exclude "searchable/" even if found there
+
+## Related Research
+[Links to other research documents in thoughts/shared/research/]
+
+## Open Questions
+[Any areas that need further investigation]
+```
 
 ## Permalinks
 
@@ -74,5 +101,5 @@ preserved exactly as in the baseline:
   document, updates `last_updated` and `last_updated_by`, and adds
   `last_updated_note: "Added follow-up research for [brief description]"`.
 - **Enhancement** (`/enhance_research`): updates `last_updated` /
-  `last_updated_by` and records an `enhancement_note` describing the
-  synthesis applied.
+  `last_updated_by` and adds
+  `enhancement_note: "Enhanced based on user feedback: [brief summary]"`.
