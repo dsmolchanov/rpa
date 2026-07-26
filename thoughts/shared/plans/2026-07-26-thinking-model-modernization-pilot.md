@@ -149,8 +149,10 @@ their keep with modern models?
    external-context task the verifier also gets the frozen external-source
    snapshots from the holdout package and checks external claims and
    citations against them.
-3. **Critical factual errors** — count (claims contradicted by the repo or
-   by the frozen external sources).
+3. **Critical factual errors** — claims contradicted by the frozen repo or
+   the frozen external sources, classified by the **evidence verifier**
+   using the error definition fixed in the sealed rubric (see the
+   critical-error gate in Scoring).
 4. **Cost** — tokens across the **entire agent tree**, reported as
    main-context and subagent subtotals.
 5. **Tool calls** — same tree-wide accounting, main/subagent split.
@@ -166,7 +168,8 @@ in Scoring. Candidate passes iff, on the holdout set:
 
 - quality delta ≥ **−0.25 / 10** vs baseline;
 - evidence accuracy delta ≥ **−2 п.п.**;
-- **zero** critical factual errors introduced;
+- **zero** critical factual errors introduced (per the critical-error gate
+  in Scoring);
 - **zero** ritual stops;
 - **≥20%** token savings **or** **≥15%** wall-time reduction, both as the
   aggregated holdout-level figures defined in Scoring;
@@ -187,10 +190,22 @@ rewrite) is revised before retry.
   arm's quality and evidence-accuracy values are the **median across its
   replicates**; the per-task delta is candidate median minus baseline
   median; the holdout-level delta compared against the pass bar is the
-  **mean of per-task deltas**. A timed-out/aborted run produces no document
-  and is excluded from the median, but any such run already fails the
-  candidate arm via the pass bar. This rule is fixed here, before any
-  baseline run.
+  **mean of per-task deltas**. This rule is fixed here, before any baseline
+  run.
+- **Failed-run rule:** a timed-out/aborted **candidate or third-arm** run
+  fails that arm outright (pass bar). A timed-out/aborted **baseline** run
+  renders that task **inconclusive**: the task is excluded from every
+  holdout-level aggregate and the exclusion is reported in the results doc.
+  If fewer than 3 holdout tasks remain conclusive, the experiment yields no
+  verdict and is re-run with a fresh sealed holdout — the pass calculation
+  never proceeds on partial baselines.
+- **Critical-error gate (pre-registered):** the evidence verifier classifies
+  critical errors using the definition fixed in the sealed rubric. An error
+  counts as **introduced** iff it appears in at least one candidate
+  replicate of a task and in no baseline replicate of the same task
+  (set-level comparison of verifier-confirmed errors, per task). One
+  introduced critical error anywhere fails the candidate. Errors present in
+  both arms are recorded but not counted as introduced.
 - **Cost and latency aggregation (same pairing):** per task and arm, the
   **median total tokens** (tree-wide) and **median wall-clock** across
   replicates; the per-task delta is the percentage change of the candidate
