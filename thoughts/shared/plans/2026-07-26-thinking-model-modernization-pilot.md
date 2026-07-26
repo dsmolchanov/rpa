@@ -110,6 +110,14 @@ plugin). An evaluated run receives only the task prompt — never the
 ground-truth notes, snapshots, or rubric. The package's SHA-256 is recorded
 at sealing time so freezing is verifiable without publishing contents.
 
+**Source-drift gate (external-context task):** before scoring, the evidence
+verifier re-fetches the live authoritative sources and diffs them against
+the frozen snapshots. If any section relevant to a ground-truth claim has
+materially changed since sealing, the external-context task is declared
+**inconclusive** (handled by the failed-run rule: excluded from aggregates,
+reported) and is re-sealed with fresh snapshots for a subsequent round —
+arms researching live docs are never scored against a stale snapshot.
+
 Question archetypes across both sets:
 
 | Archetype | Why |
@@ -122,9 +130,11 @@ Question archetypes across both sets:
 | Question with a known-wrong premise | measures escalation (surface, don't comply) |
 
 **Run protocol:** randomized, interleaved order per task; **exactly 3 runs
-per arm per holdout task**, pre-registered — no runs are added or discarded
-after outcomes are observed. A timed-out/aborted run counts as a failed run
-and is **not** replaced.
+each for the baseline and candidate arms on every holdout task**,
+pre-registered — no runs are added or discarded after outcomes are
+observed. The minimal-skill third arm runs **only its two designated tasks**
+(see Third arm), 3 replicates each. A timed-out/aborted run counts as a
+failed run and is **not** replaced.
 
 ## Third arm (2–3 tasks)
 
