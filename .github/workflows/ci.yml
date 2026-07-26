@@ -78,8 +78,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install validator dependency (registered in pilot plan, prereq 1)
-        run: python3 -m pip install --quiet pyyaml==6.0.2
+      - name: Install validator dependencies (registered in pilot plan, prereq 1)
+        run: python3 -m pip install --quiet pyyaml==6.0.2 markdown-it-py==3.0.0
       - name: Self-test validator against fixtures
         run: python3 scripts/validate_docs.py --self-test
       - name: Validate repository docs

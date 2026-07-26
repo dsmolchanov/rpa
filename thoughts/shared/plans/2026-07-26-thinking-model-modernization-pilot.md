@@ -323,9 +323,12 @@ sanitized examples; raw run artifacts stay in a private location.
    found** and ship positive/negative fixtures proving it catches breakage
    (per conventions §4 — a silently no-op gate is a defect; the existing
    `ci.yml` jobs are effectively silent no-ops on this repo). Registered
-   dependency for this gate: **PyYAML, pinned to `6.0.2`** in the CI job —
-   real YAML parsing of frontmatter is required for the schema check; no
-   other new dependencies are authorized by this plan.
+   dependencies for this gate, both pinned in the CI job: **PyYAML
+   `6.0.2`** (real YAML parsing for the frontmatter schema check) and
+   **markdown-it-py `3.0.0`** (the CommonMark reference parser for link and
+   anchor extraction — hand-rolled Markdown parsing is exactly the
+   reinvented mechanism conventions §4 warns against). No other new
+   dependencies are authorized by this plan.
 2. Pass bar registered (this document, committed before runs).
 3. **Atomic seal** (see Eval set): one sealing operation producing the
    complete sealed package — tasks + repo@SHA, ground truth, external

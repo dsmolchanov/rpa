@@ -10,14 +10,21 @@ check fails loudly when its target set is empty):
   2. agents/*.md     — at least one file; frontmatter `name` (matching the
                        filename), `description` (non-empty string), and
                        `tools` (string or list).
-  3. skills/*/SKILL.md — at least one; frontmatter `name` and `description`.
+  3. skills/*/SKILL.md — at least one; frontmatter `name` (kebab-case,
+                       matching the skill directory), `description`,
+                       `permission-class`, and `invocation`.
   4. .claude-plugin/plugin.json and marketplace.json — valid JSON with
                        required keys AND value shapes (non-empty strings,
-                       semver version, plugins as a list of {name, source}).
-  5. Internal links in all *.md — inline links (with or without titles),
-                       reference definitions, and reference usages. Any
-                       relative target (md, json, scripts, images,
-                       directories) must exist; http(s)/mailto/# ignored.
+                       full-spec semver version, plugins as a list of
+                       {name, source}).
+  5. Internal links in all *.md — extracted with the CommonMark reference
+                       parser (markdown-it-py), so code fences/spans,
+                       escapes, titles, angle brackets, reference links,
+                       images, lists and indented code follow the spec
+                       exactly. Targets are URL-normalized, must stay
+                       inside the repository, and fragments are verified
+                       case-sensitively against GitHub-style heading
+                       anchors. Undefined reference labels are reported.
 
 `--self-test` proves each check individually: the positive fixture tree
 must pass clean, and every `tests/fixtures/docs-validate/negative/<case>/`
@@ -25,7 +32,8 @@ tree — complete except for exactly one seeded defect — must produce an
 error containing the substring in that case's `EXPECTED` file.
 Fixtures are excluded from normal validation.
 
-Registered dependency (pilot plan, prerequisite 1): PyYAML, pinned in CI.
+Registered dependencies (pilot plan, prerequisite 1): PyYAML and
+markdown-it-py, both pinned in CI.
 """
 
 import argparse
@@ -44,89 +52,19 @@ except ImportError:  # pragma: no cover
     )
     sys.exit(2)
 
+try:
+    from markdown_it import MarkdownIt
+except ImportError:  # pragma: no cover
+    print(
+        "validate_docs.py requires markdown-it-py: "
+        "python3 -m pip install markdown-it-py==3.0.0",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
 EXCLUDED_PARTS = {".git", "node_modules"}
 FIXTURES_REL = Path("tests/fixtures/docs-validate")
 
-LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
-# Inline code spans with equal-length backtick delimiters of any length.
-CODE_SPAN_RE = re.compile(r"(`+)(?:(?!\1).)*?\1")
-
-
-def _has_link_opener(line, j):
-    """True iff the `]` at index j closes a real, unescaped link label."""
-    if j > 0:
-        b, n = j - 1, 0
-        while b >= 0 and line[b] == "\\":
-            n += 1
-            b -= 1
-        if n % 2 == 1:
-            return False  # the `]` itself is escaped
-    depth, pos = 0, j - 1
-    while pos >= 0:
-        char = line[pos]
-        if char == "]":
-            depth += 1
-        elif char == "[":
-            if depth == 0:
-                b, n = pos - 1, 0
-                while b >= 0 and line[b] == "\\":
-                    n += 1
-                    b -= 1
-                return n % 2 == 0  # opener must be unescaped
-            depth -= 1
-        pos -= 1
-    return False
-
-
-def _iter_inline_targets(line):
-    """Yield inline-link destinations from a line, using a balanced scanner
-    so destinations may contain arbitrarily nested parentheses; angle-bracket
-    destinations may contain spaces. Titles (quoted or parenthesized) after
-    the destination are ignored."""
-    i = 0
-    while True:
-        j = line.find("](", i)
-        if j == -1:
-            return
-        if not _has_link_opener(line, j):
-            i = j + 2
-            continue
-        k = j + 2
-        while k < len(line) and line[k] in " \t":
-            k += 1
-        if k < len(line) and line[k] == "<":
-            end = line.find(">", k + 1)
-            if end == -1:
-                i = j + 2
-                continue
-            if end > k + 1:
-                yield line[k + 1:end]
-            i = end
-            continue
-        depth, start, end = 0, k, None
-        while k < len(line):
-            char = line[k]
-            if char == "(":
-                depth += 1
-            elif char == ")":
-                if depth == 0:
-                    end = k
-                    break
-                depth -= 1
-            elif char in " \t":
-                end = k  # whitespace ends the destination; a title may follow
-                break
-            k += 1
-        if end is None:
-            i = j + 2
-            continue
-        target = line[start:end]
-        if target:
-            yield target
-        i = end
-SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-REF_DEF_RE = re.compile(r"^\s*\[([^\]\^][^\]]*)\]:\s*(<[^<>]*>|\S+)")
-REF_USE_RE = re.compile(r"\[([^\]]+)\]\[([^\]]*)\]")
 # Any RFC 3986 scheme (case-insensitive) or protocol-relative URL is external.
 URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 # Official semver.org regex: forbids empty identifiers and leading zeroes in
@@ -139,6 +77,11 @@ SEMVER_RE = re.compile(
 )
 INVOCATION_VALUES = {"user", "model", "both", "none"}
 PERMISSION_TOKENS = ("read_only", "workspace_write", "external")
+SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+# Reference-style usage in rendered TEXT (i.e. left unresolved by the parser).
+REF_USE_RE = re.compile(r"\[([^\]]+)\]\[([^\]]*)\]")
+
+_MD = MarkdownIt("commonmark")
 
 
 def parse_frontmatter(text):
@@ -157,6 +100,15 @@ def parse_frontmatter(text):
                 return None, "invalid YAML frontmatter (not a mapping)"
             return data, None
     return None, "missing or unterminated YAML frontmatter"
+
+
+def strip_frontmatter(text):
+    lines = text.splitlines()
+    if lines and lines[0].strip() == "---":
+        for idx in range(1, len(lines)):
+            if lines[idx].strip() == "---":
+                return "\n".join(lines[idx + 1:])
+    return text
 
 
 def check_field(data, key, rel, errors, types=(str,), non_empty=True):
@@ -312,68 +264,52 @@ def check_json_manifests(root, errors):
                 errors.append(f"{market_rel}: plugins[{i}].`{key}` must be a non-empty string")
 
 
-def _heading_anchors(path, cache):
-    """GitHub-style anchor IDs for a markdown file's headings, following
-    Markdown heading syntax: ATX (1-6 `#` + whitespace, <=3 leading spaces)
-    and Setext (paragraph line underlined with `=` or `-`). Indented code
-    (>=4 spaces), fenced code, and `#text` without a following space are
-    not headings. YAML frontmatter is skipped."""
-    if path in cache:
-        return cache[path]
-    anchors, counts = set(), {}
+class _DocIndex:
+    """Per-file CommonMark parse results, cached."""
 
-    def add(text):
-        text = re.sub(r"`([^`]*)`", r"\1", text)
-        text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
-        anchor = re.sub(r"[^\w\- ]", "", text.lower()).strip().replace(" ", "-")
-        if not anchor:
-            return
-        n = counts.get(anchor, 0)
-        counts[anchor] = n + 1
-        anchors.add(anchor if n == 0 else f"{anchor}-{n}")
+    def __init__(self):
+        self._parses = {}
+        self._anchors = {}
 
-    lines = path.read_text(encoding="utf-8").splitlines()
-    start = 0
-    if lines and lines[0].strip() == "---":
-        for i in range(1, len(lines)):
-            if lines[i].strip() == "---":
-                start = i + 1
-                break
-    fence = None
-    prev_paragraph = None
-    for line in lines[start:]:
-        stripped = line.strip()
-        indent = len(line) - len(line.lstrip(" "))
-        if fence is None and indent < 4 and stripped.startswith(("```", "~~~")):
-            marker_char = stripped[0]
-            fence = marker_char * (len(stripped) - len(stripped.lstrip(marker_char)))
-            prev_paragraph = None
-            continue
-        if fence is not None:
-            if indent < 4 and stripped.startswith(fence):
-                fence = None
-            continue
-        if indent >= 4:
-            prev_paragraph = None  # indented code block line
-            continue
-        atx = re.match(r"^ {0,3}#{1,6}(?:\s+(.*?))?\s*#*\s*$", line)
-        if atx:
-            add(atx.group(1) or "")
-            prev_paragraph = None
-            continue
-        if prev_paragraph and re.match(r"^ {0,3}(=+|-+)\s*$", line):
-            add(prev_paragraph)
-            prev_paragraph = None
-            continue
-        prev_paragraph = stripped or None
-    cache[path] = anchors
-    return anchors
+    def tokens_env(self, path):
+        if path not in self._parses:
+            env = {}
+            body = strip_frontmatter(path.read_text(encoding="utf-8"))
+            tokens = _MD.parse(body, env)
+            self._parses[path] = (tokens, env)
+        return self._parses[path]
+
+    def anchors(self, path):
+        """GitHub-style anchor IDs for the file's headings."""
+        if path in self._anchors:
+            return self._anchors[path]
+        anchors, counts = set(), {}
+        tokens, _ = self.tokens_env(path)
+        for i, tok in enumerate(tokens):
+            if tok.type != "heading_open":
+                continue
+            inline = tokens[i + 1] if i + 1 < len(tokens) else None
+            text = ""
+            if inline is not None and inline.children:
+                text = "".join(
+                    child.content
+                    for child in inline.children
+                    if child.type in ("text", "code_inline")
+                )
+            anchor = re.sub(r"[^\w\- ]", "", text.lower()).strip().replace(" ", "-")
+            if not anchor:
+                continue
+            n = counts.get(anchor, 0)
+            counts[anchor] = n + 1
+            anchors.add(anchor if n == 0 else f"{anchor}-{n}")
+        self._anchors[path] = anchors
+        return anchors
 
 
-def _check_target(target, path, root, errors, anchor_cache):
+def _check_target(target, path, root, errors, index):
     """Resolve exactly as Markdown renders: relative to the containing file,
     or to the repo root only for absolute (`/`-prefixed) targets. Fragments
-    are verified against the target file's heading anchors."""
+    are verified case-sensitively against the target's heading anchors."""
     if URI_SCHEME_RE.match(target) or target.startswith("//"):
         return
     clean, _, fragment = target.partition("#")
@@ -400,73 +336,46 @@ def _check_target(target, path, root, errors, anchor_cache):
     if fragment and resolved.is_file() and resolved.suffix == ".md":
         # Fragment identifiers are case-sensitive: generated anchors are
         # lowercase, so `#Setup` does not navigate to `# Setup`.
-        if fragment not in _heading_anchors(resolved, anchor_cache):
+        if fragment not in index.anchors(resolved):
             errors.append(f"{path.relative_to(root)}: broken anchor `{target}`")
 
 
+def _normalize_ref_label(label):
+    return re.sub(r"\s+", " ", label).strip().upper()
+
+
 def check_links(root, errors, exclude_fixtures=True):
-    anchor_cache = {}
+    index = _DocIndex()
     for path in iter_markdown(root, exclude_fixtures=exclude_fixtures):
-        text = path.read_text(encoding="utf-8")
-        definitions, content_lines = {}, []
-        fence = None
-        prev_blank, list_context, in_indented_code = True, False, False
-        for line in text.splitlines():
-            stripped_line = line.strip()
-            indent = len(line) - len(line.lstrip(" "))
-            if (
-                fence is None
-                and (indent < 4 or list_context)
-                and stripped_line.startswith(("```", "~~~"))
-            ):
-                marker_char = stripped_line[0]
-                fence = marker_char * (
-                    len(stripped_line) - len(stripped_line.lstrip(marker_char))
-                )
-                prev_blank = False
+        tokens, env = index.tokens_env(path)
+        references = env.get("references", {}) or {}
+        # Reference definitions: validate each recorded destination.
+        for ref in references.values():
+            href = ref.get("href")
+            if href:
+                _check_target(href, path, root, errors, index)
+        for tok in tokens:
+            if tok.type != "inline" or not tok.children:
                 continue
-            if fence is not None:
-                if stripped_line.startswith(fence):
-                    fence = None
-                continue
-            if not stripped_line:
-                prev_blank = True
-                continue
-            if indent >= 4:
-                # Indented code only when preceded by a blank line outside a
-                # list; inside a list, 4-space continuation is still prose.
-                if in_indented_code or (prev_blank and not list_context):
-                    in_indented_code = True
-                    prev_blank = False
-                    continue
-            else:
-                in_indented_code = False
-                if LIST_ITEM_RE.match(line):
-                    list_context = True
-                elif indent == 0:
-                    list_context = False
-            prev_blank = False
-            content_lines.append(line)
-            def_match = REF_DEF_RE.match(line)
-            if def_match:
-                label = re.sub(r"\s+", " ", def_match.group(1)).strip().lower()
-                definitions[label] = def_match.group(2)
-        for ref_id, target in definitions.items():
-            if target.startswith("<") and target.endswith(">"):
-                target = target[1:-1]
-            _check_target(target, path, root, errors, anchor_cache)
-        for line in content_lines:
-            if REF_DEF_RE.match(line):
-                continue
-            stripped = CODE_SPAN_RE.sub("", line)  # ignore inline code spans
-            for target in _iter_inline_targets(stripped):
-                _check_target(target, path, root, errors, anchor_cache)
-            for text_part, ref_id in REF_USE_RE.findall(stripped):
-                key = re.sub(r"\s+", " ", ref_id or text_part).strip().lower()
-                if key and key not in definitions:
-                    errors.append(
-                        f"{path.relative_to(root)}: undefined link reference `{ref_id or text_part}`"
-                    )
+            for child in tok.children:
+                if child.type == "link_open":
+                    href = child.attrGet("href")
+                    if href:
+                        _check_target(href, path, root, errors, index)
+                elif child.type == "image":
+                    src = child.attrGet("src")
+                    if src:
+                        _check_target(src, path, root, errors, index)
+                elif child.type == "text":
+                    # A reference-style usage the parser left as literal text
+                    # means its label has no definition.
+                    for text_part, ref_id in REF_USE_RE.findall(child.content):
+                        label = _normalize_ref_label(ref_id or text_part)
+                        if label and label not in references:
+                            errors.append(
+                                f"{path.relative_to(root)}: undefined link reference "
+                                f"`{ref_id or text_part}`"
+                            )
 
 
 def validate(root, exclude_fixtures=True):

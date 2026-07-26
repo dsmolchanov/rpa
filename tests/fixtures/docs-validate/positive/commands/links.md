@@ -47,3 +47,11 @@ Four-backtick fence with inner triple:
 ````
 
 Back to prose.
+
+Escaped-paren dest [e2](./ok_\(v2\).md) and closing-fence literal below:
+
+````
+```still-code
+[fex](./missing6.md)
+```x
+````
