@@ -82,6 +82,14 @@ additionally captures the target repo + SHA and its own plugin SHA. If any
 pinned value differs within a paired task's runs, the pair is invalid and is
 rerun — deltas must reflect the workflow rewrite, not runtime drift.
 
+**Effective-model parity:** the frozen baseline command carries
+`model: opus`; to prevent the arms resolving to different models, the
+candidate wrapper (and the minimal-skill arm) carry the **same explicit
+model pin** as the baseline for the duration of the pilot — a pilot-only
+parity control that supersedes conventions §5 until adoption. Every run's
+harness-reported effective model is validated against the registered model;
+a mismatch invalidates the run.
+
 ## Eval set
 
 Repos (owner-confirmed): **rpa** (small, markdown/plugin),
@@ -95,6 +103,12 @@ test. For the external-context archetype, the sealed package also contains
 **frozen snapshots of the authoritative external sources** (the relevant
 docs pages, captured at authoring time) so external claims can be verified
 against a fixed reference.
+
+**The sealed eval package lives outside every evaluated plugin
+installation** (private eval workspace, not in either arm's installed
+plugin). An evaluated run receives only the task prompt — never the
+ground-truth notes, snapshots, or rubric. The package's SHA-256 is recorded
+at sealing time so freezing is verifiable without publishing contents.
 
 Question archetypes across both sets:
 
@@ -114,19 +128,21 @@ and is **not** replaced.
 
 ## Third arm (2–3 tasks)
 
-On 2–3 holdout tasks, run a third variant: a **minimal skill** carrying only
-the artifact contract and acceptance criteria — no specialized agent fleet.
-This answers the strategic question the A/B alone cannot: is the value in
-the contract, or do six standing research agents still earn their keep with
-modern models?
+A third variant — a **minimal skill** carrying only the artifact contract
+and acceptance criteria, no specialized agent fleet — runs on **exactly two
+designated holdout tasks**: the mid-size subsystem-explanation task
+(archetype 1) and the narrow where-is task (archetype 3), named as such in
+the sealed package at authoring time; 3 replicates each, same pinned
+configuration. This answers the strategic question the A/B alone cannot: is
+the value in the contract, or do six standing research agents still earn
+their keep with modern models?
 
 ## Metrics
 
 1. **Quality** — blind rubric score (coverage, relevance, synthesis) against
-   the ground-truth note, using the **frozen rubric** at
-   `skills/research-codebase/evals/rubric.md` — dimensions, weights, score
-   anchors, and scoring instructions — committed before the holdout is
-   unsealed (prerequisite 5).
+   the ground-truth note, using the **frozen rubric** from the sealed eval
+   package — dimensions, weights, score anchors, and scoring instructions —
+   fixed before the holdout is unsealed (prerequisite 5).
 2. **Evidence accuracy** — a **separate evidence verifier** (read-only
    access to the frozen repo@SHA, no knowledge of arms) checks whether cited
    file:line references actually support the claims; % that do. For the
@@ -212,9 +228,10 @@ sanitized examples; raw run artifacts stay in a private location.
 3. Holdout tasks authored in a separate session and sealed (including
    frozen external-source snapshots for the external-context task).
 4. `skills/research-codebase/` skeleton + `research-v2-*` agent copies.
-5. Complete quality rubric committed at
-   `skills/research-codebase/evals/rubric.md` (dimensions, weights, score
-   anchors, scoring instructions) — frozen before the holdout is unsealed.
+5. Complete quality rubric (dimensions, weights, score anchors, scoring
+   instructions) authored and frozen **inside the sealed eval package** —
+   outside every evaluated plugin installation, hash recorded at sealing —
+   before the holdout is unsealed.
 
 ## Sequence
 
@@ -224,9 +241,10 @@ sanitized examples; raw run artifacts stay in a private location.
    **never counted toward the pass bar**.
 4. **Candidate frozen** (commit SHA recorded) and shared runtime
    configuration pre-registered.
-5. **Holdout unsealed only now.** All holdout runs — baseline, candidate,
-   and third arm — executed under the pinned configuration in randomized,
-   interleaved order (exactly 3 per arm per task).
+5. **Holdout unsealed only now.** All holdout runs executed under the
+   pinned configuration in randomized, interleaved order: baseline and
+   candidate on every holdout task, the third arm on its two designated
+   tasks — exactly 3 replicates per arm per task.
 6. Blind scoring + evidence verification.
 7. Results doc in `thoughts/shared/research/` (aggregated, sanitized) with a
    go/no-go recommendation — scoped to the Claude-side research pattern.

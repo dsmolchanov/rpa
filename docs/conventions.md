@@ -30,9 +30,14 @@ skills/<workflow>/
 ├── SKILL.md                         # intent, scope & authority, process guidance
 ├── references/artifact-contract.md  # the artifact contract — single source
 ├── references/…                     # methodology, loaded on demand
-├── evals/                           # eval tasks + ground truth for this workflow
+├── evals/                           # eval harness: rubric, task specs — never sealed answers
 └── scripts/                         # deterministic operations
 ```
+
+Sealed evaluation materials — holdout tasks, ground-truth notes, frozen
+external snapshots — are **never** stored inside an installed plugin copy:
+they live outside every evaluated installation, and an evaluated run
+receives only the task prompt.
 
 **Adapters** — platform wiring only:
 
