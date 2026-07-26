@@ -283,7 +283,7 @@ class _DocIndex:
         """GitHub-style anchor IDs for the file's headings."""
         if path in self._anchors:
             return self._anchors[path]
-        anchors, counts = set(), {}
+        anchors = set()
         tokens, _, _ = self.tokens_env(path)
         for i, tok in enumerate(tokens):
             if tok.type != "heading_open":
@@ -299,9 +299,14 @@ class _DocIndex:
             anchor = re.sub(r"[^\w\- ]", "", text.lower()).strip().replace(" ", "-")
             if not anchor:
                 continue
-            n = counts.get(anchor, 0)
-            counts[anchor] = n + 1
-            anchors.add(anchor if n == 0 else f"{anchor}-{n}")
+            # GitHub dedupes against every emitted final slug, so
+            # `foo, foo-1, foo` yields foo, foo-1, foo-2.
+            if anchor in anchors:
+                n = 1
+                while f"{anchor}-{n}" in anchors:
+                    n += 1
+                anchor = f"{anchor}-{n}"
+            anchors.add(anchor)
         self._anchors[path] = anchors
         return anchors
 
@@ -354,6 +359,7 @@ def check_links(root, errors, exclude_fixtures=True):
             href = ref.get("href")
             if href:
                 _check_target(href, path, root, errors, index)
+        pending_refs = set()
         for tok in tokens:
             if tok.type != "inline" or not tok.children:
                 continue
@@ -371,17 +377,20 @@ def check_links(root, errors, exclude_fixtures=True):
                     # means its label has no definition.
                     for text_part, ref_id in REF_USE_RE.findall(child.content):
                         label = _normalize_ref_label(ref_id or text_part)
-                        if not label or label in references:
-                            continue
-                        # The parser unescapes text, so a literal like
-                        # \[example][missing] would look identical here;
-                        # check the source for the escaped form.
-                        if f"\\[{text_part}]" in body:
-                            continue
-                        errors.append(
-                            f"{path.relative_to(root)}: undefined link reference "
-                            f"`{ref_id or text_part}`"
-                        )
+                        if label and label not in references:
+                            pending_refs.add((text_part, ref_id))
+        for text_part, ref_id in sorted(pending_refs):
+            # The parser unescapes text, so escaped literals look identical
+            # here. Count source occurrences per form: flag only if at least
+            # one occurrence is NOT the escaped form.
+            literal = f"[{text_part}][{ref_id}]"
+            total = body.count(literal)
+            escaped = body.count("\\" + literal)
+            if total == 0 or total - escaped > 0:
+                errors.append(
+                    f"{path.relative_to(root)}: undefined link reference "
+                    f"`{ref_id or text_part}`"
+                )
 
 
 def validate(root, exclude_fixtures=True):

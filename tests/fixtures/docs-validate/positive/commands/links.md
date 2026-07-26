@@ -57,3 +57,13 @@ Escaped-paren dest [e2](./ok_\(v2\).md) and closing-fence literal below:
 ````
 
 Escaped ref-like literal \[example][missing] is not a reference.
+
+Slug collisions:
+
+# foo
+
+# foo-1
+
+# foo
+
+Link to third: [f](#foo-2).
