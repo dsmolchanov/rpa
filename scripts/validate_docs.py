@@ -47,6 +47,35 @@ except ImportError:  # pragma: no cover
 EXCLUDED_PARTS = {".git", "node_modules"}
 FIXTURES_REL = Path("tests/fixtures/docs-validate")
 
+LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
+
+
+def _has_link_opener(line, j):
+    """True iff the `]` at index j closes a real, unescaped link label."""
+    if j > 0:
+        b, n = j - 1, 0
+        while b >= 0 and line[b] == "\\":
+            n += 1
+            b -= 1
+        if n % 2 == 1:
+            return False  # the `]` itself is escaped
+    depth, pos = 0, j - 1
+    while pos >= 0:
+        char = line[pos]
+        if char == "]":
+            depth += 1
+        elif char == "[":
+            if depth == 0:
+                b, n = pos - 1, 0
+                while b >= 0 and line[b] == "\\":
+                    n += 1
+                    b -= 1
+                return n % 2 == 0  # opener must be unescaped
+            depth -= 1
+        pos -= 1
+    return False
+
+
 def _iter_inline_targets(line):
     """Yield inline-link destinations from a line, using a balanced scanner
     so destinations may contain arbitrarily nested parentheses; angle-bracket
@@ -57,6 +86,9 @@ def _iter_inline_targets(line):
         j = line.find("](", i)
         if j == -1:
             return
+        if not _has_link_opener(line, j):
+            i = j + 2
+            continue
         k = j + 2
         while k < len(line) and line[k] in " \t":
             k += 1
@@ -369,17 +401,35 @@ def check_links(root, errors, exclude_fixtures=True):
         text = path.read_text(encoding="utf-8")
         definitions, content_lines = {}, []
         fence = None
+        prev_blank, list_context, in_indented_code = True, False, False
         for line in text.splitlines():
             stripped_line = line.strip()
             if fence is None and stripped_line.startswith(("```", "~~~")):
                 fence = stripped_line[:3]
+                prev_blank = False
                 continue
             if fence is not None:
                 if stripped_line.startswith(fence):
                     fence = None
                 continue
-            if len(line) - len(line.lstrip(" ")) >= 4:
-                continue  # indented code block line (CommonMark approximation)
+            if not stripped_line:
+                prev_blank = True
+                continue
+            indent = len(line) - len(line.lstrip(" "))
+            if indent >= 4:
+                # Indented code only when preceded by a blank line outside a
+                # list; inside a list, 4-space continuation is still prose.
+                if in_indented_code or (prev_blank and not list_context):
+                    in_indented_code = True
+                    prev_blank = False
+                    continue
+            else:
+                in_indented_code = False
+                if LIST_ITEM_RE.match(line):
+                    list_context = True
+                elif indent == 0:
+                    list_context = False
+            prev_blank = False
             content_lines.append(line)
             def_match = REF_DEF_RE.match(line)
             if def_match:

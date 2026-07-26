@@ -33,3 +33,5 @@ Nested paren dest [n](./ok_(a_(b)).md).
 Encoded [u2](./user%20guide.md), query [q](./ok.md?ref=x).
 
     Indented code example: [ex](./missing-in-code.md)
+
+Bare text example](./missing2.md) and escaped \[ex](./missing3.md) are not links.
