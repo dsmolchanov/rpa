@@ -133,7 +133,7 @@ def backend_env(profile):
     return env
 
 
-def expand_backend_cmd(backend_cmd, mount):
+def expand_backend_cmd(backend_cmd, mount, effort=None):
     expanded = []
     for part in backend_cmd:
         if "{installation}" in part:
@@ -142,6 +142,10 @@ def expand_backend_cmd(backend_cmd, mount):
                     "backend_cmd expects {installation} but no installation mounted"
                 )
             part = part.replace("{installation}", str(mount))
+        if "{effort}" in part:
+            if not effort:
+                raise InfraFailure("backend_cmd expects {effort} but none configured")
+            part = part.replace("{effort}", str(effort))
         expanded.append(part)
     return expanded
 
@@ -202,7 +206,12 @@ def remove_worktree(repo_dir, worktree):
         shutil.rmtree(worktree, ignore_errors=True)
 
 
-def spawn_session(cmd, prompt, cwd, env, timeout, resume=None):
+def spawn_session(cmd, prompt, cwd, env, timeout, resume=None,
+                  workflow_abort_exits=()):
+    """`workflow_abort_exits` lists backend exit codes that represent an
+    evaluated-workflow abort: those are WorkflowFailure (counted, never
+    replaced), while any other nonzero exit is an infra crash (rerun). The
+    real-backend preflight establishes the pinned CLI's abort codes."""
     full = list(cmd)
     if resume:
         full += ["--resume", resume]
@@ -216,9 +225,12 @@ def spawn_session(cmd, prompt, cwd, env, timeout, resume=None):
     except OSError as exc:
         raise InfraFailure(f"backend could not be spawned: {exc}") from exc
     if proc.returncode != 0:
-        raise InfraFailure(
-            f"backend exited {proc.returncode}: {proc.stderr.strip()[:500]}"
-        )
+        detail = proc.stderr.strip()[:500]
+        if proc.returncode in workflow_abort_exits:
+            raise WorkflowFailure(
+                f"workflow aborted (exit {proc.returncode}): {detail}"
+            )
+        raise InfraFailure(f"backend exited {proc.returncode}: {detail}")
     return proc.stdout
 
 
@@ -245,6 +257,7 @@ def parse_transcript(stdout):
             nodes.append(
                 {
                     "model": event.get("model"),
+                    "effort": event.get("effort"),
                     "input_tokens": int(usage.get("input_tokens", 0)),
                     "output_tokens": int(usage.get("output_tokens", 0)),
                     "tool_calls": int(event.get("tool_calls", 0)),
@@ -279,6 +292,21 @@ def validate_models(nodes, registered_model):
         raise InfraFailure(
             f"effective model(s) {bad} differ from registered "
             f"`{registered_model}` — run invalidated"
+        )
+
+
+def validate_efforts(nodes, registered_effort):
+    """Every node reporting an effort must match the registered one; nodes
+    without an effort field inherit the session pin applied via {effort} in
+    the backend command."""
+    bad = sorted({
+        str(n.get("effort")) for n in nodes
+        if n.get("effort") is not None and n.get("effort") != registered_effort
+    })
+    if bad:
+        raise InfraFailure(
+            f"effective effort(s) {bad} differ from registered "
+            f"`{registered_effort}` — run invalidated"
         )
 
 
@@ -340,6 +368,12 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir):
     try:
         record["installation_sha256"] = verify_installation(arm_name, arm)
         prompt, task_text = extract_task_prompt(task_path)
+        entrypoint = arm.get("entrypoint")
+        if entrypoint:
+            # The evaluated workflow must actually be invoked: a bare
+            # question would measure generic backend behavior, not the arm.
+            prompt = f"{entrypoint} {prompt}".strip()
+            record["entrypoint"] = entrypoint
         sha = task_target_sha(task_text, task_path)
         worktree = make_worktree(repo_dir, sha, output_dir)
         record["target_sha"] = sha
@@ -348,19 +382,23 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir):
         mount_hash = hash_tree(mount)
         if mount_hash != arm["sha256"]:
             raise InfraFailure("mounted installation copy hash mismatch")
-        cmd = expand_backend_cmd(config["backend_cmd"], mount)
+        cmd = expand_backend_cmd(config["backend_cmd"], mount,
+                                 arm.get("effort", "default"))
         env = backend_env(profile)
+        abort_exits = tuple(config.get("workflow_abort_exit_codes", ()))
         before = snapshot_research(worktree)
         started = time.time()
         stdout = spawn_session(cmd, prompt, worktree, env,
-                               config["timeout_seconds"])
+                               config["timeout_seconds"],
+                               workflow_abort_exits=abort_exits)
         session_id, nodes, _ = parse_transcript(stdout)
         all_nodes = list(nodes)
         artifact = find_new_artifact(worktree, before)
         while artifact is None and record["interventions"] < MAX_CONTINUATIONS:
             record["interventions"] += 1
             stdout = spawn_session(cmd, CONTINUATION_MESSAGE, worktree, env,
-                                   config["timeout_seconds"], resume=session_id)
+                                   config["timeout_seconds"], resume=session_id,
+                                   workflow_abort_exits=abort_exits)
             session_id, nodes, _ = parse_transcript(stdout)
             all_nodes.extend(nodes)
             artifact = find_new_artifact(worktree, before)
@@ -370,6 +408,7 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir):
                 f"no fresh research artifact after {MAX_CONTINUATIONS} continuations"
             )
         validate_models(all_nodes, arm["model"])
+        validate_efforts(all_nodes, arm.get("effort", "default"))
         record["accounting"] = account(all_nodes)
         record["nodes"] = all_nodes
         raw = artifact.read_text(encoding="utf-8")
@@ -398,6 +437,17 @@ def score(config, doc_paths, judge_prompt_path, output_dir):
     response text is preserved on disk — it IS the scoring artifact. Judge
     prompts live in the sealed package and are passed in at runtime."""
     judge_prompt = Path(judge_prompt_path).read_text(encoding="utf-8")
+    judge_cmd = config.get("judge_backend_cmd", config["backend_cmd"])
+    if any("{installation}" in part for part in judge_cmd):
+        raise InfraFailure(
+            "judge command must be mount-free — set `judge_backend_cmd` "
+            "(judges run without any arm installation)"
+        )
+    judge_model = config.get("judge_model")
+    if not judge_model:
+        raise InfraFailure("`judge_model` must be configured for score mode")
+    judge_effort = config.get("judge_effort", "default")
+    judge_cmd = expand_backend_cmd(judge_cmd, None, judge_effort)
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     results = []
@@ -406,16 +456,18 @@ def score(config, doc_paths, judge_prompt_path, output_dir):
         env = backend_env(profile)
         prompt = judge_prompt + "\n\n---\n\n" + Path(doc).read_text(encoding="utf-8")
         stdout = spawn_session(
-            config["backend_cmd"], prompt, str(profile), env,
-            config["timeout_seconds"]
+            judge_cmd, prompt, str(profile), env, config["timeout_seconds"]
         )
         session_id, nodes, response = parse_transcript(stdout)
         if not response.strip():
             raise InfraFailure(f"judge session {session_id} returned no response text")
+        validate_models(nodes, judge_model)
+        validate_efforts(nodes, judge_effort)
         result = {
             "doc": str(doc),
             "session_id": session_id,
             "profile": str(profile),
+            "judge_model": judge_model,
             "response": response,
             "accounting": account(nodes),
         }

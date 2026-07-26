@@ -68,17 +68,18 @@ def echo(name, value):
         (Path(echo_dir) / name).write_text(value or "", encoding="utf-8")
 
 
-def emit_nodes(model):
-    emit({"type": "node", "model": model, "tool_calls": 7,
+def emit_nodes(model, effort):
+    emit({"type": "node", "model": model, "effort": effort, "tool_calls": 7,
           "usage": {"input_tokens": 100, "output_tokens": 50}})
-    emit({"type": "node", "model": model, "subagent": True, "tool_calls": 5,
-          "usage": {"input_tokens": 40, "output_tokens": 20}})
+    emit({"type": "node", "model": model, "effort": effort, "subagent": True,
+          "tool_calls": 5, "usage": {"input_tokens": 40, "output_tokens": 20}})
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", default="normal")
     parser.add_argument("--model", default="opus")
+    parser.add_argument("--effort", default="high")
     parser.add_argument("--plugin-dir")
     parser.add_argument("--resume")
     parser.add_argument("-p", dest="prompt", required=True)
@@ -88,6 +89,9 @@ def main():
     echo("prompt.txt", args.prompt)
     echo("plugin-dir.txt", args.plugin_dir)
 
+    if args.mode == "workflow-abort":
+        print("workflow aborted by evaluated agent", file=sys.stderr)
+        sys.exit(21)
     if args.mode == "infra-crash":
         print("mock backend crashed", file=sys.stderr)
         sys.exit(3)
@@ -102,7 +106,8 @@ def main():
     emit({"type": "system", "session_id": session_id})
 
     model = "unregistered-model" if args.mode == "wrong-model" else args.model
-    emit_nodes(model)
+    effort = "low" if args.mode == "wrong-effort" else args.effort
+    emit_nodes(model, effort)
 
     if args.mode == "silent-stop":
         # First call: greet-and-wait (no artifact). Only a resumed session

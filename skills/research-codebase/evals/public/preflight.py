@@ -61,10 +61,17 @@ def build_config(workspace, mode, timeout=20):
                 "sha256": runner.hash_tree(install),
                 "model": "opus",
                 "effort": "high",
+                "entrypoint": "/mock-research",
             }
         },
         "backend_cmd": [sys.executable, str(HERE / "mock_claude.py"),
-                        "--mode", mode, "--plugin-dir", "{installation}"],
+                        "--mode", mode, "--plugin-dir", "{installation}",
+                        "--effort", "{effort}"],
+        "judge_backend_cmd": [sys.executable, str(HERE / "mock_claude.py"),
+                              "--mode", "no-artifact", "--effort", "{effort}"],
+        "judge_model": "opus",
+        "judge_effort": "high",
+        "workflow_abort_exit_codes": [21],
         "timeout_seconds": timeout,
     }, install
 
@@ -131,6 +138,14 @@ def run_preflight():
             "Throwaway preflight task" in prompt_echo
             and SECRET not in prompt_echo,
             notes)
+        ok &= check(
+            "workflow entrypoint invoked (not a bare question)",
+            prompt_echo.startswith("/mock-research "),
+            notes)
+        ok &= check(
+            "per-node effort capture (pinned via {effort}, echoed by nodes)",
+            all(n.get("effort") == "high" for n in record.get("nodes", [])),
+            notes)
         plugin_echo = (echo_dir / "plugin-dir.txt").read_text(encoding="utf-8").strip()
         ok &= check(
             "installation mounted into profile and passed to backend",
@@ -184,6 +199,20 @@ def run_preflight():
             and "differ from registered" in record.get("failure", ""),
             notes)
 
+        record, _, _, _ = run_case(ws, "wrong-effort")
+        ok &= check(
+            "effort parity (mismatched node effort invalidates run)",
+            record["status"] == "infra_failure"
+            and "effort" in record.get("failure", ""),
+            notes)
+
+        record, _, _, _ = run_case(ws, "workflow-abort")
+        ok &= check(
+            "workflow abort exit counted as workflow failure (not rerun)",
+            record["status"] == "workflow_failure"
+            and "aborted" in record.get("failure", ""),
+            notes)
+
         record, _, _, _ = run_case(ws, "infra-crash")
         ok &= check("infra failure classified (backend crash)",
                     record["status"] == "infra_failure", notes)
@@ -223,8 +252,6 @@ def run_preflight():
             notes)
 
         config, _ = build_config(ws, "normal")
-        config["backend_cmd"] = [sys.executable, str(HERE / "mock_claude.py"),
-                                 "--mode", "no-artifact"]
         docs = []
         for i in range(2):
             doc = ws / f"anon-doc-{i}.md"
@@ -234,6 +261,28 @@ def run_preflight():
         judge.write_text("Score this document per the sealed rubric.\n",
                          encoding="utf-8")
         judge_out = ws / "judge-out"
+        placeholder_cfg = dict(config)
+        placeholder_cfg.pop("judge_backend_cmd")
+        try:
+            runner.score(placeholder_cfg, docs, judge, ws / "judge-bad")
+            guard_ok = False
+        except runner.InfraFailure as exc:
+            guard_ok = "mount-free" in str(exc)
+        ok &= check(
+            "judge command placeholder guard (mount-free required)",
+            guard_ok, notes)
+        wrongjudge_cfg = dict(config)
+        wrongjudge_cfg["judge_backend_cmd"] = [
+            sys.executable, str(HERE / "mock_claude.py"),
+            "--mode", "wrong-model"]
+        try:
+            runner.score(wrongjudge_cfg, docs, judge, ws / "judge-wrong")
+            judge_parity_ok = False
+        except runner.InfraFailure as exc:
+            judge_parity_ok = "differ from registered" in str(exc)
+        ok &= check(
+            "judge model parity (mismatched judge model rejected)",
+            judge_parity_ok, notes)
         results = runner.score(config, docs, judge, judge_out)
         judge_files = sorted(judge_out.glob("judge-*.json"))
         ok &= check(

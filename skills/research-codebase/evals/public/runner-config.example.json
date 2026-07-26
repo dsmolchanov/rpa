@@ -5,22 +5,31 @@
       "installation_dir": "/private-eval-workspace/installs/baseline-a7de5f6-plus-overlay",
       "sha256": "<recorded at installation build>",
       "model": "opus",
-      "effort": "default"
+      "effort": "high",
+      "entrypoint": "/research_codebase"
     },
     "candidate": {
       "installation_dir": "/private-eval-workspace/installs/candidate-<sha>",
       "sha256": "<recorded at installation build>",
       "model": "opus",
-      "effort": "default"
+      "effort": "high",
+      "entrypoint": "/research_codebase"
     },
     "ablation": {
       "installation_dir": "/private-eval-workspace/installs/ablation-<sha>",
       "sha256": "<recorded at installation build>",
       "model": "opus",
-      "effort": "default"
+      "effort": "high",
+      "entrypoint": "/research_codebase"
     }
   },
-  "backend_cmd": ["claude", "--model", "opus", "--plugin-dir", "{installation}"],
-  "_backend_cmd_note": "{installation} expands per run to the verified installation copy mounted inside the run's clean profile; adjust the flag to whatever the pinned Claude Code version uses for local plugin loading, validated during the real-backend preflight.",
+  "backend_cmd": ["claude", "--model", "opus", "--effort", "{effort}", "--plugin-dir", "{installation}"],
+  "_backend_cmd_note": "{installation} expands per run to the verified installation copy mounted inside the run's clean profile; {effort} expands to the arm's registered effort so it is pinned on the command line, not inherited. Adjust flags to whatever the pinned Claude Code version uses for local plugin loading and effort control — validated during the real-backend preflight. The arm's `entrypoint` is prefixed to the task prompt so the session actually enters the evaluated workflow.",
+  "judge_backend_cmd": ["claude", "--model", "opus", "--effort", "{effort}"],
+  "_judge_backend_cmd_note": "Judge sessions must be mount-free: no {installation} placeholder, no plugin flags. The runner refuses to score if the resolved judge command still contains {installation}. {effort} expands to judge_effort.",
+  "judge_model": "opus",
+  "judge_effort": "high",
+  "workflow_abort_exit_codes": [],
+  "_workflow_abort_exit_codes_note": "Backend exit codes that mean the evaluated workflow itself gave up (counted as workflow_failure, never rerun). Any other nonzero exit is infra_failure (rerun). Real values for the pinned claude CLI are established during the real-backend preflight; leave empty until then.",
   "timeout_seconds": 3600
 }
