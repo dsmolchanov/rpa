@@ -91,7 +91,10 @@ Repos (owner-confirmed): **rpa** (small, markdown/plugin),
 **Sealed holdout:** 4–5 tasks authored in a **separate session** (not by the
 candidate's author-context), with ground-truth notes, sealed until the
 candidate implementation is frozen. This prevents fitting the rewrite to the
-test.
+test. For the external-context archetype, the sealed package also contains
+**frozen snapshots of the authoritative external sources** (the relevant
+docs pages, captured at authoring time) so external claims can be verified
+against a fixed reference.
 
 Question archetypes across both sets:
 
@@ -104,8 +107,10 @@ Question archetypes across both sets:
 | Requires external library/API context | exercises web-research path |
 | Question with a known-wrong premise | measures escalation (surface, don't comply) |
 
-**Run protocol:** randomized A/B order per task; **≥3 runs per arm per
-holdout task**; timeout/abort counts as a failed run, not a discarded one.
+**Run protocol:** randomized, interleaved order per task; **exactly 3 runs
+per arm per holdout task**, pre-registered — no runs are added or discarded
+after outcomes are observed. A timed-out/aborted run counts as a failed run
+and is **not** replaced.
 
 ## Third arm (2–3 tasks)
 
@@ -118,11 +123,18 @@ modern models?
 ## Metrics
 
 1. **Quality** — blind rubric score (coverage, relevance, synthesis) against
-   the ground-truth note.
+   the ground-truth note, using the **frozen rubric** at
+   `skills/research-codebase/evals/rubric.md` — dimensions, weights, score
+   anchors, and scoring instructions — committed before the holdout is
+   unsealed (prerequisite 5).
 2. **Evidence accuracy** — a **separate evidence verifier** (read-only
    access to the frozen repo@SHA, no knowledge of arms) checks whether cited
-   file:line references actually support the claims; % that do.
-3. **Critical factual errors** — count (claims contradicted by the repo).
+   file:line references actually support the claims; % that do. For the
+   external-context task the verifier also gets the frozen external-source
+   snapshots from the holdout package and checks external claims and
+   citations against them.
+3. **Critical factual errors** — count (claims contradicted by the repo or
+   by the frozen external sources).
 4. **Cost** — tokens across the **entire agent tree**, reported as
    main-context and subagent subtotals.
 5. **Tool calls** — same tree-wide accounting, main/subagent split.
@@ -140,7 +152,8 @@ in Scoring. Candidate passes iff, on the holdout set:
 - evidence accuracy delta ≥ **−2 п.п.**;
 - **zero** critical factual errors introduced;
 - **zero** ritual stops;
-- **≥20%** total-token savings **or** **≥15%** median wall-time reduction;
+- **≥20%** token savings **or** **≥15%** wall-time reduction, both as the
+  aggregated holdout-level figures defined in Scoring;
 - no timeout/abort failures in the candidate arm.
 
 If quality regresses beyond the bar, the convention itself (not just the
@@ -162,6 +175,12 @@ rewrite) is revised before retry.
   and is excluded from the median, but any such run already fails the
   candidate arm via the pass bar. This rule is fixed here, before any
   baseline run.
+- **Cost and latency aggregation (same pairing):** per task and arm, the
+  **median total tokens** (tree-wide) and **median wall-clock** across
+  replicates; the per-task delta is the percentage change of the candidate
+  median vs the baseline median; the holdout-level figure compared against
+  the pass bar is the **mean of per-task percentage deltas**. No pooling of
+  runs across tasks.
 - **Evidence verifier:** separate role from the scorer, read-only on the
   frozen repo (see Metrics #2); verifies references in **every** scored
   document, aggregated by the same rule.
@@ -190,12 +209,16 @@ sanitized examples; raw run artifacts stay in a private location.
    links, plugin manifest (per conventions §4 — a silently no-op gate is a
    defect; today `ci.yml` barely exercises these files).
 2. Pass bar registered (this document, committed before runs).
-3. Holdout tasks authored in a separate session and sealed.
+3. Holdout tasks authored in a separate session and sealed (including
+   frozen external-source snapshots for the external-context task).
 4. `skills/research-codebase/` skeleton + `research-v2-*` agent copies.
+5. Complete quality rubric committed at
+   `skills/research-codebase/evals/rubric.md` (dimensions, weights, score
+   anchors, scoring instructions) — frozen before the holdout is unsealed.
 
 ## Sequence
 
-1. Prerequisites 1–4.
+1. Prerequisites 1–5.
 2. Ground-truth notes for the dev set.
 3. Dev-set runs (any arm, any order) — used to build and tune the candidate;
    **never counted toward the pass bar**.
@@ -203,7 +226,7 @@ sanitized examples; raw run artifacts stay in a private location.
    configuration pre-registered.
 5. **Holdout unsealed only now.** All holdout runs — baseline, candidate,
    and third arm — executed under the pinned configuration in randomized,
-   interleaved order (≥3 per arm per task).
+   interleaved order (exactly 3 per arm per task).
 6. Blind scoring + evidence verification.
 7. Results doc in `thoughts/shared/research/` (aggregated, sanitized) with a
    go/no-go recommendation — scoped to the Claude-side research pattern.
