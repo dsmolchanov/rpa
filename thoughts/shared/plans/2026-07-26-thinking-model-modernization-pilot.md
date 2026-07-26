@@ -81,9 +81,14 @@ landed with the prerequisite PR and recorded here as the authoritative
 authorization — `CLAUDE.md` imports `@AGENTS.md` (Claude Code does not read
 AGENTS.md natively; the import is the official interop path). This is a
 repo-wide instruction-loading change, explicitly requested by the owner
-alongside the CI gate, and is not part of the pilot's evaluated surface:
-both baseline and candidate installations carry it identically, so it
-cannot confound arm comparisons.
+alongside the CI gate, and is not part of the pilot's evaluated surface.
+Because the frozen `a7de5f6` tree predates the import, arm parity is
+enforced by a **common overlay**: building the baseline installation
+artifact applies the identical one-line `@AGENTS.md` import to its
+`CLAUDE.md` as a recorded build step, so both arms' installation artifacts
+— whose hashes the eval-runner verifies before every run (prerequisite 5)
+— load repository instructions identically, and instruction loading cannot
+be an arm difference.
 
 ## Baseline
 
