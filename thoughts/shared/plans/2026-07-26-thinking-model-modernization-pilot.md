@@ -78,8 +78,17 @@ own gates.
 
 **Owner-approved repository integration fixes (2026-07-26, second review):**
 landed with the prerequisite PR and recorded here as the authoritative
-authorization — `CLAUDE.md` imports `@AGENTS.md` (Claude Code does not read
-AGENTS.md natively; the import is the official interop path). This is a
+authorization —
+
+1. `CLAUDE.md` imports `@AGENTS.md` (Claude Code does not read AGENTS.md
+   natively; the import is the official interop path).
+2. `thoughts/shared/research/2026-07-26-repo-ontology-sota.md` gains an
+   evidence-scope note (the ETH/DeepMind result covers LLM-generated
+   always-loaded context files, not all generated artifacts) — a
+   bibliography correction requested in the same review; it changes no
+   pilot-relevant conclusion.
+
+On item 1: This is a
 repo-wide instruction-loading change, explicitly requested by the owner
 alongside the CI gate, and is not part of the pilot's evaluated surface.
 Because the frozen `a7de5f6` tree predates the import, arm parity is
