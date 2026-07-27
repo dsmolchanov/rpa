@@ -63,10 +63,17 @@ What the model cannot derive on its own:
 - **Code is the source of truth.** `thoughts/` supplies historical context
   only; never answer from a prior research document without re-verifying
   against the live code at the current checkout.
-- **Metadata comes from the script.** Run the installed
+- **Metadata comes from the script, collected once.** Run the installed
   `spec_metadata.sh` (this plugin's `scripts/spec_metadata.sh`) for the
-  document's metadata; if unavailable, gather the same fields manually.
-  The artifact contract lists the fields.
+  document's metadata; if unavailable, gather the same fields manually —
+  in a detached-HEAD checkout the branch value is `detached@<short-sha>`
+  (the script's own form), never an improvised prose description. The
+  artifact contract lists the fields. Repeat the collected values
+  byte-identically in both placements the contract requires — the
+  frontmatter and the five `**...**` lines under the title — and put
+  nothing but those five lines (and blanks) between the title and
+  `## Research Question`: checkout caveats or commentary belong in
+  Summary or Open Questions, not in the metadata block.
 - **Permalinks when shareable.** If the current commit is pushed, convert
   local `file:line` references to commit-pinned GitHub permalinks per the
   artifact contract.

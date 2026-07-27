@@ -416,6 +416,24 @@ private tasks dev-1/dev-5 (livekit-voice-agent @ `9d65fff`) and dev-2
 (neomenu @ `aa8b8d1`) were delivered to the owner for the private eval
 workspace per the privacy rule and are not committed here.
 
+**Dev-set tuning round 1 (Sequence step 3, recorded 2026-07-27, owner
+instruction «запускай прогоны на dev-сете»):** candidate (merged master,
+opus/high, real backend, harness-enforced artifact gate) ran dev-3 and
+dev-4 directly (dev config, nonstandard topology). Round 1: both runs
+covered their full visible ground truth with zero subagents spawned
+(dev-3's over-orchestration probe passed), but BOTH artifacts were
+counted workflow failures on metadata discipline — dev-3 improvised
+divergent prose for the detached-HEAD branch value in frontmatter vs
+body; dev-4 inserted a checkout caveat paragraph inside the
+title-adjacent metadata block. One kernel Process-guidance fix
+(metadata collected once; `detached@<short-sha>` for detached
+checkouts; byte-identical repetition across both placements; nothing
+but the five lines in the block). Round 2 on the tuned kernel: both
+tasks completed through the artifact gate with full ground-truth
+coverage, zero subagents, and lower cost (dev-4: 43 tool calls / 359 s
+vs 73 / 531 s in round 1). Private-target dev tasks (dev-1/2/5) run
+from the private eval workspace; only aggregates come back here.
+
 **Ordering note (explicit owner decision, 2026-07-26):** dev-set authoring
 was executed together with prerequisite 5 on the owner's explicit
 instruction ("продолжай с eval-runner и dev-set"), ahead of the atomic
