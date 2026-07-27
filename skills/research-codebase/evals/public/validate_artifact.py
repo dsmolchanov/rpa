@@ -232,10 +232,25 @@ def _parse_frontmatter_fallback(block, errors):
                 item = item.strip()
                 if not item:
                     continue
-                unquoted = _unquote_scalar(item, errors, key.strip())
-                if unquoted is None:
+                if item[:1] in ("'", '"'):
+                    unquoted = _unquote_scalar(item, errors, key.strip())
+                    if unquoted is None:
+                        return {}
+                    items.append(unquoted)
+                    continue
+                # An unquoted flow item carrying a YAML indicator is a
+                # nested collection or otherwise not the plain scalar the
+                # contract's flat flow list allows (`[foo: bar]` is a
+                # mapping to a YAML parser) — reject rather than admit a
+                # shape real parsing would type differently.
+                if any(ch in item for ch in "[]{}:#&*!?|>%@`'\""):
+                    errors.append(
+                        f"frontmatter `{key.strip()}`: flow-list item "
+                        f"`{item[:40]}` is not a plain scalar — the "
+                        f"contract allows only a flat list of plain or "
+                        f"quoted strings")
                     return {}
-                items.append(unquoted)
+                items.append(_plain_scalar(item))
             meta[key.strip()] = items
         elif val[:1] in ("'", '"'):
             unquoted = _unquote_scalar(val, errors, key.strip())

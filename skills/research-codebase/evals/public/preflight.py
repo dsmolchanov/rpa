@@ -1319,6 +1319,22 @@ def run_preflight():
             encoding="utf-8")
         boolid_bad = runner.artifact_validator.validate(boolid_doc)
         boolid_fallback_bad = va_noyaml.validate(boolid_doc)
+        flowmap_doc = ws / "2026-07-26-flowmap.md"
+        flowmap_doc.write_text(
+            fn_doc.read_text(encoding="utf-8").replace(
+                "tags: [research, fixture]",
+                "tags: [foo: bar]", 1),
+            encoding="utf-8")
+        flowmap_bad = runner.artifact_validator.validate(flowmap_doc)
+        flowmap_fallback_bad = va_noyaml.validate(flowmap_doc)
+        flowbool_doc = ws / "2026-07-26-flowbool.md"
+        flowbool_doc.write_text(
+            fn_doc.read_text(encoding="utf-8").replace(
+                "tags: [research, fixture]",
+                "tags: [true, fixture]", 1),
+            encoding="utf-8")
+        flowbool_bad = runner.artifact_validator.validate(flowbool_doc)
+        flowbool_fallback_bad = va_noyaml.validate(flowbool_doc)
         try:
             runner.canonical_repo_name("..")
             dotdot_ok = False
@@ -1358,6 +1374,10 @@ def run_preflight():
                     for e in boolid_bad)
             and any("researcher" in e and "must be a string" in e
                     for e in boolid_fallback_bad)
+            and any("tags" in e for e in flowmap_bad)
+            and any("tags" in e for e in flowmap_fallback_bad)
+            and any("tags" in e for e in flowbool_bad)
+            and any("tags" in e for e in flowbool_fallback_bad)
             and dotdot_ok and dotpath_ok
             and any("calendar" in e for e in baddate_bad),
             notes)
