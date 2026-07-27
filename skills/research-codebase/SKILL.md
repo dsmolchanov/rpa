@@ -47,6 +47,12 @@ emit it precisely.
 
 What the model cannot derive on its own:
 
+- **Read the artifact contract before writing.** Load
+  `references/artifact-contract.md` itself before emitting the document
+  and reproduce its frontmatter schema and body template exactly — the
+  contract is a file to read, not a shape to recall. (Real-backend
+  shakedown finding: a session that skips this read improvises a
+  nonconforming format and fails the artifact gate.)
 - **Read user-mentioned files first, fully, yourself.** If the question
   names specific files (tickets, docs, code), read them completely in the
   main context before any delegation — decomposition quality depends on it.
