@@ -1348,6 +1348,22 @@ def run_preflight():
             encoding="utf-8")
         quotejunk_bad = runner.artifact_validator.validate(quotejunk_doc)
         quotejunk_fallback_bad = va_noyaml.validate(quotejunk_doc)
+        fix_text = fn_doc.read_text(encoding="utf-8")
+        fm_close = fix_text.index("---\n", fix_text.index("---\n") + 4)
+        commented_doc = ws / "2026-07-27-commented.md"
+        commented_doc.write_text(
+            fix_text[:fm_close + 4] + "<!--\n"
+            + fix_text[fm_close + 4:] + "\n-->\n",
+            encoding="utf-8")
+        commented_bad = runner.artifact_validator.validate(commented_doc)
+        htmlfill_doc = ws / "2026-07-27-htmlfill.md"
+        htmlfill_doc.write_text(
+            fix_text.replace(
+                "Minimal valid document proving the validator accepts "
+                "the contract shape.",
+                "<!-- filler -->", 1),
+            encoding="utf-8")
+        htmlfill_bad = runner.artifact_validator.validate(htmlfill_doc)
         try:
             runner.canonical_repo_name("..")
             dotdot_ok = False
@@ -1396,6 +1412,10 @@ def run_preflight():
             and quotejunk_bad
             and any("internal quote" in e
                     for e in quotejunk_fallback_bad)
+            and any("missing required heading" in e
+                    for e in commented_bad)
+            and any("no substantive content" in e
+                    for e in htmlfill_bad)
             and dotdot_ok and dotpath_ok
             and any("calendar" in e for e in baddate_bad),
             notes)
@@ -1411,10 +1431,24 @@ def run_preflight():
         runner.remove_worktree(det_repo, det_wt)
         branch_lines = [l for l in meta_out.stdout.splitlines()
                         if l.startswith("Current Branch Name:")]
+        dt_lines = [l for l in meta_out.stdout.splitlines()
+                    if l.startswith("Current Date/Time (TZ):")]
+        fn_lines = [l for l in meta_out.stdout.splitlines()
+                    if l.startswith("Timestamp For Filename:")]
+        # Both formatted values must come from ONE clock reading — two
+        # `date` calls can straddle midnight and split the metadata
+        # timestamp and filename date across days.
+        single_clock = (
+            meta_script.read_text(encoding="utf-8").count("$(date") == 1
+            and bool(dt_lines) and bool(fn_lines)
+            and dt_lines[0].split(": ", 1)[1][:19]
+            .replace(" ", "_").replace(":", "-")
+            == fn_lines[0].split(": ", 1)[1])
         ok &= check(
             "metadata script supplies branch identity in detached worktrees",
             meta_out.returncode == 0 and bool(branch_lines)
-            and "detached@" in branch_lines[0],
+            and "detached@" in branch_lines[0]
+            and single_clock,
             notes)
 
         record, _, _, _ = run_case(ws, "stale-artifact")

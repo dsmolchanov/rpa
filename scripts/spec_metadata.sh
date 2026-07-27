@@ -7,8 +7,12 @@ set -euo pipefail
 # %z (numeric ISO offset) rather than %Z: zone NAMES can themselves be
 # numeric ("+03", "+1245") on some hosts, which downstream consumers
 # cannot distinguish from malformed offsets.
-DATETIME_TZ=$(date '+%Y-%m-%d %H:%M:%S %z')
-FILENAME_TS=$(date '+%Y-%m-%d_%H-%M-%S')
+# ONE clock reading feeds both formatted values: separate `date` calls
+# can straddle midnight and split the metadata timestamp and the
+# filename date across different days.
+STAMP=$(date '+%Y-%m-%d %H:%M:%S %z|%Y-%m-%d_%H-%M-%S')
+DATETIME_TZ=${STAMP%%|*}
+FILENAME_TS=${STAMP##*|}
 
 if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
  REPO_ROOT=$(git rev-parse --show-toplevel)

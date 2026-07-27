@@ -89,6 +89,32 @@ CONTENT_REQUIRED_SECTIONS = ("Research Question", "Summary",
 HEADING_RE = re.compile(r"^ {0,3}(#{1,6})\s+(.*?)(?:\s+#+)?\s*$")
 FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 FENCE_CLOSE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})\s*$")
+# CommonMark HTML blocks are raw HTML, not Markdown: a `#` line inside
+# one is NOT a heading, and commented-out or script-wrapped text is not
+# visible document body. The kinds with an explicit end marker swallow
+# blank-line-separated Markdown wholesale; basic-tag blocks run to the
+# next blank line.
+HTML_EXPLICIT_OPENERS = (
+    (re.compile(r"^ {0,3}<!--"), "-->"),
+    (re.compile(r"^ {0,3}<\?"), "?>"),
+    (re.compile(r"^ {0,3}<!\[CDATA\["), "]]>"),
+    (re.compile(r"^ {0,3}<![A-Za-z]"), ">"),
+)
+HTML_TYPE1_OPEN_RE = re.compile(
+    r"^ {0,3}<(?:script|pre|style|textarea)(?:[ \t>]|$)", re.IGNORECASE)
+HTML_TYPE1_CLOSE_RE = re.compile(
+    r"</(?:script|pre|style|textarea)>", re.IGNORECASE)
+HTML_BASIC_TAG_RE = re.compile(
+    r"^ {0,3}</?([A-Za-z][A-Za-z0-9-]*)(?:[ \t/>]|$)")
+HTML_BASIC_TAGS = frozenset("""
+    address article aside base basefont blockquote body caption center
+    col colgroup dd details dialog dir div dl dt fieldset figcaption
+    figure footer form frame frameset h1 h2 h3 h4 h5 h6 head header hr
+    html iframe legend li link main menu menuitem nav noframes ol
+    optgroup option p param search section summary table tbody td tfoot
+    th thead title tr track ul
+""".split())
+_NOT_HTML = object()
 GIT_COMMIT_RE = re.compile(r"^[0-9a-f]{7,40}$")
 # Zone forms: Z; a numeric offset attached or space-separated (the
 # script's %z emits " +0300"); a short numeric zone NAME (" +03",
@@ -274,28 +300,89 @@ def _parse_frontmatter_fallback(block, errors):
     return meta
 
 
-def _headings_outside_fences(lines):
-    """Real Markdown ATX headings only: fenced code blocks (``` / ~~~) are
-    skipped, so a document QUOTING the artifact template cannot satisfy
-    the structural gate."""
-    headings = []
+def _html_block_open(line):
+    """End condition for a CommonMark HTML block this line opens: None
+    when the block also closes on this same line, "" for a basic-tag
+    block that runs to the next blank line, a marker string or closing
+    regex otherwise — or _NOT_HTML when the line opens no HTML block."""
+    for opener_re, closer in HTML_EXPLICIT_OPENERS:
+        m = opener_re.match(line)
+        if m:
+            return None if closer in line[m.end():] else closer
+    m = HTML_TYPE1_OPEN_RE.match(line)
+    if m:
+        return (None if HTML_TYPE1_CLOSE_RE.search(line, m.end())
+                else HTML_TYPE1_CLOSE_RE)
+    m = HTML_BASIC_TAG_RE.match(line)
+    if m and m.group(1).lower() in HTML_BASIC_TAGS:
+        return ""
+    return _NOT_HTML
+
+
+def _line_states(lines):
+    """Classify every line as `text` (Markdown), `fence-delim`,
+    `fence-content`, or `html` (inside a raw HTML block). Blocks are
+    tracked sequentially, as in real parsing: fence markers inside an
+    HTML block are literal, HTML openers inside a fence are code. The
+    FULL fence delimiter is tracked — only a closing fence of the same
+    character and at least the opener's length ends the block, so a
+    4+-char fence quoting inner ``` lines cannot be closed early."""
+    states = []
     fence = None
-    for line_idx, line in enumerate(lines):
-        open_match = FENCE_OPEN_RE.match(line)
-        if fence is None and open_match:
-            # The FULL delimiter is tracked: only a closing fence of the
-            # same character and at least the opener's length ends the
-            # block, so a 4+-char fence quoting inner ``` lines cannot be
-            # closed early and leak quoted headings into the structure.
-            fence = open_match.group(1)
-            continue
+    html_end = None
+    for line in lines:
         if fence is not None:
             close_match = FENCE_CLOSE_RE.match(line)
             if (close_match and close_match.group(1)[0] == fence[0]
                     and len(close_match.group(1)) >= len(fence)):
                 fence = None
+                states.append("fence-delim")
+            else:
+                states.append("fence-content")
             continue
-        match = HEADING_RE.match(line)
+        if html_end is not None:
+            if html_end == "":
+                # Basic-tag block: the blank line ENDS it and is not
+                # part of it.
+                if not line.strip():
+                    html_end = None
+                    states.append("text")
+                else:
+                    states.append("html")
+            else:
+                states.append("html")
+                hit = (html_end.search(line)
+                       if hasattr(html_end, "search")
+                       else html_end in line)
+                if hit:
+                    html_end = None
+            continue
+        open_match = FENCE_OPEN_RE.match(line)
+        if open_match:
+            fence = open_match.group(1)
+            states.append("fence-delim")
+            continue
+        opened = _html_block_open(line)
+        if opened is not _NOT_HTML:
+            states.append("html")
+            html_end = opened
+            continue
+        states.append("text")
+    return states
+
+
+def _headings_outside_fences(lines, states=None):
+    """Real Markdown ATX headings only: fenced code blocks and raw HTML
+    blocks (comments, script/pre/style, basic-tag blocks) are skipped,
+    so a document QUOTING or COMMENTING OUT the artifact template
+    cannot satisfy the structural gate."""
+    if states is None:
+        states = _line_states(lines)
+    headings = []
+    for line_idx, state in enumerate(states):
+        if state != "text":
+            continue
+        match = HEADING_RE.match(lines[line_idx])
         if match:
             headings.append((len(match.group(1)), match.group(2).strip(),
                              line_idx))
@@ -430,7 +517,8 @@ def validate(path, expected_git_commit=None, expected_repository=None,
             errors.append(
                 f"`repository` `{sval}` does not match the run's "
                 f"target-repo `{expected_repository}`")
-    headings = _headings_outside_fences(lines)
+    doc_states = _line_states(lines)
+    headings = _headings_outside_fences(lines, doc_states)
     title = next((h for h in headings
                   if h[0] == 1 and h[1].startswith("Research:")), None)
     if title is None or not title[1][len("Research:"):].strip():
@@ -603,24 +691,18 @@ def validate(path, expected_git_commit=None, expected_repository=None,
             if later[0] <= 2:
                 end_line = later[2]
                 break
-        body_lines = lines[start_line:end_line]
         has_content = False
-        sec_fence = None
-        for body_line in body_lines:
-            open_match = FENCE_OPEN_RE.match(body_line)
-            if sec_fence is None and open_match:
-                sec_fence = open_match.group(1)
+        for line_idx in range(start_line, end_line):
+            body_line = lines[line_idx]
+            if not body_line.strip():
                 continue
-            if sec_fence is not None:
-                close_match = FENCE_CLOSE_RE.match(body_line)
-                if (close_match
-                        and close_match.group(1)[0] == sec_fence[0]
-                        and len(close_match.group(1)) >= len(sec_fence)):
-                    sec_fence = None
-                elif body_line.strip():
-                    has_content = True
-                continue
-            if body_line.strip() and not HEADING_RE.match(body_line):
+            state = doc_states[line_idx]
+            # Fenced code is visible content; raw HTML lines (comments,
+            # script bodies, tag blocks) are not — a section whose only
+            # "content" is commented out stays empty when rendered.
+            if state == "fence-content":
+                has_content = True
+            elif state == "text" and not HEADING_RE.match(body_line):
                 has_content = True
         if not has_content:
             errors.append(
