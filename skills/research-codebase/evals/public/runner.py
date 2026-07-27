@@ -647,8 +647,19 @@ def canonical_repo_name(name):
     (rpa); coverage validation, routing, and evidence mapping share ONE
     canonical form — the final path component, lowercased — so a
     valid-looking schedule can never stall on a spelling mismatch between
-    the task files and the operator's NAME=PATH mapping."""
-    return name.strip().rstrip("/").rsplit("/", 1)[-1].lower()
+    the task files and the operator's NAME=PATH mapping. The canonical
+    name is also used as a worktree directory name, so it must be a
+    single ORDINARY path component: `..`, `.`, or anything with
+    separators/odd characters is refused before it can be joined into a
+    filesystem path."""
+    canon = str(name).strip().rstrip("/").rsplit("/", 1)[-1].lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", canon)             or canon in (".", ".."):
+        raise InfraFailure(
+            f"target-repo name `{name}` does not canonicalize to a single "
+            f"ordinary path component — refusing to use it for routing or "
+            f"worktree naming"
+        )
+    return canon
 
 
 def resolve_repo_mapping(name, repos, what):

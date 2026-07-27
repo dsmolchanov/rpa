@@ -251,10 +251,16 @@ def validate(path, expected_git_commit=None, expected_repository=None,
         text = Path(path).read_text(encoding="utf-8")
     except (OSError, ValueError) as exc:
         return [f"cannot read document: {exc}"]
-    if enforce_filename and not ARTIFACT_BASENAME_RE.match(Path(path).name):
-        errors.append(
-            f"artifact basename `{Path(path).name}` violates the contract "
-            f"pattern `YYYY-MM-DD[-ENG-XXXX]-description.md`")
+    if enforce_filename:
+        basename = Path(path).name
+        if not ARTIFACT_BASENAME_RE.match(basename):
+            errors.append(
+                f"artifact basename `{basename}` violates the contract "
+                f"pattern `YYYY-MM-DD[-ENG-XXXX]-description.md`")
+        elif not _valid_date(basename[:10]):
+            errors.append(
+                f"artifact basename `{basename}` starts with an "
+                f"impossible calendar date")
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
         errors.append("frontmatter must open with `---` on line 1")

@@ -1309,6 +1309,21 @@ def run_preflight():
             encoding="utf-8")
         unq_bad = va_noyaml.validate(unq_doc)
         fallback_valid_ok = not va_noyaml.validate(fn_doc)
+        try:
+            runner.canonical_repo_name("..")
+            dotdot_ok = False
+        except runner.InfraFailure:
+            dotdot_ok = True
+        try:
+            runner.canonical_repo_name("owner/..")
+            dotpath_ok = False
+        except runner.InfraFailure:
+            dotpath_ok = True
+        baddate_doc = ws / "2026-99-99-baddate.md"
+        baddate_doc.write_text(fn_doc.read_text(encoding="utf-8"),
+                               encoding="utf-8")
+        baddate_bad = runner.artifact_validator.validate(
+            baddate_doc, enforce_filename=True)
         ok &= check(
             "filename contract enforced; raw anonymization markers rejected",
             any("basename" in e for e in fn_bad)
@@ -1328,7 +1343,9 @@ def run_preflight():
                     for e in prose_bad)
             and any("## Summary" in e for e in hashhead_bad)
             and any("unmatched quote" in e for e in unq_bad)
-            and fallback_valid_ok,
+            and fallback_valid_ok
+            and dotdot_ok and dotpath_ok
+            and any("calendar" in e for e in baddate_bad),
             notes)
 
         meta_script = (HERE.parents[3] / "scripts"
