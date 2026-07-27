@@ -356,11 +356,12 @@ def run_preflight():
 
         config, _ = build_config(ws, "normal")
         config["arms"]["second"] = dict(config["arms"]["mock"],
-                                        schedule_tasks=["t-a.md"])
-        s1 = runner.make_schedule(config, ["t-a.md", "t-b.md"], 3, seed=42,
-                                  allow_nonstandard=True)
-        s2 = runner.make_schedule(config, ["t-a.md", "t-b.md"], 3, seed=42,
-                                  allow_nonstandard=True)
+                                        forbid_subagents=True,
+                                        schedule_tasks=["t-a.md", "t-b.md"])
+        s1 = runner.make_schedule(config, ["t-a.md", "t-b.md", "t-c.md"], 3,
+                                  seed=42, allow_nonstandard=True)
+        s2 = runner.make_schedule(config, ["t-a.md", "t-b.md", "t-c.md"], 3,
+                                  seed=42, allow_nonstandard=True)
         cell_counts = {}
         for entry in s1["entries"]:
             key = (entry["arm"], entry["task"])
@@ -368,10 +369,24 @@ def run_preflight():
         ok &= check(
             "pre-registered schedule balanced, scoped, seed-deterministic",
             s1 == s2
-            and len(s1["entries"]) == 9
+            and len(s1["entries"]) == 15
             and cell_counts == {("mock", "t-a.md"): 3, ("mock", "t-b.md"): 3,
-                                ("second", "t-a.md"): 3},
+                                ("mock", "t-c.md"): 3, ("second", "t-a.md"): 3,
+                                ("second", "t-b.md"): 3},
             notes)
+
+        config, _ = build_config(ws, "normal")
+        config["arms"]["second"] = dict(config["arms"]["mock"],
+                                        schedule_tasks=["t-a.md"])
+        try:
+            runner.make_schedule(config, ["t-a.md", "t-b.md"], 3, seed=42,
+                                 allow_nonstandard=True)
+            scope_ok = False
+        except runner.InfraFailure as exc:
+            scope_ok = "reserved for" in str(exc)
+        ok &= check(
+            "schedule_tasks scoping rejected on non-ablation arms",
+            scope_ok, notes)
 
         config, _ = build_config(ws, "normal")
         try:
@@ -394,9 +409,10 @@ def run_preflight():
             topo_ok, notes)
 
         config, _ = build_config(ws, "normal")
-        config["arms"]["second"] = dict(config["arms"]["mock"])
-        config["arms"]["ablation"] = dict(config["arms"]["mock"],
-                                          forbid_subagents=True)
+        base_arm = config["arms"].pop("mock")
+        config["arms"]["baseline"] = dict(base_arm)
+        config["arms"]["candidate"] = dict(base_arm)
+        config["arms"]["ablation"] = dict(base_arm, forbid_subagents=True)
         six_tasks = [f"t-{c}.md" for c in "abcdef"]
         try:
             runner.make_schedule(config, six_tasks, 3, seed=1)
@@ -425,6 +441,21 @@ def run_preflight():
         ok &= check(
             "standard schedule requires six unique holdout tasks",
             six_ok, notes)
+
+        config, _ = build_config(ws, "normal")
+        base_arm = config["arms"].pop("mock")
+        config["arms"]["baseline"] = dict(base_arm)
+        config["arms"]["canddate"] = dict(base_arm)
+        config["arms"]["ablation"] = dict(base_arm, forbid_subagents=True,
+                                          schedule_tasks=["t-a.md", "t-b.md"])
+        try:
+            runner.make_schedule(config, six_tasks, 3, seed=1)
+            roles_ok = False
+        except runner.InfraFailure as exc:
+            roles_ok = "baseline" in str(exc) and "candidate" in str(exc)
+        ok &= check(
+            "standard topology requires the named baseline/candidate roles",
+            roles_ok, notes)
 
         config, _ = build_config(ws, "normal")
         repo_s, sha_s = make_git_repo(ws, "sched")
@@ -839,6 +870,19 @@ def run_preflight():
         ok &= check(
             "single shared evidence checkout refused for manifest batches",
             mpair_ok, notes)
+        tampered_doc = Path(sched_docs[0])
+        original_bytes = tampered_doc.read_bytes()
+        tampered_doc.write_text("# swapped contents\n", encoding="utf-8")
+        try:
+            runner.score(config, sched_docs, judge, ws / "judge-tamperdoc",
+                         scoring_seed=5, manifest_path=manifest_path)
+            digest_ok = False
+        except runner.InfraFailure as exc:
+            digest_ok = "artifact digest" in str(exc)
+        tampered_doc.write_bytes(original_bytes)
+        ok &= check(
+            "scored artifacts bound to the content digest recorded at run time",
+            digest_ok, notes)
         ev_repo, ev_sha = make_git_repo(ws, "evidence")
         echo_dir = ws / "echo-verifier"
         os.environ["MOCK_ECHO_DIR"] = str(echo_dir)

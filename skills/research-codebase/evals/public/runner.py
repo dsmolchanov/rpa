@@ -364,23 +364,35 @@ def parse_repo_mapping(pairs, what):
     return repos
 
 
-def validate_arm_topology(config):
-    """Production (holdout) configs carry the registered three-arm topology
-    — baseline, candidate, exactly one no-subagent ablation arm — verified
-    before EVERY run, so a config that lost an arm cannot quietly produce
-    valid-looking runs. Dev configs must declare themselves with
-    `nonstandard_config: true`. Returns True when the topology is the
-    registered standard one."""
+def _standard_topology(config):
+    """The registered topology names its roles: arms `baseline` and
+    `candidate` (neither may forbid subagents) plus exactly one no-subagent
+    ablation arm. Counting arms alone would accept a typo like `canddate`
+    and leave the plan's comparisons without a guaranteed pair."""
     arms = config.get("arms", {})
     ablation_arms = [name for name, arm in arms.items()
                      if arm.get("forbid_subagents")]
-    standard = len(arms) == 3 and len(ablation_arms) == 1
+    return (len(arms) == 3
+            and "baseline" in arms
+            and "candidate" in arms
+            and len(ablation_arms) == 1
+            and "baseline" not in ablation_arms
+            and "candidate" not in ablation_arms)
+
+
+def validate_arm_topology(config):
+    """Production (holdout) configs carry the registered three-arm topology
+    — verified before EVERY run, so a config that lost or misnamed an arm
+    cannot quietly produce valid-looking runs. Dev configs must declare
+    themselves with `nonstandard_config: true`. Returns True when the
+    topology is the registered standard one."""
+    standard = _standard_topology(config)
     if not standard and not config.get("nonstandard_config"):
         raise InfraFailure(
-            f"registered three-arm topology required (baseline, candidate, "
-            f"exactly one no-subagent ablation arm); got {len(arms)} arm(s) "
-            f"with {len(ablation_arms)} ablation arm(s) — dev configs must "
-            f"set `nonstandard_config: true`"
+            "registered three-arm topology required — arms `baseline` and "
+            "`candidate` (by those exact names) plus exactly one "
+            "no-subagent ablation arm; dev configs must set "
+            "`nonstandard_config: true`"
         )
     return standard
 
@@ -870,9 +882,13 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1):
             )
         raw = artifact.read_text(encoding="utf-8")
         (out / f"run-{run_id}-raw.md").write_text(raw, encoding="utf-8")
-        (out / f"run-{run_id}-anon.md").write_text(
-            anonymize(raw, run_id), encoding="utf-8"
-        )
+        anon_text = anonymize(raw, run_id)
+        (out / f"run-{run_id}-anon.md").write_text(anon_text, encoding="utf-8")
+        # The digest recorded here is what scoring later verifies: a scored
+        # document must be the exact artifact this run produced.
+        record["artifact_sha256"] = hashlib.sha256(
+            anon_text.encode("utf-8")
+        ).hexdigest()
         record["status"] = "completed"
     except WorkflowFailure as exc:
         record["status"] = "workflow_failure"
@@ -934,10 +950,7 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
     tasks = [str(Path(t)) for t in task_paths]
     if len(set(tasks)) != len(tasks):
         raise InfraFailure("duplicate task paths in the schedule task list")
-    ablation_arms = [name for name, arm in config.get("arms", {}).items()
-                     if arm.get("forbid_subagents")]
-    standard_topology = (len(config.get("arms", {})) == 3
-                         and len(ablation_arms) == 1)
+    standard_topology = _standard_topology(config)
     if not allow_nonstandard:
         if replicates != REGISTERED_REPLICATES:
             raise InfraFailure(
@@ -948,11 +961,11 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
             )
         if not standard_topology:
             raise InfraFailure(
-                f"a standard (holdout) schedule requires the registered "
-                f"three-arm topology — baseline, candidate, and exactly one "
-                f"no-subagent ablation arm; got {len(config.get('arms', {}))} "
-                f"arm(s) with {len(ablation_arms)} ablation arm(s); dev-set "
-                f"tuning schedules must be explicitly marked nonstandard"
+                "a standard (holdout) schedule requires the registered "
+                "three-arm topology — arms `baseline` and `candidate` (by "
+                "those exact names) plus exactly one no-subagent ablation "
+                "arm; dev-set tuning schedules must be explicitly marked "
+                "nonstandard"
             )
         if len(tasks) != REGISTERED_HOLDOUT_TASKS:
             raise InfraFailure(
@@ -965,6 +978,12 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
     entries = []
     for arm_name in sorted(config["arms"]):
         arm = config["arms"][arm_name]
+        if arm.get("schedule_tasks") is not None and not arm.get("forbid_subagents"):
+            raise InfraFailure(
+                f"arm `{arm_name}`: `schedule_tasks` scoping is reserved for "
+                f"the no-subagent ablation arm — baseline/candidate must run "
+                f"the complete task list"
+            )
         if arm.get("forbid_subagents"):
             if "schedule_tasks" not in arm:
                 raise InfraFailure(
@@ -1113,6 +1132,7 @@ def run_schedule(config, schedule_path, repos, output_dir, task_paths):
             "run_id": final["run_id"],
             "status": final["status"],
             "attempts": len(attempts),
+            "artifact_sha256": final.get("artifact_sha256"),
         })
         write_manifest(False)
     return write_manifest(True)
@@ -1206,6 +1226,19 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                 f"replicate exactly once — expected {expected_names}, "
                 f"got {supplied_names}"
             )
+        # Identity by name is not enough: the contents must be the exact
+        # artifact the run produced, or an edited/substituted file with the
+        # right name would be scored as that replicate.
+        digest_by_name = {f"run-{r['run_id']}-anon.md": r.get("artifact_sha256")
+                          for r in completed}
+        for doc in doc_paths:
+            actual = hashlib.sha256(Path(doc).read_bytes()).hexdigest()
+            if actual != digest_by_name.get(Path(doc).name):
+                raise InfraFailure(
+                    f"{doc}: contents differ from the artifact digest "
+                    f"recorded at run time — scored documents must be the "
+                    f"exact run artifacts"
+                )
         if evidence_repo or evidence_sha:
             raise InfraFailure(
                 "manifest-bound verification checks each document against "
