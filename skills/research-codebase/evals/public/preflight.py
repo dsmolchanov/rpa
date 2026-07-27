@@ -445,17 +445,23 @@ def run_preflight():
             notes)
 
         dummy_tasks = []
-        archetypes = {"a": "1 — subsystem-explanation",
-                      "b": "3 — narrow where-is"}
-        dummy_repos = {"a": "mock-repo", "b": "mock-repo",
-                       "c": "mock-repo-2", "d": "mock-repo-2",
-                       "e": "mock-repo-3", "f": "mock-repo-3"}
+        dummy_meta = {
+            "a": ("1 — subsystem-explanation", "dsmolchanov/rpa"),
+            "b": ("3 — narrow where-is", "dsmolchanov/rpa"),
+            "c": ("2 — subsystem-explanation, largest repo",
+                  "dsmolchanov/neomenu"),
+            "d": ("4 — code + thoughts history", "dsmolchanov/neomenu"),
+            "e": ("5 — external library context",
+                  "dsmolchanov/livekit-voice-agent"),
+            "f": ("6 — known-wrong premise",
+                  "dsmolchanov/livekit-voice-agent"),
+        }
         for c in "abcdef":
-            arch = archetypes.get(c, f"9 — other-{c}")
+            arch, trepo = dummy_meta[c]
             dt = ws / f"t-{c}.md"
             dt.write_text(
                 f"---\ntask-id: dummy-{c}\narchetype: \"{arch}\"\n"
-                f"target-repo: {dummy_repos[c]}\n"
+                f"target-repo: {trepo}\n"
                 f"target-sha: {'0' * 40}\n---\n\n## Task prompt\n\nDummy {c}.\n",
                 encoding="utf-8")
             dummy_tasks.append(str(dt))
@@ -604,7 +610,7 @@ def run_preflight():
         dup_arch = ws / "t-dup-arch.md"
         dup_arch.write_text(
             (ws / "t-f.md").read_text(encoding="utf-8").replace(
-                "9 — other-f", "1 — subsystem-explanation"),
+                "6 — known-wrong premise", "1 — subsystem-explanation"),
             encoding="utf-8")
         try:
             runner.make_schedule(cov_cfg, six_tasks[:5] + [str(dup_arch)],
@@ -617,8 +623,8 @@ def run_preflight():
             sr = ws / f"t-sr-{c}.md"
             sr.write_text(
                 (ws / f"t-{c}.md").read_text(encoding="utf-8").replace(
-                    "mock-repo-2", "mock-repo").replace(
-                    "mock-repo-3", "mock-repo"),
+                    "dsmolchanov/neomenu", "dsmolchanov/rpa").replace(
+                    "dsmolchanov/livekit-voice-agent", "dsmolchanov/rpa"),
                 encoding="utf-8")
             same_repo_tasks.append(str(sr))
         cov_cfg["arms"]["ablation"]["schedule_tasks"] = [
@@ -628,9 +634,24 @@ def run_preflight():
             cov_ok2 = False
         except runner.InfraFailure as exc:
             cov_ok2 = "registered repositories" in str(exc)
+        fake_tasks = []
+        for i, c in enumerate("abcdef"):
+            fk = ws / f"t-fake-{c}.md"
+            fk.write_text(
+                (ws / f"t-{c}.md").read_text(encoding="utf-8").replace(
+                    dummy_meta[c][0], f"fake-{i + 1}"),
+                encoding="utf-8")
+            fake_tasks.append(str(fk))
+        cov_cfg["arms"]["ablation"]["schedule_tasks"] = [d_a, d_b]
+        try:
+            runner.make_schedule(cov_cfg, fake_tasks[:4] + [d_a, d_b],
+                                 3, seed=1)
+            cov_ok3 = False
+        except runner.InfraFailure as exc:
+            cov_ok3 = "canonical" in str(exc)
         ok &= check(
             "standard schedule validates the full coverage matrix",
-            cov_ok and cov_ok2, notes)
+            cov_ok and cov_ok2 and cov_ok3, notes)
 
         config, _ = build_config(ws, "normal")
         repo_s, sha_s = make_git_repo(ws, "sched")

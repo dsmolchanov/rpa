@@ -131,9 +131,19 @@ REGISTERED_HOLDOUT_TASKS = 6
 # The plan fixes the fleet-ablation arm to these two archetypes; a standard
 # schedule validates the scoped tasks' `archetype` frontmatter against them.
 REGISTERED_ABLATION_ARCHETYPES = ("subsystem-explanation", "narrow where-is")
-# The holdout spans this many registered repositories, one task per
-# archetype (six distinct archetypes across the six tasks).
-REGISTERED_HOLDOUT_REPOS = 3
+# Canonical coverage sets from the registered plan: the holdout covers
+# all three named eval repositories (matched on the repo's final path
+# component, case-insensitive) and exactly the six numbered archetypes —
+# free-form labels are refused.
+REGISTERED_HOLDOUT_REPOS = ("rpa", "livekit-voice-agent", "neomenu")
+REGISTERED_HOLDOUT_ARCHETYPE_KEYWORDS = {
+    1: "subsystem",        # subsystem end-to-end explanation (mid-size)
+    2: "largest",          # same on the largest repo
+    3: "narrow where-is",  # narrow "where is Y defined/configured"
+    4: "thoughts",         # answer spans code + prior thoughts/ docs
+    5: "external",         # requires external library/API context
+    6: "premise",          # question with a known-wrong premise
+}
 CONTINUATION_MESSAGE = (
     "Proceed with the research as specified; no additional constraints."
 )
@@ -1113,9 +1123,11 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
                 f"{len(tasks)}; dev-set tuning schedules must be explicitly "
                 f"marked nonstandard"
             )
-        # Full coverage matrix, not just a count: exactly one task per
-        # archetype and coverage across every registered repository.
-        seen_archetypes = []
+        # Full coverage matrix against the CANONICAL registered sets, not
+        # cardinality: exactly one task per numbered plan archetype and
+        # coverage of every registered eval repository — six free-form
+        # labels across arbitrary repos must never pass as standard.
+        seen_numbers = {}
         seen_repos = set()
         for task in tasks:
             cov_text = Path(task).read_text(encoding="utf-8")
@@ -1127,18 +1139,40 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
                     f"{task}: no `archetype` frontmatter — a standard "
                     f"schedule validates the full coverage matrix"
                 )
-            seen_archetypes.append(cov_match.group(1))
-            seen_repos.add(task_target_repo(cov_text, task))
-        if len(set(seen_archetypes)) != REGISTERED_HOLDOUT_TASKS:
+            label = cov_match.group(1)
+            num_match = re.match(r"\s*(\d+)", label)
+            number = int(num_match.group(1)) if num_match else None
+            keyword = REGISTERED_HOLDOUT_ARCHETYPE_KEYWORDS.get(number)
+            if keyword is None or keyword not in label.lower():
+                raise InfraFailure(
+                    f"{task}: archetype `{label}` is not one of the six "
+                    f"registered archetypes — the coverage matrix is "
+                    f"canonical, not free-form"
+                )
+            if number in seen_numbers:
+                raise InfraFailure(
+                    f"a standard schedule requires exactly one task per "
+                    f"archetype — archetype {number} appears in both "
+                    f"{seen_numbers[number]} and {task}"
+                )
+            seen_numbers[number] = task
+            full_repo = task_target_repo(cov_text, task)
+            repo_name = full_repo.rsplit("/", 1)[-1].lower()
+            if repo_name not in REGISTERED_HOLDOUT_REPOS:
+                raise InfraFailure(
+                    f"{task}: target-repo `{full_repo}` is not a registered "
+                    f"eval repository {REGISTERED_HOLDOUT_REPOS}"
+                )
+            seen_repos.add(repo_name)
+        if set(seen_numbers) != set(REGISTERED_HOLDOUT_ARCHETYPE_KEYWORDS):
             raise InfraFailure(
                 f"a standard schedule requires exactly one task per "
-                f"archetype ({REGISTERED_HOLDOUT_TASKS} distinct), got "
-                f"{sorted(seen_archetypes)!r}"
+                f"archetype 1-6, got archetypes {sorted(seen_numbers)}"
             )
-        if len(seen_repos) != REGISTERED_HOLDOUT_REPOS:
+        if seen_repos != set(REGISTERED_HOLDOUT_REPOS):
             raise InfraFailure(
-                f"a standard schedule must span the "
-                f"{REGISTERED_HOLDOUT_REPOS} registered repositories, got "
+                f"a standard schedule must cover the registered "
+                f"repositories {REGISTERED_HOLDOUT_REPOS}, got "
                 f"{sorted(seen_repos)}"
             )
     validate_arm_parity(config)
