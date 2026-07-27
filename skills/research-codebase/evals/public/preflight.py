@@ -918,12 +918,47 @@ def run_preflight():
         ok &= check(
             "blind judge isolated (empty cwd outside run tree, fs tools denied)",
             iso_ok, notes)
-        runner.score(config, docs, judge, judge_out, scoring_seed=5,
-                     allow_unscheduled=True)
+        try:
+            runner.score(config, docs, judge, judge_out, scoring_seed=5,
+                         allow_unscheduled=True)
+            second_ok = False
+        except runner.InfraFailure as exc:
+            second_ok = "already complete" in str(exc)
         ok &= check(
-            "judge outputs never overwritten (unique id per score invocation)",
-            len(sorted(judge_out.glob("judge-*.json"))) == 4,
+            "completed judge batch refuses a second pass (atomic batches)",
+            second_ok
+            and len(sorted(judge_out.glob("judge-*.json"))) == 2,
             notes)
+
+        resume_out = ws / "judge-batch-resume"
+        r1 = runner.score(config, docs, judge, resume_out, scoring_seed=5,
+                          allow_unscheduled=True)
+        sm_path = resume_out / "scoring-manifest.json"
+        sm = json.loads(sm_path.read_text(encoding="utf-8"))
+        sm["complete"] = False
+        sm["results"] = sm["results"][:1]
+        sm_path.write_text(json.dumps(sm), encoding="utf-8")
+        r2 = runner.score(config, docs, judge, resume_out, scoring_seed=5,
+                          allow_unscheduled=True)
+        sm_after = json.loads(sm_path.read_text(encoding="utf-8"))
+        ok &= check(
+            "interrupted judge batch resumes under the same scoring id",
+            len(r2) == 2
+            and r2[0]["session_id"] == r1[0]["session_id"]
+            and sm_after["complete"] is True
+            and sm_after["scoring_id"] == sm["scoring_id"],
+            notes)
+        sm_after["complete"] = False
+        sm_path.write_text(json.dumps(sm_after), encoding="utf-8")
+        try:
+            runner.score(config, docs, judge, resume_out, scoring_seed=6,
+                         allow_unscheduled=True)
+            ident_ok = False
+        except runner.InfraFailure as exc:
+            ident_ok = "different identity" in str(exc)
+        ok &= check(
+            "judge batch with a different identity refused (no mixing)",
+            ident_ok, notes)
         ok &= check(
             "scorer judge role recorded (blind, evidence-free)",
             all(r.get("role") == "scorer" for r in results),
@@ -975,6 +1010,7 @@ def run_preflight():
         try:
             mres = runner.score(config, sched_docs, judge, ws / "judge-sched",
                                 scoring_seed=5, manifest_path=manifest_path,
+                         score_task_paths=[str(task_s)],
                                 task_contexts=sched_ctx,
                                 seal_manifest_path=seal_file)
         finally:
@@ -992,6 +1028,7 @@ def run_preflight():
         try:
             runner.score(config, sched_docs[:1], judge, ws / "judge-trim",
                          scoring_seed=5, manifest_path=manifest_path,
+                         score_task_paths=[str(task_s)],
                          task_contexts=sched_ctx,
                          seal_manifest_path=seal_file)
             trim_ok = False
@@ -1001,6 +1038,31 @@ def run_preflight():
         ok &= check(
             "trimmed scoring manifest refused (verified against its schedule)",
             trim_ok, notes)
+        sched_full = json.loads(sched_path.read_text(encoding="utf-8"))
+        sched_cut = dict(sched_full)
+        sched_cut["entries"] = sched_full["entries"][:1]
+        m5 = json.loads(manifest_path.read_text(encoding="utf-8"))
+        cut = dict(m5)
+        cut["results"] = m5["results"][:1]
+        cut["schedule_digest"] = runner.schedule_digest(sched_cut)
+        cut_sched_path = ws / "schedule-cut.json"
+        cut_sched_path.write_text(json.dumps(sched_cut), encoding="utf-8")
+        cut["schedule"] = str(cut_sched_path)
+        manifest_path.write_text(json.dumps(cut), encoding="utf-8")
+        try:
+            runner.score(config, sched_docs[:1], judge, ws / "judge-cut",
+                         scoring_seed=5, manifest_path=manifest_path,
+                         score_task_paths=[str(task_s)],
+                         task_contexts=sched_ctx,
+                         seal_manifest_path=seal_file)
+            cut_ok = False
+        except runner.InfraFailure as exc:
+            cut_ok = ("reconstructed from the registered configuration and "
+                      "task set" in str(exc))
+        manifest_path.write_text(json.dumps(m5), encoding="utf-8")
+        ok &= check(
+            "schedule and manifest trimmed together refused (reconstruction)",
+            cut_ok, notes)
         ok &= check(
             "per-task sealed context routed to each judge and recorded",
             "SEALED-CONTEXT" in judge_prompt_echo
@@ -1010,7 +1072,8 @@ def run_preflight():
             notes)
         try:
             runner.score(config, sched_docs, judge, ws / "judge-noctx",
-                         scoring_seed=5, manifest_path=manifest_path)
+                         scoring_seed=5, manifest_path=manifest_path,
+                         score_task_paths=[str(task_s)])
             noctx_ok = False
         except runner.InfraFailure as exc:
             noctx_ok = "sealed context" in str(exc)
@@ -1020,6 +1083,7 @@ def run_preflight():
         try:
             runner.score(config, sched_docs, judge, ws / "judge-noseal",
                          scoring_seed=5, manifest_path=manifest_path,
+                         score_task_paths=[str(task_s)],
                          task_contexts=sched_ctx)
             noseal_ok = False
         except runner.InfraFailure as exc:
@@ -1032,6 +1096,7 @@ def run_preflight():
         try:
             runner.score(config, sched_docs, judge, ws / "judge-sealdrift",
                          scoring_seed=5, manifest_path=manifest_path,
+                         score_task_paths=[str(task_s)],
                          task_contexts=sched_ctx,
                          seal_manifest_path=seal_file)
             sealdrift_ok = False
@@ -1052,6 +1117,7 @@ def run_preflight():
         try:
             runner.score(config, sched_docs, judge, ws / "judge-forgedseal",
                          scoring_seed=5, manifest_path=manifest_path,
+                         score_task_paths=[str(task_s)],
                          task_contexts=sched_ctx,
                          seal_manifest_path=forged_seal)
             forged_ok = False
@@ -1125,6 +1191,7 @@ def run_preflight():
         try:
             runner.score(snap_cfg, snap_docs, judge, ws / "judge-nosnap",
                          scoring_seed=5, manifest_path=snap_manifest_path,
+                         score_task_paths=[str(task_snap)],
                          task_contexts=snap_ctx,
                          seal_manifest_path=seal_file,
                          evidence_repos={"mock-repo": str(repo_snap)})
@@ -1140,6 +1207,7 @@ def run_preflight():
             snap_res = runner.score(
                 snap_cfg, snap_docs, judge, ws / "judge-snap",
                 scoring_seed=5, manifest_path=snap_manifest_path,
+                         score_task_paths=[str(task_snap)],
                 task_contexts=snap_ctx, seal_manifest_path=seal_file,
                 evidence_repos={"mock-repo": str(repo_snap)},
                 task_snapshots={task_snap.name: str(snap_dir)},
@@ -1156,6 +1224,7 @@ def run_preflight():
         try:
             runner.score(snap_cfg, snap_docs, judge, ws / "judge-nodrift",
                          scoring_seed=5, manifest_path=snap_manifest_path,
+                         score_task_paths=[str(task_snap)],
                          task_contexts=snap_ctx, seal_manifest_path=seal_file,
                          evidence_repos={"mock-repo": str(repo_snap)},
                          task_snapshots={task_snap.name: str(snap_dir)})
@@ -1168,6 +1237,7 @@ def run_preflight():
         drift_res = runner.score(
             snap_cfg, snap_docs, judge, ws / "judge-drifted",
             scoring_seed=5, manifest_path=snap_manifest_path,
+                         score_task_paths=[str(task_snap)],
             task_contexts=snap_ctx, seal_manifest_path=seal_file,
             evidence_repos={"mock-repo": str(repo_snap)},
             task_snapshots={task_snap.name: str(snap_dir)},
@@ -1181,6 +1251,7 @@ def run_preflight():
         try:
             runner.score(snap_cfg, snap_docs, judge, ws / "judge-claim",
                          scoring_seed=5, manifest_path=snap_manifest_path,
+                         score_task_paths=[str(task_snap)],
                          task_contexts=snap_ctx, seal_manifest_path=seal_file,
                          evidence_repos={"mock-repo": str(repo_snap)},
                          task_snapshots={task_snap.name: str(snap_dir)},
@@ -1194,6 +1265,7 @@ def run_preflight():
         scorer_drift = runner.score(
             snap_cfg, snap_docs, judge, ws / "judge-scorer-drift",
             scoring_seed=5, manifest_path=snap_manifest_path,
+                         score_task_paths=[str(task_snap)],
             task_contexts=snap_ctx, seal_manifest_path=seal_file,
             task_snapshots={task_snap.name: str(snap_dir)},
             drift_report_path=drift_bad_file)
@@ -1204,7 +1276,8 @@ def run_preflight():
             notes)
         try:
             runner.score(config, sched_docs[:1], judge, ws / "judge-subset",
-                         scoring_seed=5, manifest_path=manifest_path)
+                         scoring_seed=5, manifest_path=manifest_path,
+                         score_task_paths=[str(task_s)])
             subset_ok = False
         except runner.InfraFailure as exc:
             subset_ok = "exactly once" in str(exc)
@@ -1213,6 +1286,7 @@ def run_preflight():
             subset_ok, notes)
         vres2 = runner.score(config, sched_docs, judge, ws / "judge-mverify",
                              scoring_seed=5, manifest_path=manifest_path,
+                         score_task_paths=[str(task_s)],
                              evidence_repos={"mock-repo": str(repo_s)},
                              task_contexts=sched_ctx,
                              seal_manifest_path=seal_file)
@@ -1224,6 +1298,7 @@ def run_preflight():
         try:
             runner.score(config, sched_docs, judge, ws / "judge-mpair",
                          scoring_seed=5, manifest_path=manifest_path,
+                         score_task_paths=[str(task_s)],
                          evidence_repo=str(repo_s), evidence_sha=sha_s,
                          task_contexts=sched_ctx)
             mpair_ok = False
@@ -1237,7 +1312,8 @@ def run_preflight():
         tampered_doc.write_text("# swapped contents\n", encoding="utf-8")
         try:
             runner.score(config, sched_docs, judge, ws / "judge-tamperdoc",
-                         scoring_seed=5, manifest_path=manifest_path)
+                         scoring_seed=5, manifest_path=manifest_path,
+                         score_task_paths=[str(task_s)])
             digest_ok = False
         except runner.InfraFailure as exc:
             digest_ok = "artifact digest" in str(exc)
@@ -1249,7 +1325,8 @@ def run_preflight():
         drift_cfg["timeout_seconds"] = 999
         try:
             runner.score(drift_cfg, sched_docs, judge, ws / "judge-cfgdrift",
-                         scoring_seed=5, manifest_path=manifest_path)
+                         scoring_seed=5, manifest_path=manifest_path,
+                         score_task_paths=[str(task_s)])
             cdrift_ok = False
         except runner.InfraFailure as exc:
             cdrift_ok = "config digest mismatch" in str(exc)
@@ -1260,6 +1337,7 @@ def run_preflight():
         try:
             runner.score(config, sched_docs, judge, ws / "judge-taskdrift",
                          scoring_seed=5, manifest_path=manifest_path,
+                         score_task_paths=[str(task_s)],
                          evidence_repos={"mock-repo": str(repo_s)},
                          task_contexts=sched_ctx)
             sdrift_ok = False

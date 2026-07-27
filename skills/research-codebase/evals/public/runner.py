@@ -1354,7 +1354,7 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
           evidence_repo=None, evidence_sha=None, scoring_seed=None,
           manifest_path=None, allow_unscheduled=False, evidence_repos=None,
           task_contexts=None, seal_manifest_path=None, task_snapshots=None,
-          drift_report_path=None):
+          drift_report_path=None, score_task_paths=None):
     """One fresh pinned backend session per document. The judge's full
     response text is preserved on disk — it IS the scoring artifact. Judge
     prompts live in the sealed package and are passed in at runtime.
@@ -1440,6 +1440,26 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                         f"scheduled run — evidence selection and protocol "
                         f"binding would use a different task"
                     )
+        # The schedule file is mutable: trimming it TOGETHER with the
+        # manifest and recomputing the digest would otherwise pass. The
+        # expected schedule is therefore reconstructed from the registered
+        # config and the operator-supplied registered task set.
+        if score_task_paths is None:
+            raise InfraFailure(
+                "manifest-bound scoring requires the registered task set "
+                "(--tasks) to reconstruct and verify the schedule"
+            )
+        rebuilt_sched = make_schedule(
+            config, score_task_paths, sched_obj.get("replicates"),
+            sched_obj.get("seed"),
+            allow_nonstandard=sched_obj.get("nonstandard", False),
+        )
+        if rebuilt_sched != sched_obj:
+            raise InfraFailure(
+                "schedule does not match the one reconstructed from the "
+                "registered configuration and task set — trimmed or edited "
+                "schedules are refused at scoring time"
+            )
         expected_names = sorted(f"run-{r['run_id']}-anon.md" for r in completed)
         supplied_names = sorted(Path(d).name for d in doc_paths)
         if supplied_names != expected_names:
@@ -1641,14 +1661,54 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
     doc_texts = [assert_blind_scorable(doc) for doc in doc_paths]
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
-    # Unique per-invocation id: separate scorer and verifier passes into the
-    # same output directory must never overwrite each other's judge files.
-    scoring_id = uuid.uuid4().hex[:8]
-    results = []
     role = "verifier" if (evidence_repo or doc_evidence is not None) else "scorer"
     order = list(range(len(doc_paths)))
     random.Random(scoring_seed).shuffle(order)
+    # Judge batches are resumable and atomic: progress persists after every
+    # judged document under one scoring_id, an interrupted batch resumes at
+    # the first unjudged document (never re-judging finished ones), and a
+    # COMPLETED batch refuses a second pass — re-judging would create
+    # duplicate nondeterministic scores with no authoritative batch.
+    batch_identity = {
+        "scoring_seed": scoring_seed,
+        "manifest": str(manifest_path) if manifest_path is not None else None,
+        "config_digest": config_digest(config),
+        "role": role,
+        "docs": sorted(Path(d).name for d in doc_paths),
+    }
+    scoring_manifest_path = out / "scoring-manifest.json"
+    if scoring_manifest_path.exists():
+        prior_batch = json.loads(
+            scoring_manifest_path.read_text(encoding="utf-8"))
+        if prior_batch.get("complete"):
+            raise InfraFailure(
+                "the scoring batch in this output directory is already "
+                "complete — a second pass would create duplicate "
+                "nondeterministic scores"
+            )
+        if prior_batch.get("identity") != batch_identity:
+            raise InfraFailure(
+                "existing scoring batch has a different identity "
+                "(seed/manifest/config/role/docs) — batches must not be "
+                "mixed"
+            )
+        scoring_id = prior_batch["scoring_id"]
+        results = list(prior_batch.get("results", []))
+    else:
+        scoring_id = uuid.uuid4().hex[:8]
+        results = []
+
+    def write_scoring_manifest(complete):
+        scoring_manifest_path.write_text(json.dumps({
+            "scoring_id": scoring_id,
+            "identity": batch_identity,
+            "results": results,
+            "complete": complete,
+        }, indent=2) + "\n", encoding="utf-8")
+
     for i, doc_index in enumerate(order):
+        if i < len(results):
+            continue  # judged before the interruption — never re-judged
         doc, doc_text = doc_paths[doc_index], doc_texts[doc_index]
         if Path(doc).name in inconclusive_docs:
             # Task inconclusive per the registered source-drift gate:
@@ -1668,6 +1728,7 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                 json.dumps(result, indent=2) + "\n", encoding="utf-8"
             )
             results.append(result)
+            write_scoring_manifest(False)
             continue
         if doc_evidence is not None:
             ev_repo, ev_sha = doc_evidence[Path(doc).name]
@@ -1772,11 +1833,13 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             json.dumps(result, indent=2) + "\n", encoding="utf-8"
         )
         results.append(result)
+        write_scoring_manifest(False)
     judged = [r for r in results if not r.get("inconclusive")]
     if len({r["session_id"] for r in judged}) != len(judged) or len(
         {r["profile"] for r in judged}
     ) != len(judged):
         raise InfraFailure("judge sessions were not fresh/isolated")
+    write_scoring_manifest(True)
     return results
 
 
@@ -1912,6 +1975,10 @@ def main():
         if args.scoring_seed is None:
             parser.error("score mode requires --scoring-seed (recorded "
                          "randomization of the presentation order)")
+        if args.manifest and not args.tasks:
+            parser.error("--manifest scoring requires --tasks (the "
+                         "registered task set, used to reconstruct and "
+                         "verify the schedule)")
         config = load_config(args.config)
         try:
             evidence_repos = (parse_repo_mapping(args.evidence_repos,
@@ -1936,7 +2003,8 @@ def main():
                         task_contexts=task_contexts,
                         seal_manifest_path=args.seal_manifest,
                         task_snapshots=task_snapshots,
-                        drift_report_path=args.drift_report)
+                        drift_report_path=args.drift_report,
+                        score_task_paths=args.tasks)
         print(json.dumps([
             {"doc": r["doc"], "inconclusive": True}
             if r.get("inconclusive")
