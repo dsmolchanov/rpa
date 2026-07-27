@@ -417,9 +417,10 @@ to `references/agent-contracts/`, `research-v2-*` reduced to thin
 adapters, `commands/research_codebase.md` reduced to the thin
 compatibility wrapper (opus parity pin retained), fleet routing isolated
 in `references/fleet-routing.md` for the ablation build, Quick Install
-copies `skills/`, plugin version bumped. **Not yet frozen:** dev-set
-tuning runs (Sequence step 3) and the candidate freeze (step 4) remain
-ahead; no holdout material has been seen by this implementation context.
+copies `skills/`, plugin version bumped. **Frozen 2026-07-27** after
+dev-set tuning round 1 (see the freeze record before the Sequence
+section); no holdout material has been seen by this implementation
+context.
 
 **Dev set status (Sequence step 2):** authored. Public tasks dev-3/dev-4
 (target: this repo) live at `skills/research-codebase/evals/public/dev-set/`;
@@ -473,6 +474,45 @@ hard blockers before any scored run. (The 2026-07-27 mechanical CLI
 shakedown validated the integration path — namespaced entrypoint, model
 pin resolution, stream parsing — but does not substitute for the formal
 preflight, which still stands.)
+
+**Candidate freeze (Sequence step 4, recorded 2026-07-27, owner
+instruction «давай, шаг 4»):**
+
+- **Frozen candidate SHA:** `b731f06cdff5f38c0fa4c5aa64f93277d69e741d`
+  (master merge of the dev-set tuning PR — the last behavioral change;
+  later commits are protocol records only).
+- **Installation artifacts** are built deterministically by
+  `skills/research-codebase/evals/public/build_installs.py` (pinned
+  SHAs inside; rebuild reproduces identical trees) and registered by
+  the tree hashes the eval-runner verifies before every run:
+  - baseline (frozen `a7de5f6` + recorded common overlay — `@AGENTS.md`
+    import line, current `scripts/spec_metadata.sh`):
+    `2762bf04e9ea82fec520906a0db0382eadff5c99cada5b44ba2f1c49a3e7b28c`
+  - candidate (frozen tree verbatim):
+    `5638b81633610a68192cc5d03dba4d1022175aa1980b27a209b3114d4c4d126c`
+  - ablation (candidate minus the six `research-v2-*` adapters and
+    `references/fleet-routing.md`; runner-enforced `forbid_subagents`):
+    `a1d44b131ebd5d858756280454b9f7f33cb79a4f13d034b2004d5993b21e9b57`
+- **Pre-registered shared runtime configuration** (identical across
+  arms; installation content is the only arm difference):
+  model `claude-opus-5` (the resolution of the command wrapper's
+  `model: opus` pin, confirmed against the real CLI 2026-07-27; the
+  pin overrides the CLI `--model`, so the registered value is the
+  pin's resolution), effort `high` (pinned on the backend command
+  line via `{effort}`), entrypoint `/rpa:research_codebase`,
+  `backend_cmd = ["claude", "--model", "claude-opus-5", "--effort",
+  "{effort}", "--plugin-dir", "{installation}", "--permission-mode",
+  "acceptEdits", "--verbose"]`, backend version pinned at
+  `2.1.220 (Claude Code)` (probed before every run),
+  `timeout_seconds 3600`, `max_infra_retries 2`,
+  `workflow_abort_exit_codes []` (any registration of real abort
+  codes happens at the formal preflight, before any scored run);
+  judge sessions mount-free at `judge_model opus` /
+  `judge_effort high`; 3 replicates per arm per task in randomized
+  interleaved order (unchanged from the registered design). The
+  `sandbox_cmd` wrapper for scored runs is validated and recorded at
+  the **formal real-backend preflight**, which remains the last gate
+  before any scored run.
 
 ## Sequence
 
