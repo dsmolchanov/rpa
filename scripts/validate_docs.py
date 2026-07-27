@@ -538,6 +538,16 @@ def check_artifact_validator(root, errors):
         errors.append(
             "artifact validator accepted a document of empty sections — "
             "content enforcement is broken")
+    unzoned = fixtures / "artifact-unzoned-invalid.md"
+    if not unzoned.is_file():
+        errors.append("artifact-unzoned-invalid.md fixture missing")
+        return
+    ku = _sp.run([_sys.executable, str(validator), str(unzoned)],
+                 capture_output=True)
+    if ku.returncode == 0:
+        errors.append(
+            "artifact validator accepted a timezone-less timestamp — the "
+            "contract requires date and time WITH timezone")
 
 
 def validate(root, exclude_fixtures=True):

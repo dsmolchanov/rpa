@@ -70,9 +70,11 @@ CONTENT_REQUIRED_SECTIONS = ("Research Question", "Summary",
 HEADING_RE = re.compile(r"^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$")
 FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 FENCE_CLOSE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})\s*$")
+# The contract requires "date and time with timezone in ISO format":
+# the timezone part is MANDATORY, an unzoned timestamp is ambiguous.
 DATE_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?(\.\d+)?"
-    r"(Z|[+-]\d{2}:?\d{2})?$")
+    r"(Z|[+-]\d{2}:?\d{2})$")
 GIT_COMMIT_RE = re.compile(r"^[0-9a-f]{7,40}$")
 
 
