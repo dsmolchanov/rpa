@@ -406,9 +406,11 @@ sanitized examples; raw run artifacts stay in a private location.
    `evals/public/README.md`). Per-node effort capture is bounded by the
    backend stream schema; the two-mode effort policy in prerequisite 5
    above is the authoritative requirement (revised 2026-07-26 in response
-   to review). The **real-backend preflight** on the throwaway task
-   remains required once before baseline runs and must demonstrate the
-   effort pin propagates to the whole session tree.
+   to review). The **real-backend preflight** on the throwaway task —
+   **done 2026-07-27** (see the formal-preflight record after the
+   candidate-freeze section): one sandboxed real run per arm under the
+   full pinned configuration, effort pinned on every backend command
+   line with `command_pin` capture across the session tree.
 
 **Candidate status (2026-07-27):** the behavioral rewrite landed on the
 owner's instruction («продолжай по очереди все»): kernel `SKILL.md`
@@ -509,10 +511,43 @@ instruction «давай, шаг 4»):**
   codes happens at the formal preflight, before any scored run);
   judge sessions mount-free at `judge_model opus` /
   `judge_effort high`; 3 replicates per arm per task in randomized
-  interleaved order (unchanged from the registered design). The
-  `sandbox_cmd` wrapper for scored runs is validated and recorded at
-  the **formal real-backend preflight**, which remains the last gate
-  before any scored run.
+  interleaved order (unchanged from the registered design);
+  `sandbox_cmd = ["python3",
+  "<orchestrating-checkout>/skills/research-codebase/evals/public/ns_sandbox.py",
+  "--confine-to", "{workdir}", "--profile", "{profile}", "--"]` —
+  `ns_sandbox.py` (committed alongside this record) confines every
+  evaluated and judge session via util-linux `unshare` (user + mount
+  namespaces) and a chroot into a read-only rbind of `/` with a fresh
+  private `/tmp`: only the run's worktree and its clean profile are
+  writable. The wrapper was validated at the formal real-backend
+  preflight below; the sandbox script lives harness-side (the
+  orchestrating checkout, like `runner.py`), not inside the frozen
+  installation trees, so the registered hashes are unaffected.
+
+**Formal real-backend preflight (recorded 2026-07-27; the last gate
+before scored runs — now passed):** one sandboxed real run per arm on
+the throwaway task (retargeted to the frozen `b731f06`; never a dev or
+holdout task), under the full pre-registered configuration above.
+Mechanics proven on all three arms: registered installation hashes
+verified before each run, `ns_sandbox.py` wired around every session
+(write-outside probes fail with EROFS; host untouched), model parity
+`claude-opus-5` on every transcript node, effort pinned on the command
+line with `command_pin` capture (the real stream schema carries no
+per-node effort field — the registered two-mode policy), both stream
+schemas parsed with full tree-wide token accounting, and the artifact
+gate enforced uniformly. Outcomes: candidate **completed** (gate
+passed); ablation **completed** with **zero subagents** (the
+pre-registered no-subagent policy held); baseline mechanics green but
+its artifact was rejected by the gate — the legacy workflow wrapped
+body metadata values in backticks and improvised prose for the
+detached-HEAD branch — a counted workflow failure. **Recorded
+observation:** this is a real possibility for baseline holdout runs;
+the gate is pre-registered and uniform across arms and is NOT adjusted
+post-freeze. Any protocol amendment (e.g. separate judging of
+gate-failed artifacts' content) is an owner decision and would have to
+be registered before Sequence step 5 unseals the holdout. No real
+workflow-abort exit codes were observed; `workflow_abort_exit_codes`
+stays `[]` as registered.
 
 ## Sequence
 

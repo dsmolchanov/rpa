@@ -64,7 +64,16 @@ def extract(repo, sha, dest):
 
 
 def build(repo, out):
-    out = Path(out)
+    # `out` is recreated with rmtree: refuse any overlap with the source
+    # clone — an --out equal to, containing, or inside --repo would
+    # delete or pollute the clone (git objects included) before the
+    # pinned trees are archived.
+    repo_r = Path(repo).resolve()
+    out_r = Path(out).resolve()
+    if repo_r == out_r or repo_r in out_r.parents or out_r in repo_r.parents:
+        raise SystemExit(
+            f"refusing to build: --out {out_r} overlaps --repo {repo_r}")
+    out = out_r
     if out.exists():
         shutil.rmtree(out)
 
