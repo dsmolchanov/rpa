@@ -18,7 +18,7 @@ installation (`docs/conventions.md` §1; pilot plan, "Atomic seal").
 - `runner-config.example.json` — configuration shape; the filled copy (real
   installation paths + hashes) lives in the private eval workspace.
 
-Capability → proof map (each row is backed by named preflight checks; 151 checks total):
+Capability → proof map (each row is backed by named preflight checks; 152 checks total):
 
 | Capability (plan, prereq 5) | Runner mechanism |
 |---|---|

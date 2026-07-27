@@ -10,7 +10,14 @@ FILENAME_TS=$(date '+%Y-%m-%d_%H-%M-%S')
 if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
  REPO_ROOT=$(git rev-parse --show-toplevel)
  REPO_NAME=$(basename "$REPO_ROOT")
- GIT_BRANCH=$(git branch --show-current 2>/dev/null || git rev-parse --abbrev-ref HEAD)
+ # In detached HEAD `--show-current` SUCCEEDS while printing nothing
+ # (so a `||` fallback never fires); eval runs execute in detached
+ # worktrees, and the research artifact contract requires a non-empty
+ # branch value.
+ GIT_BRANCH=$(git branch --show-current 2>/dev/null)
+ if [ -z "$GIT_BRANCH" ]; then
+  GIT_BRANCH="detached@$(git rev-parse --short HEAD)"
+ fi
  GIT_COMMIT=$(git rev-parse HEAD)
 else
  REPO_ROOT=""

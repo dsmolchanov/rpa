@@ -1271,6 +1271,23 @@ def run_preflight():
             and any("last_updated" in e for e in impossible_bad),
             notes)
 
+        meta_script = (HERE.parents[3] / "scripts"
+                       / "spec_metadata.sh")
+        det_repo, det_sha = make_git_repo(ws, "detached-meta")
+        det_wt = runner.make_worktree(det_repo, det_sha, ws / "detmeta",
+                                      name="mock-repo")
+        meta_out = subprocess.run(["bash", str(meta_script)],
+                                  cwd=det_wt, capture_output=True,
+                                  text=True)
+        runner.remove_worktree(det_repo, det_wt)
+        branch_lines = [l for l in meta_out.stdout.splitlines()
+                        if l.startswith("Current Branch Name:")]
+        ok &= check(
+            "metadata script supplies branch identity in detached worktrees",
+            meta_out.returncode == 0 and bool(branch_lines)
+            and "detached@" in branch_lines[0],
+            notes)
+
         record, _, _, _ = run_case(ws, "stale-artifact")
         ok &= check(
             "artifact metadata bound to the run's pinned checkout",
