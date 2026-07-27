@@ -27,4 +27,17 @@ heading inside a code fence must not satisfy the structural gate:
 ## Open Questions
 ```
 
-No real sections follow.
+No real sections follow. A longer fence quoting an inner triple
+backtick must not close early either:
+
+````markdown
+```
+## Research Question
+## Summary
+## Detailed Findings
+## Code References
+## Architecture Documentation
+## Historical Context (from thoughts/)
+## Related Research
+## Open Questions
+````

@@ -1334,7 +1334,11 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
         # failure — the workflow produced the wrong artifact — never a
         # completed, scoreable replicate. The raw copy above is preserved
         # as evidence.
-        contract_defects = artifact_validator.validate(artifact)
+        contract_defects = artifact_validator.validate(
+            artifact,
+            expected_git_commit=sha,
+            expected_repository=task_target_repo(task_text, task_path),
+        )
         if contract_defects:
             record["artifact_defects"] = contract_defects
             shown = "; ".join(contract_defects[:5])

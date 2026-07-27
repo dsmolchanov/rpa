@@ -1194,6 +1194,13 @@ def run_preflight():
             and record.get("artifact_defects"),
             notes)
 
+        record, _, _, _ = run_case(ws, "stale-artifact")
+        ok &= check(
+            "artifact metadata bound to the run's pinned checkout",
+            record["status"] == "workflow_failure"
+            and "target-sha" in record.get("failure", ""),
+            notes)
+
         record, _, _, _ = run_case(ws, "hang-silent", timeout=2,
                                    use_retries=True)
         ok &= check(

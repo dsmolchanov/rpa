@@ -89,10 +89,21 @@ def emit(event):
     print(json.dumps(event), flush=True)
 
 
-def write_artifact():
+def write_artifact(commit=None):
+    """The artifact's `git_commit` records the ACTUAL worktree checkout
+    (like the real workflow's metadata script); the stale-artifact mode
+    passes a wrong commit to prove the harness's run-binding check."""
+    if commit is None:
+        try:
+            commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"], capture_output=True,
+                text=True).stdout.strip() or "0" * 40
+        except OSError:
+            commit = "0" * 40
     research = Path("thoughts/shared/research")
     research.mkdir(parents=True, exist_ok=True)
-    (research / "mock-research.md").write_text(ARTIFACT, encoding="utf-8")
+    (research / "mock-research.md").write_text(
+        ARTIFACT.replace("deadbeef", commit), encoding="utf-8")
 
 
 def echo(name, value):
@@ -279,6 +290,16 @@ def main():
         # drift (abort-wrong-model).
         print("workflow aborted by evaluated agent", file=sys.stderr)
         sys.exit(21)
+
+    if args.mode == "stale-artifact":
+        # Metadata claims a checkout OTHER than the run's pinned
+        # target-sha: the harness must reject the run-binding mismatch as
+        # a counted workflow failure.
+        emit_nodes(model, args.effort, args.effort)
+        write_artifact(commit="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+        emit({"type": "result", "session_id": session_id,
+              "result": "MOCK-VERDICT: stale metadata"})
+        return
 
     if args.mode == "bad-artifact":
         # Fresh document that VIOLATES the artifact contract: the harness

@@ -68,6 +68,16 @@ CONTENT_REQUIRED_SECTIONS = ("Research Question", "Summary",
                              "Detailed Findings")
 
 HEADING_RE = re.compile(r"^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$")
+FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+FENCE_CLOSE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})\s*$")
+DATE_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?(\.\d+)?"
+    r"(Z|[+-]\d{2}:?\d{2})?$")
+GIT_COMMIT_RE = re.compile(r"^[0-9a-f]{7,40}$")
+
+
+def _canonical_repo(name):
+    return str(name).strip().rstrip("/").rsplit("/", 1)[-1].lower()
 
 
 def _anonymized(value):
@@ -111,13 +121,18 @@ def _headings_outside_fences(lines):
     headings = []
     fence = None
     for line_idx, line in enumerate(lines):
-        stripped = line.strip()
-        if fence is None and (stripped.startswith("```")
-                              or stripped.startswith("~~~")):
-            fence = stripped[:3]
+        open_match = FENCE_OPEN_RE.match(line)
+        if fence is None and open_match:
+            # The FULL delimiter is tracked: only a closing fence of the
+            # same character and at least the opener's length ends the
+            # block, so a 4+-char fence quoting inner ``` lines cannot be
+            # closed early and leak quoted headings into the structure.
+            fence = open_match.group(1)
             continue
         if fence is not None:
-            if stripped.startswith(fence):
+            close_match = FENCE_CLOSE_RE.match(line)
+            if (close_match and close_match.group(1)[0] == fence[0]
+                    and len(close_match.group(1)) >= len(fence)):
                 fence = None
             continue
         match = HEADING_RE.match(line)
@@ -127,7 +142,7 @@ def _headings_outside_fences(lines):
     return headings
 
 
-def validate(path):
+def validate(path, expected_git_commit=None, expected_repository=None):
     errors = []
     try:
         text = Path(path).read_text(encoding="utf-8")
@@ -187,6 +202,30 @@ def validate(path):
                 and not LAST_UPDATED_RE.match(sval)):
             errors.append(
                 f"`last_updated` must be YYYY-MM-DD, got `{sval}`")
+        if field == "date" and not _anonymized(sval) \
+                and not DATE_RE.match(sval):
+            errors.append(
+                f"`date` must be an ISO date-time (with timezone), "
+                f"got `{sval}`")
+        if field == "git_commit" and not _anonymized(sval):
+            if not GIT_COMMIT_RE.match(sval):
+                errors.append(
+                    f"`git_commit` must be a 7-40 char hex sha, "
+                    f"got `{sval}`")
+            elif expected_git_commit is not None and not (
+                    sval == expected_git_commit
+                    or (len(sval) >= 7
+                        and expected_git_commit.startswith(sval))):
+                errors.append(
+                    f"`git_commit` `{sval}` does not match the run's "
+                    f"pinned target-sha `{expected_git_commit}`")
+        if (field == "repository" and not _anonymized(sval)
+                and expected_repository is not None
+                and _canonical_repo(sval)
+                != _canonical_repo(expected_repository)):
+            errors.append(
+                f"`repository` `{sval}` does not match the run's "
+                f"target-repo `{expected_repository}`")
     headings = _headings_outside_fences(lines)
     title = next((h for h in headings
                   if h[0] == 1 and h[1].startswith("Research:")), None)
@@ -240,13 +279,20 @@ def validate(path):
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("usage: validate_artifact.py <document.md> [...]",
-              file=sys.stderr)
-        return 2
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("documents", nargs="+")
+    parser.add_argument("--expect-commit",
+                        help="run-bound target sha the artifact's "
+                             "git_commit must match")
+    parser.add_argument("--expect-repo",
+                        help="run-bound target repo the artifact's "
+                             "repository must match (canonical name)")
+    args = parser.parse_args()
     failed = False
-    for path in sys.argv[1:]:
-        errors = validate(path)
+    for path in args.documents:
+        errors = validate(path, expected_git_commit=args.expect_commit,
+                          expected_repository=args.expect_repo)
         if errors:
             failed = True
             for err in errors:

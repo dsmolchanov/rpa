@@ -1,7 +1,7 @@
 ---
-date:
+date: nonsense
 researcher: Fixture Researcher
-git_commit: 0000000000000000000000000000000000000000
+git_commit: not-a-commit
 branch: fixture-branch
 repository: fixture-repo
 topic: "Subtle negative fixture"

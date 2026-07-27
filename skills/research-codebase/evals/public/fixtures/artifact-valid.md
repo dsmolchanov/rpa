@@ -1,7 +1,7 @@
 ---
 date: 2026-07-27T00:00:00Z
 researcher: Fixture Researcher
-git_commit: 0000000000000000000000000000000000000000
+git_commit: '0000000000000000000000000000000000000000'
 branch: fixture-branch
 repository: fixture-repo
 topic: "Fixture topic (synthetic)"
