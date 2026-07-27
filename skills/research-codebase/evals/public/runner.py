@@ -203,6 +203,18 @@ def apply_sandbox(config, cmd, workdir, profile):
                 "clean profile"
             )
         return list(cmd)
+    if not config.get("nonstandard_config"):
+        # A wrapper that never receives the paths to confine provides no
+        # isolation at all (e.g. `/usr/bin/env`): production sandboxes must
+        # take both confinement placeholders.
+        missing = [ph for ph in ("{workdir}", "{profile}")
+                   if not any(ph in part for part in sandbox)]
+        if missing:
+            raise InfraFailure(
+                f"production `sandbox_cmd` must confine the session via the "
+                f"{', '.join(missing)} placeholder(s) — a wrapper without "
+                f"them provides no filesystem isolation"
+            )
     prefix = []
     for part in sandbox:
         part = part.replace("{workdir}", str(workdir))
@@ -864,20 +876,21 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1):
                                      workflow_abort_exits=abort_exits)
             except WorkflowFailure as wf:
                 partial = parse_nodes_tolerant(wf.stdout)
-                if partial:
-                    validate_models(partial, arm["model"])
-                    effort_modes.add(
-                        validate_efforts(partial, arm.get("effort", "default")))
-                    all_nodes.extend(partial)
-                elif not all_nodes:
-                    # A counted failure needs effective-runtime evidence from
-                    # SOME session of this run; a completely empty transcript
-                    # proves nothing and must invalidate, not count.
+                if not partial:
+                    # A counted failure needs effective-runtime evidence
+                    # from THE SESSION THAT FAILED — nodes from earlier
+                    # sessions cannot vouch for a continuation that emitted
+                    # nothing, so runtime drift there must invalidate, not
+                    # count.
                     raise InfraFailure(
-                        f"workflow failure with no accounting nodes in any "
-                        f"session — no effective-runtime parity evidence; "
-                        f"run invalidated ({wf})"
+                        f"workflow failure with no accounting nodes from "
+                        f"the failed session — no effective-runtime parity "
+                        f"evidence; run invalidated ({wf})"
                     ) from wf
+                validate_models(partial, arm["model"])
+                effort_modes.add(
+                    validate_efforts(partial, arm.get("effort", "default")))
+                all_nodes.extend(partial)
                 raise
 
         stdout = _spawn(prompt)
@@ -1002,6 +1015,12 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
         raise InfraFailure("duplicate task paths in the schedule task list")
     standard_topology = _standard_topology(config)
     if not allow_nonstandard:
+        if config.get("nonstandard_config"):
+            raise InfraFailure(
+                "a standard (holdout) schedule cannot be generated from a "
+                "dev config (`nonstandard_config: true`) — production "
+                "configs must register the full topology and sandbox"
+            )
         if replicates != REGISTERED_REPLICATES:
             raise InfraFailure(
                 f"the registered protocol fixes {REGISTERED_REPLICATES} "
@@ -1079,7 +1098,8 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
         "task_digests": task_digests,
         "nonstandard": (replicates != REGISTERED_REPLICATES
                         or not standard_topology
-                        or len(tasks) != REGISTERED_HOLDOUT_TASKS),
+                        or len(tasks) != REGISTERED_HOLDOUT_TASKS
+                        or bool(config.get("nonstandard_config"))),
         "tasks": tasks,
         "arms": sorted(config["arms"]),
         "config_digest": config_digest(config),

@@ -366,6 +366,14 @@ def run_preflight():
             record["status"] == "infra_failure"
             and "sandbox_cmd" in record.get("failure", ""),
             notes)
+        config["sandbox_cmd"] = ["/usr/bin/env"]
+        record = runner.run_task(config, "baseline", task_sbx, repo,
+                                 ws / "out-sandbox-noconfine")
+        ok &= check(
+            "sandbox command without confinement placeholders refused",
+            record["status"] == "infra_failure"
+            and "placeholder" in record.get("failure", ""),
+            notes)
 
         config, _ = build_config(ws, "normal")
         config["backend_cmd"] = [
@@ -425,6 +433,7 @@ def run_preflight():
             scope_ok, notes)
 
         config, _ = build_config(ws, "normal")
+        config.pop("nonstandard_config")
         try:
             runner.make_schedule(config, [d_a], 2, seed=1)
             rep_ok = False
@@ -435,6 +444,7 @@ def run_preflight():
             rep_ok, notes)
 
         config, _ = build_config(ws, "normal")
+        config.pop("nonstandard_config")
         try:
             runner.make_schedule(config, [d_a], 3, seed=1)
             topo_ok = False
@@ -445,11 +455,27 @@ def run_preflight():
             topo_ok, notes)
 
         config, _ = build_config(ws, "normal")
+        config.pop("nonstandard_config")
         base_arm = config["arms"].pop("mock")
         config["arms"]["baseline"] = dict(base_arm)
         config["arms"]["candidate"] = dict(base_arm)
         config["arms"]["ablation"] = dict(base_arm, forbid_subagents=True)
         six_tasks = list(dummy_tasks)
+
+        dev_cfg, _ = build_config(ws, "normal")
+        dev_base = dev_cfg["arms"].pop("mock")
+        dev_cfg["arms"]["baseline"] = dict(dev_base)
+        dev_cfg["arms"]["candidate"] = dict(dev_base)
+        dev_cfg["arms"]["ablation"] = dict(dev_base, forbid_subagents=True,
+                                           schedule_tasks=[d_a, d_b])
+        try:
+            runner.make_schedule(dev_cfg, list(dummy_tasks), 3, seed=1)
+            devsched_ok = False
+        except runner.InfraFailure as exc:
+            devsched_ok = "dev config" in str(exc)
+        ok &= check(
+            "standard schedule refused from a dev-marked config",
+            devsched_ok, notes)
         try:
             runner.make_schedule(config, six_tasks, 3, seed=1)
             abl_ok = False
@@ -479,6 +505,7 @@ def run_preflight():
             six_ok, notes)
 
         config, _ = build_config(ws, "normal")
+        config.pop("nonstandard_config")
         base_arm = config["arms"].pop("mock")
         config["arms"]["baseline"] = dict(base_arm)
         config["arms"]["canddate"] = dict(base_arm)
@@ -688,7 +715,8 @@ def run_preflight():
         record, _, _, _ = run_case(ws, "slow-no-artifact", timeout=2)
         ok &= check(
             "run-level deadline shared across continuations (no reset)",
-            record["status"] == "workflow_failure"
+            record["status"] == "infra_failure"
+            and "parity evidence" in record.get("failure", "")
             and record.get("wall_seconds", 99) < 3
             and record["interventions"] == 1,
             notes, f"wall={record.get('wall_seconds')}")
