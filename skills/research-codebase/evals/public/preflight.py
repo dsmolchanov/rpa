@@ -1451,6 +1451,24 @@ def run_preflight():
             and single_clock,
             notes)
 
+        # The wrapper's parse-time @-imports must cover BOTH install
+        # layouts: plugin (${CLAUDE_PLUGIN_ROOT} set) and Quick Install
+        # (files copied under ~/.claude, variable unset) — with only the
+        # plugin form, non-plugin invocations lose the embedded kernel
+        # and artifact contract entirely.
+        wrapper_text = (HERE.parents[3] / "commands"
+                        / "research_codebase.md").read_text(encoding="utf-8")
+        ok &= check(
+            "command wrapper embeds kernel + contract in both install layouts",
+            all(ref in wrapper_text for ref in (
+                "@${CLAUDE_PLUGIN_ROOT}/skills/research-codebase/SKILL.md",
+                "@~/.claude/skills/research-codebase/SKILL.md",
+                "@${CLAUDE_PLUGIN_ROOT}/skills/research-codebase/references"
+                "/artifact-contract.md",
+                "@~/.claude/skills/research-codebase/references"
+                "/artifact-contract.md")),
+            notes)
+
         record, _, _, _ = run_case(ws, "stale-artifact")
         ok &= check(
             "artifact metadata bound to the run's pinned checkout",

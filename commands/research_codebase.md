@@ -24,18 +24,27 @@ criteria, verification gates, and escalation conditions — follow it as
 written. The artifact contract is also included below: emit its
 frontmatter schema and body template exactly.
 
-Kernel (single source: `skills/research-codebase/SKILL.md`):
+Kernel (single source: `skills/research-codebase/SKILL.md`; the two
+imports below cover the two install layouts — the plugin root when
+`${CLAUDE_PLUGIN_ROOT}` is set, the Quick Install copy under
+`~/.claude` otherwise. Exactly one resolves per layout; an unresolved
+or duplicate import is inert, the content is identical):
 
 @${CLAUDE_PLUGIN_ROOT}/skills/research-codebase/SKILL.md
 
+@~/.claude/skills/research-codebase/SKILL.md
+
 Artifact contract (single source:
-`skills/research-codebase/references/artifact-contract.md`):
+`skills/research-codebase/references/artifact-contract.md`, same
+dual-layout imports):
 
 @${CLAUDE_PLUGIN_ROOT}/skills/research-codebase/references/artifact-contract.md
 
-(In a non-plugin install, where `${CLAUDE_PLUGIN_ROOT}` is unset, load
-the same two files from `~/.claude/skills/research-codebase/` before
-starting.)
+@~/.claude/skills/research-codebase/references/artifact-contract.md
+
+(If neither import resolved above — a checkout without either install —
+read the same two files from the project's
+`skills/research-codebase/` directory before starting.)
 
 Platform wiring:
 
