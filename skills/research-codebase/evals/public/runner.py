@@ -114,6 +114,7 @@ import random
 import re
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -353,6 +354,21 @@ def config_digest(config):
     ).hexdigest()
 
 
+def load_json_object(path, what):
+    """User-supplied JSON artifacts (schedules, manifests, seal manifests,
+    drift reports) fail as classified infrastructure errors, never as
+    OSError/JSONDecodeError/AttributeError tracebacks."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise InfraFailure(f"cannot read {what} {path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise InfraFailure(f"{what} {path} is not valid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise InfraFailure(f"{what} {path} must be a JSON object")
+    return data
+
+
 def verify_backend_version(config):
     """The pinned-runtime protocol includes the exact backend (Claude Code)
     version: it is registered in the config and probed before EVERY run and
@@ -578,29 +594,38 @@ def spawn_session(cmd, prompt, cwd, env, timeout, resume=None,
         full += ["--resume", resume]
     full += ["-p", prompt, "--output-format", "stream-json"]
     try:
-        proc = subprocess.run(
-            full, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout
+        proc = subprocess.Popen(
+            full, cwd=cwd, env=env, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, start_new_session=True
         )
-    except subprocess.TimeoutExpired as exc:
-        partial = exc.stdout
-        if isinstance(partial, bytes):
-            partial = partial.decode("utf-8", errors="replace")
-        raise WorkflowFailure(
-            f"session timed out after {timeout}s", stdout=partial
-        ) from exc
     except OSError as exc:
         raise InfraFailure(f"backend could not be spawned: {exc}") from exc
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        # The session runs in its OWN process group (start_new_session):
+        # on timeout the WHOLE tree is killed, so spawned tool
+        # subprocesses cannot keep consuming the budget or touching the
+        # disposable worktree after the timeout is recorded.
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            proc.kill()
+        stdout, stderr = proc.communicate()
+        raise WorkflowFailure(
+            f"session timed out after {timeout}s", stdout=stdout
+        ) from exc
     if proc.returncode != 0:
-        detail = proc.stderr.strip()[:500]
+        detail = (stderr or "").strip()[:500]
         if proc.returncode in workflow_abort_exits:
             # Counted experimental outcome: keep the partial transcript so
             # the failed run's tree-wide accounting survives.
             raise WorkflowFailure(
                 f"workflow aborted (exit {proc.returncode}): {detail}",
-                stdout=proc.stdout,
+                stdout=stdout,
             )
         raise InfraFailure(f"backend exited {proc.returncode}: {detail}")
-    return proc.stdout
+    return stdout
 
 
 def _node_from_event(event):
@@ -1371,7 +1396,7 @@ def run_schedule(config, schedule_path, repos, output_dir, task_paths):
     an interrupted schedule resumes at the first unfinished entry — never
     from index 0, so no extra runs are created after outcomes were
     observed."""
-    schedule = json.loads(Path(schedule_path).read_text(encoding="utf-8"))
+    schedule = load_json_object(schedule_path, "schedule")
     if schedule.get("config_digest") != config_digest(config):
         raise InfraFailure(
             "registered runtime configuration changed since this schedule "
@@ -1397,7 +1422,7 @@ def run_schedule(config, schedule_path, repos, output_dir, task_paths):
     manifest_path = out / "schedule-manifest.json"
     results = []
     if manifest_path.exists():
-        prior = json.loads(manifest_path.read_text(encoding="utf-8"))
+        prior = load_json_object(manifest_path, "schedule manifest")
         if prior.get("schedule_digest") != sched_digest:
             # The FULL schedule digest is the resume identity: seed +
             # config alone cannot distinguish schedules over different
@@ -1592,7 +1617,7 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
         # No post-hoc selection: the supplied documents must cover every
         # completed scheduled replicate exactly once — no subsets, no
         # duplicates, no extras.
-        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        manifest = load_json_object(manifest_path, "schedule manifest")
         if not manifest.get("complete"):
             raise InfraFailure(
                 "schedule manifest is incomplete — score only after the "
@@ -1608,7 +1633,7 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                 "manifest's schedule file not found — scoring cannot verify "
                 "the manifest against its schedule"
             )
-        sched_obj = json.loads(Path(sched_ref).read_text(encoding="utf-8"))
+        sched_obj = load_json_object(sched_ref, "schedule")
         if manifest.get("schedule_digest") != schedule_digest(sched_obj):
             raise InfraFailure(
                 "manifest does not match its schedule (schedule digest "
@@ -1715,8 +1740,8 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
         drift_notes = {}
         drift_report = None
         if drift_report_path is not None:
-            drift_report = json.loads(
-                Path(drift_report_path).read_text(encoding="utf-8"))
+            drift_report = load_json_object(drift_report_path,
+                                            "drift report")
         doc_evidence = {} if evidence_repos is not None else None
         for r in completed:
             task_text = Path(r["task"]).read_text(encoding="utf-8")

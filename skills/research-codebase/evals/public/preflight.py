@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 HERE = Path(__file__).parent
@@ -807,6 +808,25 @@ def run_preflight():
             "schedule bound to task contents (edited task refused)",
             tdrift_ok, notes)
 
+        garbage_sched = ws / "schedule-garbage.json"
+        garbage_sched.write_text("{not json", encoding="utf-8")
+        try:
+            runner.run_schedule(config, garbage_sched, repos_map,
+                                ws / "out-sched-garbage", [str(task_s)])
+            gsched_ok = False
+        except runner.InfraFailure as exc:
+            gsched_ok = "not valid JSON" in str(exc)
+        try:
+            runner.run_schedule(config, ws / "no-such-schedule.json",
+                                repos_map, ws / "out-sched-missing",
+                                [str(task_s)])
+            gsched_ok = False
+        except runner.InfraFailure as exc:
+            gsched_ok = gsched_ok and "cannot read" in str(exc)
+        ok &= check(
+            "malformed or missing schedule files classified as infra",
+            gsched_ok, notes)
+
         config, _ = build_config(ws, "normal")
         task_ret = write_task(ws, "retries", par_sha)
         config["max_infra_retries"] = -1
@@ -900,6 +920,22 @@ def run_preflight():
         record, _, _, _ = run_case(ws, "timeout", timeout=2)
         ok &= check("workflow failure classified (timeout, not replaced)",
                     record["status"] == "workflow_failure", notes)
+
+        record, _, echo_tc, _ = run_case(ws, "timeout-with-child", timeout=2)
+        child_pid = int((echo_tc / "child-pid.txt").read_text(
+            encoding="utf-8").strip())
+        child_dead = False
+        for _ in range(20):
+            try:
+                os.kill(child_pid, 0)
+            except ProcessLookupError:
+                child_dead = True
+                break
+            time.sleep(0.1)
+        ok &= check(
+            "timeout kills the whole session process tree (child reaped)",
+            record["status"] == "workflow_failure" and child_dead,
+            notes)
 
         record, _, _, _ = run_case(ws, "hang-silent", timeout=2)
         ok &= check(

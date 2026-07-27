@@ -19,6 +19,7 @@ Declared accounting per invocation:
 
 import argparse
 import json
+import subprocess
 import os
 import sys
 import time
@@ -216,6 +217,16 @@ def main():
         # Hangs AFTER emitting accounting: the killed session's partial
         # transcript carries parity evidence, so this counts as a workflow
         # failure with its cost preserved.
+        time.sleep(30)
+        sys.exit(0)
+
+    if args.mode == "timeout-with-child":
+        # Spawns a long-lived tool subprocess, echoes its pid, then hangs:
+        # the harness must kill the WHOLE process group on timeout, so the
+        # child must not survive the recorded timeout.
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"])
+        echo("child-pid.txt", str(child.pid))
         time.sleep(30)
         sys.exit(0)
 
