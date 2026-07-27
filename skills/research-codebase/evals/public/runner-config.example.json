@@ -8,21 +8,21 @@
       "sha256": "<recorded at installation build>",
       "model": "opus",
       "effort": "high",
-      "entrypoint": "/research_codebase"
+      "entrypoint": "/rpa:research_codebase"
     },
     "candidate": {
       "installation_dir": "/private-eval-workspace/installs/candidate-<sha>",
       "sha256": "<recorded at installation build>",
       "model": "opus",
       "effort": "high",
-      "entrypoint": "/research_codebase"
+      "entrypoint": "/rpa:research_codebase"
     },
     "ablation": {
       "installation_dir": "/private-eval-workspace/installs/ablation-<sha>",
       "sha256": "<recorded at installation build>",
       "model": "opus",
       "effort": "high",
-      "entrypoint": "/research_codebase",
+      "entrypoint": "/rpa:research_codebase",
       "forbid_subagents": true,
       "schedule_tasks": ["<designated-holdout-task-A>.md", "<designated-holdout-task-B>.md"],
       "_schedule_tasks_note": "The third arm runs on exactly its two pre-registered designated tasks; --make-schedule refuses a no-subagent arm without this explicit two-task scope.",
@@ -30,6 +30,7 @@
     }
   },
   "backend_cmd": ["claude", "--model", "opus", "--effort", "{effort}", "--plugin-dir", "{installation}"],
+  "_entrypoint_note": "Plugin commands are namespaced: the real CLI resolves /rpa:research_codebase, while a bare /research_codebase yields a client-side Unknown-command notice (synthetic event) and no workflow — established in the 2026-07-27 real-backend shakedown. The command file's own `model:` pin overrides the CLI --model for the invoked turn, so each arm's registered `model` must equal the full id that PIN resolves to (e.g. claude-opus-5), confirmed from stream events at the real-backend preflight.",
   "_backend_cmd_note": "{installation} expands per run to the verified installation copy mounted inside the run's clean profile; {effort} expands to the arm's registered effort so it is pinned on the command line, not inherited. Adjust flags to whatever the pinned Claude Code version uses for local plugin loading and effort control — validated during the real-backend preflight. The arm's `entrypoint` is prefixed to the task prompt so the session actually enters the evaluated workflow.",
   "judge_backend_cmd": ["claude", "--model", "opus", "--effort", "{effort}"],
   "_judge_backend_cmd_note": "Judge sessions must be mount-free: no {installation} placeholder, no plugin flags. The runner refuses to score if the resolved judge command still contains {installation}. {effort} expands to judge_effort.",

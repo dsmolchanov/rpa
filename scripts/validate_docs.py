@@ -472,12 +472,134 @@ def check_links(root, errors, exclude_fixtures=True):
             )
 
 
+def check_artifact_validator(root, errors):
+    """The research artifact contract is bound as an executable gate:
+    the validator must accept the positive fixture and reject the negative
+    one — a validator that passes everything is a silent no-op defect
+    (conventions SS4)."""
+    import subprocess as _sp
+    import sys as _sys
+    skill_root = root / "skills" / "research-codebase"
+    if not skill_root.is_dir():
+        # not_applicable: the research skill package is absent from this
+        # root (e.g. the self-test fixture repos) — there is no artifact
+        # contract to bind. In the real repo the package exists and the
+        # gate below is enforced.
+        return
+    validator = skill_root / "evals" / "public" / "validate_artifact.py"
+    fixtures = validator.parent / "fixtures"
+    good = fixtures / "artifact-valid.md"
+    bad = fixtures / "artifact-invalid.md"
+    if not (validator.is_file() and good.is_file() and bad.is_file()):
+        errors.append(
+            "artifact validator or its fixtures missing under "
+            "skills/research-codebase/evals/public/")
+        return
+    ok = _sp.run([_sys.executable, str(validator), str(good)],
+                 capture_output=True)
+    if ok.returncode != 0:
+        errors.append(
+            f"artifact validator rejects the VALID fixture: "
+            f"{ok.stdout.decode()[:200]}")
+    ko = _sp.run([_sys.executable, str(validator), str(bad)],
+                 capture_output=True)
+    if ko.returncode == 0:
+        errors.append(
+            "artifact validator accepted the INVALID fixture — the gate "
+            "is a silent no-op")
+    subtle = fixtures / "artifact-subtle-invalid.md"
+    if not subtle.is_file():
+        errors.append("artifact-subtle-invalid.md fixture missing")
+        return
+    ks = _sp.run([_sys.executable, str(validator), str(subtle)],
+                 capture_output=True)
+    if ks.returncode == 0:
+        errors.append(
+            "artifact validator accepted the SUBTLE-invalid fixture "
+            "(empty values / wrong status / prefix-only heading) — value "
+            "and exact-heading enforcement is broken")
+    fenced = fixtures / "artifact-fenced-invalid.md"
+    if not fenced.is_file():
+        errors.append("artifact-fenced-invalid.md fixture missing")
+        return
+    kf = _sp.run([_sys.executable, str(validator), str(fenced)],
+                 capture_output=True)
+    if kf.returncode == 0:
+        errors.append(
+            "artifact validator accepted headings quoted inside a code "
+            "fence — structural parsing is broken")
+    hollow = fixtures / "artifact-empty-sections-invalid.md"
+    if not hollow.is_file():
+        errors.append("artifact-empty-sections-invalid.md fixture missing")
+        return
+    kh = _sp.run([_sys.executable, str(validator), str(hollow)],
+                 capture_output=True)
+    if kh.returncode == 0:
+        errors.append(
+            "artifact validator accepted a document of empty sections — "
+            "content enforcement is broken")
+    unzoned = fixtures / "artifact-unzoned-invalid.md"
+    if not unzoned.is_file():
+        errors.append("artifact-unzoned-invalid.md fixture missing")
+        return
+    ku = _sp.run([_sys.executable, str(validator), str(unzoned)],
+                 capture_output=True)
+    if ku.returncode == 0:
+        errors.append(
+            "artifact validator accepted a timezone-less timestamp — the "
+            "contract requires date and time WITH timezone")
+    nometa = fixtures / "artifact-no-metablock-invalid.md"
+    if not nometa.is_file():
+        errors.append("artifact-no-metablock-invalid.md fixture missing")
+        return
+    kn = _sp.run([_sys.executable, str(validator), str(nometa)],
+                 capture_output=True)
+    if kn.returncode == 0:
+        errors.append(
+            "artifact validator accepted a document without the body "
+            "metadata block (**Date**/**Researcher**/...) — template "
+            "enforcement is broken")
+    bodymeta = fixtures / "artifact-bodymeta-invalid.md"
+    if not bodymeta.is_file():
+        errors.append("artifact-bodymeta-invalid.md fixture missing")
+        return
+    kb = _sp.run([_sys.executable, str(validator), str(bodymeta)],
+                 capture_output=True)
+    if kb.returncode == 0:
+        errors.append(
+            "artifact validator accepted body metadata disagreeing with "
+            "the frontmatter — duplicated-field cross-checks are broken")
+    scattered = fixtures / "artifact-scattered-metablock-invalid.md"
+    if not scattered.is_file():
+        errors.append("artifact-scattered-metablock-invalid.md fixture "
+                      "missing")
+        return
+    ks2 = _sp.run([_sys.executable, str(validator), str(scattered)],
+                  capture_output=True)
+    if ks2.returncode == 0:
+        errors.append(
+            "artifact validator accepted metadata lines scattered outside "
+            "the title-adjacent block — block placement is not enforced")
+    interleaved = fixtures / "artifact-interleaved-metablock-invalid.md"
+    if not interleaved.is_file():
+        errors.append("artifact-interleaved-metablock-invalid.md fixture "
+                      "missing")
+        return
+    ki = _sp.run([_sys.executable, str(validator), str(interleaved)],
+                 capture_output=True)
+    if ki.returncode == 0:
+        errors.append(
+            "artifact validator accepted prose interleaved inside the "
+            "metadata block — contiguity is not enforced")
+
+
 def validate(root, exclude_fixtures=True):
     errors = []
     check_commands(root, errors)
     check_agents(root, errors)
     check_skills(root, errors)
     check_json_manifests(root, errors)
+    check_artifact_validator(root, errors)
     check_links(root, errors, exclude_fixtures=exclude_fixtures)
     return errors
 

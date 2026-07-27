@@ -1,20 +1,30 @@
-# Agent contracts (pending extraction)
+# Agent contracts
 
 Platform-neutral contracts of the research agent fleet, per
 `docs/conventions.md` §3: one file per agent covering trigger and
-when-not-to-use, bounded input, read/write authority, output contract,
-evidence requirements, budget, and failure/escalation behavior.
+when-not-to-use, bounded input, tools, read/write authority, output
+contract, budget, and failure/escalation behavior.
 
-Planned files (extracted during the pilot's rewrite phase):
+| Contract | Claude adapter |
+|---|---|
+| `research-locator.md` | `agents/research-v2-locator.md` |
+| `research-analyzer.md` | `agents/research-v2-analyzer.md` |
+| `research-pattern-finder.md` | `agents/research-v2-pattern-finder.md` |
+| `research-thoughts-locator.md` | `agents/research-v2-thoughts-locator.md` |
+| `research-thoughts-analyzer.md` | `agents/research-v2-thoughts-analyzer.md` |
+| `research-web-researcher.md` | `agents/research-v2-web-researcher.md` |
 
-- `locator.md` — from `agents/codebase-locator.md`
-- `analyzer.md` — from `agents/codebase-analyzer.md`
-- `pattern-finder.md` — from `agents/codebase-pattern-finder.md`
-- `thoughts-locator.md` — from `agents/thoughts-locator.md`
-- `thoughts-analyzer.md` — from `agents/thoughts-analyzer.md`
-- `web-researcher.md` — from `agents/web-search-researcher.md`
+The adapters are thin (tools, model policy, contract pointer). The two
+locator adapters carry `Read` solely to load their own contract file —
+an authority bound stated in the contracts themselves (repository and
+document contents are never read; locating is not analyzing). The legacy
+shared fleet (`agents/codebase-*.md`, `agents/thoughts-*.md`,
+`agents/web-search-researcher.md`) is untouched during the pilot — it
+serves the frozen baseline and the other command families; any post-pilot
+merge of the v2 pattern into the shared fleet requires the shared-agent
+impact matrix and caller smoke tests named in the pilot plan.
 
-Until extraction, the authoritative definitions remain the adapter files in
-`agents/` (baseline) and `agents/research-v2-*.md` (pilot copies). After
-extraction, `research-v2-*` files become thin adapters: tools, model/effort,
-permissions, and a pointer to their contract here.
+Routing between agents (which to use when, Claude delegation calibration)
+lives in `../fleet-routing.md`; the fleet-ablation build of the pilot
+removes that file and the `research-v2-*` adapters, leaving these
+contracts as inert documentation.

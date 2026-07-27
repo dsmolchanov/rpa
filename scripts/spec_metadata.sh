@@ -4,13 +4,27 @@ set -euo pipefail
 # hacky script that is referenced by global research commands
 
 # Collect metadata
-DATETIME_TZ=$(date '+%Y-%m-%d %H:%M:%S %Z')
-FILENAME_TS=$(date '+%Y-%m-%d_%H-%M-%S')
+# %z (numeric ISO offset) rather than %Z: zone NAMES can themselves be
+# numeric ("+03", "+1245") on some hosts, which downstream consumers
+# cannot distinguish from malformed offsets.
+# ONE clock reading feeds both formatted values: separate `date` calls
+# can straddle midnight and split the metadata timestamp and the
+# filename date across different days.
+STAMP=$(date '+%Y-%m-%d %H:%M:%S %z|%Y-%m-%d_%H-%M-%S')
+DATETIME_TZ=${STAMP%%|*}
+FILENAME_TS=${STAMP##*|}
 
 if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
  REPO_ROOT=$(git rev-parse --show-toplevel)
  REPO_NAME=$(basename "$REPO_ROOT")
- GIT_BRANCH=$(git branch --show-current 2>/dev/null || git rev-parse --abbrev-ref HEAD)
+ # In detached HEAD `--show-current` SUCCEEDS while printing nothing
+ # (so a `||` fallback never fires); eval runs execute in detached
+ # worktrees, and the research artifact contract requires a non-empty
+ # branch value.
+ GIT_BRANCH=$(git branch --show-current 2>/dev/null)
+ if [ -z "$GIT_BRANCH" ]; then
+  GIT_BRANCH="detached@$(git rev-parse --short HEAD)"
+ fi
  GIT_COMMIT=$(git rev-parse HEAD)
 else
  REPO_ROOT=""

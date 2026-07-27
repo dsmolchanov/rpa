@@ -1,9 +1,11 @@
-# Deterministic scripts (pending)
+# Deterministic scripts
 
-Deterministic operations for the research workflow land here during the
-pilot's rewrite phase (conventions §2: scripts are executed, never loaded
-into context). Expected first entry: metadata gathering currently served by
-the plugin-level `scripts/spec_metadata.sh`.
+Deterministic operations for the research workflow (conventions §2:
+scripts are executed, never loaded into context).
 
-Until then this directory is a tracked scaffold so the package layout
-matches the pilot plan's candidate structure.
+Metadata gathering is served by the plugin-level
+`scripts/spec_metadata.sh` (single source, conventions §9) — installed as
+`~/.claude/scripts/spec_metadata.sh` by Quick Install and invoked by the
+kernel's verification profile. No duplicate copy lives here; a script
+lands in this directory only when it is specific to the research workflow
+and not shared with other command families.

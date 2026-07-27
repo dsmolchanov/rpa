@@ -41,14 +41,47 @@ last_updated_by: Mock Researcher
 
 # Research: Mock topic
 
-**Date**: 2026-07-26
+**Date**: 2026-07-26T00:00:00Z
 **Researcher**: Mock Researcher
 **Git Commit**: deadbeef
 **Branch**: mock-branch
 **Repository**: mock-repo
 
+## Research Question
+Mock research question.
+
 ## Summary
 Deterministic mock artifact for the preflight.
+
+## Detailed Findings
+
+### Mock area
+- Mock finding (`mock/file.py:1`).
+
+## Code References
+- `mock/file.py:1` - Mock reference.
+
+## Architecture Documentation
+None (mock).
+
+## Historical Context (from thoughts/)
+None (mock).
+
+## Related Research
+None (mock).
+
+## Open Questions
+None (mock).
+"""
+
+ARTIFACT_BAD = """---
+date: 2026-07-26T00:00:00Z
+topic: "Nonconforming mock artifact"
+---
+
+# Wrong Title
+
+Free-form text without the contract's frontmatter or sections.
 """
 
 
@@ -56,10 +89,32 @@ def emit(event):
     print(json.dumps(event), flush=True)
 
 
-def write_artifact():
+def write_artifact(commit=None):
+    """The artifact's `git_commit` records the ACTUAL worktree checkout
+    (like the real workflow's metadata script); the stale-artifact mode
+    passes a wrong commit to prove the harness's run-binding check."""
+    if commit is None:
+        try:
+            commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"], capture_output=True,
+                text=True).stdout.strip() or "0" * 40
+        except OSError:
+            commit = "0" * 40
+    # `repository` is DERIVED from the checkout like the prescribed
+    # metadata script does (toplevel basename) — hard-coding it would
+    # hide a uuid-named worktree from the run-binding gate.
+    try:
+        top = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"], capture_output=True,
+            text=True).stdout.strip()
+    except OSError:
+        top = ""
+    repo_name = Path(top).name if top else Path.cwd().name
     research = Path("thoughts/shared/research")
     research.mkdir(parents=True, exist_ok=True)
-    (research / "mock-research.md").write_text(ARTIFACT, encoding="utf-8")
+    (research / "2026-07-26-mock-research.md").write_text(
+        ARTIFACT.replace("deadbeef", commit).replace("mock-repo", repo_name),
+        encoding="utf-8")
 
 
 def echo(name, value):
@@ -93,6 +148,15 @@ def emit_real_stream(model, session_id):
     No per-node effort field — exactly like the real CLI."""
     emit({"type": "system", "subtype": "init", "session_id": session_id,
           "model": model})
+    # Client-generated notice exactly like the real CLI's synthetic
+    # assistant events: must be EXCLUDED from parity and accounting (the
+    # declared totals below do not include it).
+    emit({"type": "assistant", "session_id": session_id,
+          "parent_tool_use_id": None,
+          "message": {"model": "<synthetic>",
+                      "usage": {},
+                      "content": [{"type": "text",
+                                   "text": "client notice: plugin loaded"}]}})
     # Input usage is split across the real CLI's three categories (fresh +
     # cache creation + cache read); the declared totals stay 100/40, so the
     # preflight only passes if the parser sums ALL input categories.
@@ -237,6 +301,26 @@ def main():
         # drift (abort-wrong-model).
         print("workflow aborted by evaluated agent", file=sys.stderr)
         sys.exit(21)
+
+    if args.mode == "stale-artifact":
+        # Metadata claims a checkout OTHER than the run's pinned
+        # target-sha: the harness must reject the run-binding mismatch as
+        # a counted workflow failure.
+        emit_nodes(model, args.effort, args.effort)
+        write_artifact(commit="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+        emit({"type": "result", "session_id": session_id,
+              "result": "MOCK-VERDICT: stale metadata"})
+        return
+
+    if args.mode == "bad-artifact":
+        # Fresh document that VIOLATES the artifact contract: the harness
+        # must reject it as a counted workflow failure, never score it.
+        research = Path("thoughts/shared/research")
+        research.mkdir(parents=True, exist_ok=True)
+        (research / "mock-bad.md").write_text(ARTIFACT_BAD, encoding="utf-8")
+        emit({"type": "result", "session_id": session_id,
+              "result": "MOCK-VERDICT: wrote nonconforming document"})
+        return
 
     if args.mode == "silent-stop":
         # First call: greet-and-wait (no artifact). Only a resumed session

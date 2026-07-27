@@ -97,7 +97,14 @@ artifact applies the identical one-line `@AGENTS.md` import to its
 `CLAUDE.md` as a recorded build step, so both arms' installation artifacts
 — whose hashes the eval-runner verifies before every run (prerequisite 5)
 — load repository instructions identically, and instruction loading cannot
-be an arm difference.
+be an arm difference. The same overlay policy covers **metadata tooling**
+(recorded 2026-07-27, second candidate review): the baseline build also
+receives the current `scripts/spec_metadata.sh` — whose detached-HEAD
+branch fallback and numeric `%z` offset the artifact-compatibility gate
+depends on — because metadata collection is shared infrastructure, not
+evaluated workflow content; without it the frozen script's empty branch
+line in detached eval worktrees would turn conforming baseline runs into
+counted failures and corrupt the comparison.
 
 ## Baseline
 
@@ -391,6 +398,17 @@ sanitized examples; raw run artifacts stay in a private location.
    to review). The **real-backend preflight** on the throwaway task
    remains required once before baseline runs and must demonstrate the
    effort pin propagates to the whole session tree.
+
+**Candidate status (2026-07-27):** the behavioral rewrite landed on the
+owner's instruction («продолжай по очереди все»): kernel `SKILL.md`
+completed per §2 anatomy, six platform-neutral agent contracts extracted
+to `references/agent-contracts/`, `research-v2-*` reduced to thin
+adapters, `commands/research_codebase.md` reduced to the thin
+compatibility wrapper (opus parity pin retained), fleet routing isolated
+in `references/fleet-routing.md` for the ablation build, Quick Install
+copies `skills/`, plugin version bumped. **Not yet frozen:** dev-set
+tuning runs (Sequence step 3) and the candidate freeze (step 4) remain
+ahead; no holdout material has been seen by this implementation context.
 
 **Dev set status (Sequence step 2):** authored. Public tasks dev-3/dev-4
 (target: this repo) live at `skills/research-codebase/evals/public/dev-set/`;

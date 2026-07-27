@@ -1186,6 +1186,316 @@ def run_preflight():
         # can neither be counted (no parity evidence) nor auto-re-executed
         # (counted failures are never replaced): it must BLOCK — one
         # attempt, blocking flag set, classified infra.
+        record, _, _, _ = run_case(ws, "bad-artifact")
+        ok &= check(
+            "nonconforming artifact is a counted workflow failure (gate)",
+            record["status"] == "workflow_failure"
+            and "artifact contract" in record.get("failure", "")
+            and record.get("artifact_defects"),
+            notes)
+
+        fn_doc = ws / "notes.md"
+        fn_doc.write_text(
+            (HERE / "fixtures" / "artifact-valid.md").read_text(
+                encoding="utf-8"), encoding="utf-8")
+        fn_bad = runner.artifact_validator.validate(
+            fn_doc, enforce_filename=True)
+        fn_good_doc = ws / "2026-07-27-fixture-copy.md"
+        fn_good_doc.write_text(fn_doc.read_text(encoding="utf-8"),
+                               encoding="utf-8")
+        fn_good = runner.artifact_validator.validate(
+            fn_good_doc, enforce_filename=True)
+        anon_marker_doc = ws / "2026-07-26-marker-raw.md"
+        anon_marker_doc.write_text(
+            fn_doc.read_text(encoding="utf-8").replace(
+                "git_commit: '0000000000000000000000000000000000000000'",
+                "git_commit: '[anonymized:evil]'"),
+            encoding="utf-8")
+        marker_strict = runner.artifact_validator.validate(
+            anon_marker_doc, enforce_filename=True)
+        marker_lenient = runner.artifact_validator.validate(
+            anon_marker_doc, allow_anonymized=True)
+        free_marker_doc = ws / "2026-07-26-marker-free.md"
+        free_marker_doc.write_text(
+            fn_doc.read_text(encoding="utf-8").replace(
+                "researcher: Fixture Researcher",
+                "researcher: '[anonymized:evil]'", 1),
+            encoding="utf-8")
+        free_strict = runner.artifact_validator.validate(
+            free_marker_doc, enforce_filename=True)
+        script_date_doc = ws / "2026-07-26-script-date.md"
+        script_date_doc.write_text(
+            fn_doc.read_text(encoding="utf-8").replace(
+                "date: 2026-07-27T00:00:00Z",
+                "date: '2026-07-27 00:00:00 UTC'", 1),
+            encoding="utf-8")
+        script_date_ok = not runner.artifact_validator.validate(
+            script_date_doc)
+        fab_doc = ws / "2026-07-26-fab-sha.md"
+        fab_doc.write_text(
+            fn_doc.read_text(encoding="utf-8").replace(
+                "git_commit: '0000000000000000000000000000000000000000'",
+                "git_commit: '" + "0" * 12 + "f" * 28 + "'", 1),
+            encoding="utf-8")
+        fab_bad = runner.artifact_validator.validate(
+            fab_doc, expected_git_commit="0" * 40)
+        bodymeta_doc = ws / "2026-07-26-bodymeta.md"
+        bodymeta_doc.write_text(
+            fn_doc.read_text(encoding="utf-8").replace(
+                "**Git Commit**: 0000000000000000000000000000000000000000",
+                "**Git Commit**: deadbeef", 1),
+            encoding="utf-8")
+        bodymeta_bad = runner.artifact_validator.validate(
+            bodymeta_doc, expected_git_commit="0" * 40)
+        impossible_doc = ws / "2026-07-26-impossible.md"
+        impossible_doc.write_text(
+            fn_doc.read_text(encoding="utf-8").replace(
+                "date: 2026-07-27T00:00:00Z",
+                "date: '2026-99-99T29:61:00Z'", 1).replace(
+                "last_updated: 2026-07-27",
+                "last_updated: '2026-13-40'", 1),
+            encoding="utf-8")
+        impossible_bad = runner.artifact_validator.validate(impossible_doc)
+        offset_doc = ws / "2026-07-26-offset-date.md"
+        offset_doc.write_text(
+            fn_doc.read_text(encoding="utf-8").replace(
+                "date: 2026-07-27T00:00:00Z",
+                "date: '2026-07-27 03:00:00 +0300'", 1),
+            encoding="utf-8")
+        offset_ok = not runner.artifact_validator.validate(offset_doc)
+        timeshift_doc = ws / "2026-07-26-timeshift.md"
+        timeshift_doc.write_text(
+            fn_doc.read_text(encoding="utf-8").replace(
+                "**Date**: 2026-07-27T00:00:00Z",
+                "**Date**: 2026-07-27T05:00:00Z", 1),
+            encoding="utf-8")
+        timeshift_bad = runner.artifact_validator.validate(timeshift_doc)
+        prose_doc = ws / "2026-07-26-prose-block.md"
+        prose_doc.write_text(
+            fn_doc.read_text(encoding="utf-8").replace(
+                "**Researcher**: Fixture Researcher",
+                "Interleaved prose.\n**Researcher**: Fixture Researcher",
+                1),
+            encoding="utf-8")
+        prose_bad = runner.artifact_validator.validate(prose_doc)
+        hashhead_doc = ws / "2026-07-26-hashhead.md"
+        hashhead_doc.write_text(
+            fn_doc.read_text(encoding="utf-8").replace(
+                "## Summary", "## Summary#", 1),
+            encoding="utf-8")
+        hashhead_bad = runner.artifact_validator.validate(hashhead_doc)
+        import builtins as _bi
+        import importlib.util as _ilu
+        _real_import = _bi.__import__
+
+        def _no_yaml(name, *a, **k):
+            if name == "yaml":
+                raise ImportError("blocked for fallback probe")
+            return _real_import(name, *a, **k)
+
+        _bi.__import__ = _no_yaml
+        try:
+            _spec = _ilu.spec_from_file_location(
+                "va_noyaml", HERE / "validate_artifact.py")
+            va_noyaml = _ilu.module_from_spec(_spec)
+            _spec.loader.exec_module(va_noyaml)
+        finally:
+            _bi.__import__ = _real_import
+        unq_doc = ws / "2026-07-26-unquoted.md"
+        unq_doc.write_text(
+            fn_doc.read_text(encoding="utf-8").replace(
+                'topic: "Fixture topic (synthetic)"',
+                'topic: "unterminated', 1),
+            encoding="utf-8")
+        unq_bad = va_noyaml.validate(unq_doc)
+        fallback_valid_ok = not va_noyaml.validate(fn_doc)
+        boolid_doc = ws / "2026-07-26-boolid.md"
+        boolid_doc.write_text(
+            fn_doc.read_text(encoding="utf-8").replace(
+                "researcher: Fixture Researcher",
+                "researcher: false", 1).replace(
+                "**Researcher**: Fixture Researcher",
+                "**Researcher**: false", 1),
+            encoding="utf-8")
+        boolid_bad = runner.artifact_validator.validate(boolid_doc)
+        boolid_fallback_bad = va_noyaml.validate(boolid_doc)
+        flowmap_doc = ws / "2026-07-26-flowmap.md"
+        flowmap_doc.write_text(
+            fn_doc.read_text(encoding="utf-8").replace(
+                "tags: [research, fixture]",
+                "tags: [foo: bar]", 1),
+            encoding="utf-8")
+        flowmap_bad = runner.artifact_validator.validate(flowmap_doc)
+        flowmap_fallback_bad = va_noyaml.validate(flowmap_doc)
+        flowbool_doc = ws / "2026-07-26-flowbool.md"
+        flowbool_doc.write_text(
+            fn_doc.read_text(encoding="utf-8").replace(
+                "tags: [research, fixture]",
+                "tags: [true, fixture]", 1),
+            encoding="utf-8")
+        flowbool_bad = runner.artifact_validator.validate(flowbool_doc)
+        flowbool_fallback_bad = va_noyaml.validate(flowbool_doc)
+        oldname_doc = ws / "2025-01-01-old-topic.md"
+        oldname_doc.write_text(fn_doc.read_text(encoding="utf-8"),
+                               encoding="utf-8")
+        oldname_bad = runner.artifact_validator.validate(
+            oldname_doc, enforce_filename=True)
+        quotejunk_doc = ws / "2026-07-27-quotejunk.md"
+        quotejunk_doc.write_text(
+            fn_doc.read_text(encoding="utf-8").replace(
+                "researcher: Fixture Researcher",
+                'researcher: "Fixture" Researcher"', 1),
+            encoding="utf-8")
+        quotejunk_bad = runner.artifact_validator.validate(quotejunk_doc)
+        quotejunk_fallback_bad = va_noyaml.validate(quotejunk_doc)
+        fix_text = fn_doc.read_text(encoding="utf-8")
+        fm_close = fix_text.index("---\n", fix_text.index("---\n") + 4)
+        commented_doc = ws / "2026-07-27-commented.md"
+        commented_doc.write_text(
+            fix_text[:fm_close + 4] + "<!--\n"
+            + fix_text[fm_close + 4:] + "\n-->\n",
+            encoding="utf-8")
+        commented_bad = runner.artifact_validator.validate(commented_doc)
+        htmlfill_doc = ws / "2026-07-27-htmlfill.md"
+        htmlfill_doc.write_text(
+            fix_text.replace(
+                "Minimal valid document proving the validator accepts "
+                "the contract shape.",
+                "<!-- filler -->", 1),
+            encoding="utf-8")
+        htmlfill_bad = runner.artifact_validator.validate(htmlfill_doc)
+        try:
+            runner.canonical_repo_name("..")
+            dotdot_ok = False
+        except runner.InfraFailure:
+            dotdot_ok = True
+        try:
+            runner.canonical_repo_name("owner/..")
+            dotpath_ok = False
+        except runner.InfraFailure:
+            dotpath_ok = True
+        baddate_doc = ws / "2026-99-99-baddate.md"
+        baddate_doc.write_text(fn_doc.read_text(encoding="utf-8"),
+                               encoding="utf-8")
+        baddate_bad = runner.artifact_validator.validate(
+            baddate_doc, enforce_filename=True)
+        ok &= check(
+            "filename contract enforced; raw anonymization markers rejected",
+            any("basename" in e for e in fn_bad)
+            and not fn_good
+            and any("git_commit" in e for e in marker_strict)
+            and not marker_lenient
+            and any("researcher" in e and "anonymization marker" in e
+                    for e in free_strict)
+            and script_date_ok
+            and any("target-sha" in e for e in fab_bad)
+            and any("**Git Commit**" in e for e in bodymeta_bad)
+            and any("date" in e for e in impossible_bad)
+            and any("last_updated" in e for e in impossible_bad)
+            and offset_ok
+            and any("different instants" in e for e in timeshift_bad)
+            and any("only the five metadata lines" in e
+                    for e in prose_bad)
+            and any("## Summary" in e for e in hashhead_bad)
+            and any("unmatched quote" in e for e in unq_bad)
+            and fallback_valid_ok
+            and any("researcher" in e and "must be a string" in e
+                    for e in boolid_bad)
+            and any("researcher" in e and "must be a string" in e
+                    for e in boolid_fallback_bad)
+            and any("tags" in e for e in flowmap_bad)
+            and any("tags" in e for e in flowmap_fallback_bad)
+            and any("tags" in e for e in flowbool_bad)
+            and any("tags" in e for e in flowbool_fallback_bad)
+            and any("does not match the metadata timestamp" in e
+                    for e in oldname_bad)
+            and quotejunk_bad
+            and any("internal quote" in e
+                    for e in quotejunk_fallback_bad)
+            and any("missing required heading" in e
+                    for e in commented_bad)
+            and any("no substantive content" in e
+                    for e in htmlfill_bad)
+            and dotdot_ok and dotpath_ok
+            and any("calendar" in e for e in baddate_bad),
+            notes)
+
+        meta_script = (HERE.parents[3] / "scripts"
+                       / "spec_metadata.sh")
+        det_repo, det_sha = make_git_repo(ws, "detached-meta")
+        det_wt = runner.make_worktree(det_repo, det_sha, ws / "detmeta",
+                                      name="mock-repo")
+        meta_out = subprocess.run(["bash", str(meta_script)],
+                                  cwd=det_wt, capture_output=True,
+                                  text=True)
+        runner.remove_worktree(det_repo, det_wt)
+        branch_lines = [l for l in meta_out.stdout.splitlines()
+                        if l.startswith("Current Branch Name:")]
+        dt_lines = [l for l in meta_out.stdout.splitlines()
+                    if l.startswith("Current Date/Time (TZ):")]
+        fn_lines = [l for l in meta_out.stdout.splitlines()
+                    if l.startswith("Timestamp For Filename:")]
+        # Both formatted values must come from ONE clock reading — two
+        # `date` calls can straddle midnight and split the metadata
+        # timestamp and filename date across days.
+        single_clock = (
+            meta_script.read_text(encoding="utf-8").count("$(date") == 1
+            and bool(dt_lines) and bool(fn_lines)
+            and dt_lines[0].split(": ", 1)[1][:19]
+            .replace(" ", "_").replace(":", "-")
+            == fn_lines[0].split(": ", 1)[1])
+        ok &= check(
+            "metadata script supplies branch identity in detached worktrees",
+            meta_out.returncode == 0 and bool(branch_lines)
+            and "detached@" in branch_lines[0]
+            and single_clock,
+            notes)
+
+        # The wrapper's parse-time @-imports must cover BOTH install
+        # layouts: plugin (${CLAUDE_PLUGIN_ROOT} set) and Quick Install
+        # (files copied under ~/.claude, variable unset) — with only the
+        # plugin form, non-plugin invocations lose the embedded kernel
+        # and artifact contract entirely.
+        wrapper_text = (HERE.parents[3] / "commands"
+                        / "research_codebase.md").read_text(encoding="utf-8")
+        ok &= check(
+            "command wrapper embeds kernel + contract in both install layouts",
+            all(ref in wrapper_text for ref in (
+                "@${CLAUDE_PLUGIN_ROOT}/skills/research-codebase/SKILL.md",
+                "@~/.claude/skills/research-codebase/SKILL.md",
+                "@${CLAUDE_PLUGIN_ROOT}/skills/research-codebase/references"
+                "/artifact-contract.md",
+                "@~/.claude/skills/research-codebase/references"
+                "/artifact-contract.md")),
+            notes)
+
+        # Each v2 adapter must IMPORT its contract at parse time
+        # (@${CLAUDE_PLUGIN_ROOT}/...): the adapters have no Bash tool,
+        # so a plugin-root path left as prose is unreadable to them in a
+        # plugin-only install and all six would dead-end at the honest
+        # failure branch instead of researching.
+        adapter_dir = HERE.parents[3] / "agents"
+        adapter_files = sorted(adapter_dir.glob("research-v2-*.md"))
+        adapters_import = bool(adapter_files) and len(adapter_files) == 6
+        for adapter in adapter_files:
+            a_text = adapter.read_text(encoding="utf-8")
+            contract = adapter.name.replace(
+                "research-v2-", "research-", 1)
+            adapters_import &= (
+                "@${CLAUDE_PLUGIN_ROOT}/skills/research-codebase/references"
+                f"/agent-contracts/{contract}" in a_text)
+        ok &= check(
+            "v2 adapters import their agent contracts at parse time",
+            adapters_import,
+            notes)
+
+        record, _, _, _ = run_case(ws, "stale-artifact")
+        ok &= check(
+            "artifact metadata bound to the run's pinned checkout",
+            record["status"] == "workflow_failure"
+            and "target-sha" in record.get("failure", ""),
+            notes)
+
         record, _, _, _ = run_case(ws, "hang-silent", timeout=2,
                                    use_retries=True)
         ok &= check(

@@ -108,6 +108,7 @@ Stdlib only.
 """
 
 import argparse
+import importlib.util
 import hashlib
 import json
 import random
@@ -121,6 +122,11 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
+
+_ARTIFACT_VALIDATOR_SPEC = importlib.util.spec_from_file_location(
+    "artifact_validator", Path(__file__).with_name("validate_artifact.py"))
+artifact_validator = importlib.util.module_from_spec(_ARTIFACT_VALIDATOR_SPEC)
+_ARTIFACT_VALIDATOR_SPEC.loader.exec_module(artifact_validator)
 
 MAX_CONTINUATIONS = 3
 DEFAULT_MAX_INFRA_RETRIES = 2
@@ -641,8 +647,19 @@ def canonical_repo_name(name):
     (rpa); coverage validation, routing, and evidence mapping share ONE
     canonical form — the final path component, lowercased — so a
     valid-looking schedule can never stall on a spelling mismatch between
-    the task files and the operator's NAME=PATH mapping."""
-    return name.strip().rstrip("/").rsplit("/", 1)[-1].lower()
+    the task files and the operator's NAME=PATH mapping. The canonical
+    name is also used as a worktree directory name, so it must be a
+    single ORDINARY path component: `..`, `.`, or anything with
+    separators/odd characters is refused before it can be joined into a
+    filesystem path."""
+    canon = str(name).strip().rstrip("/").rsplit("/", 1)[-1].lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", canon)             or canon in (".", ".."):
+        raise InfraFailure(
+            f"target-repo name `{name}` does not canonicalize to a single "
+            f"ordinary path component — refusing to use it for routing or "
+            f"worktree naming"
+        )
+    return canon
 
 
 def resolve_repo_mapping(name, repos, what):
@@ -727,12 +744,19 @@ def _git(repo, *args):
     return proc.stdout.strip()
 
 
-def make_worktree(repo_dir, sha, workspace):
+def make_worktree(repo_dir, sha, workspace, name=None):
     """Disposable detached worktree at the pinned SHA, verified. The
     destination is resolved to an absolute path BEFORE reaching git:
     `git -C <repo>` resolves relative destinations under the repo while the
     caller would resolve them under its own cwd — two different places."""
-    dest = (Path(workspace) / "worktrees" / uuid.uuid4().hex[:12]).resolve()
+    slot = Path(workspace) / "worktrees" / uuid.uuid4().hex[:12]
+    # When the caller names the checkout, the worktree directory carries
+    # the CANONICAL target-repo name: the prescribed metadata script
+    # derives `repository` from the toplevel basename, so a uuid-named
+    # checkout would make every conforming workflow record a uuid and
+    # fail the run binding. The uuid stays in the parent for disposal
+    # uniqueness; the name is task identity, identical across arms.
+    dest = (slot / name).resolve() if name else slot.resolve()
     dest.parent.mkdir(parents=True, exist_ok=True)
     _git(repo_dir, "worktree", "add", "--detach", str(dest), sha)
     head = _git(dest, "rev-parse", "HEAD")
@@ -750,6 +774,12 @@ def remove_worktree(repo_dir, worktree):
         _git(repo_dir, "worktree", "remove", "--force", str(worktree))
     except InfraFailure:
         shutil.rmtree(worktree, ignore_errors=True)
+    parent = Path(worktree).parent
+    try:
+        if parent.name != "worktrees" and not any(parent.iterdir()):
+            parent.rmdir()
+    except OSError:
+        pass
 
 
 def spawn_session(cmd, prompt, cwd, env, timeout, resume=None,
@@ -823,6 +853,15 @@ def _node_from_event(event):
         }
     if event.get("type") == "assistant" and isinstance(event.get("message"), dict):
         message = event["message"]
+        # The real CLI also emits CLIENT-GENERATED assistant notices (e.g.
+        # "Unknown command: ...") marked `model: "<synthetic>"`. They are
+        # not API turns: no runtime ran and no usage was consumed, so they
+        # are excluded from parity validation and accounting. A session
+        # consisting only of synthetic notices therefore yields no nodes —
+        # exactly the no-parity-evidence case, which blocks instead of
+        # counting (real-backend shakedown finding, 2026-07-27).
+        if message.get("model") == "<synthetic>":
+            return None
         usage = message.get("usage") or {}
         content = message.get("content") or []
         tool_calls = sum(
@@ -1179,7 +1218,9 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
             prompt = f"{entrypoint} {prompt}".strip()
             record["entrypoint"] = entrypoint
         sha = task_target_sha(task_text, task_path)
-        worktree = make_worktree(repo_dir, sha, output_dir)
+        worktree = make_worktree(
+            repo_dir, sha, output_dir,
+            name=canonical_repo_name(task_target_repo(task_text, task_path)))
         record["target_sha"] = sha
         record["worktree"] = str(worktree)
         # Neutral profile label: an arm-named CLAUDE_CONFIG_DIR would
@@ -1313,6 +1354,26 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
             )
         raw = artifact.read_text(encoding="utf-8")
         (out / f"run-{run_id}-raw.md").write_text(raw, encoding="utf-8")
+        # The artifact contract is enforced by the harness itself, not by
+        # trusting the session to have followed its instructions: a fresh
+        # document that violates the contract is a COUNTED workflow
+        # failure — the workflow produced the wrong artifact — never a
+        # completed, scoreable replicate. The raw copy above is preserved
+        # as evidence.
+        contract_defects = artifact_validator.validate(
+            artifact,
+            expected_git_commit=_git(worktree, "rev-parse", "HEAD"),
+            expected_repository=task_target_repo(task_text, task_path),
+            enforce_filename=True,
+        )
+        if contract_defects:
+            record["artifact_defects"] = contract_defects
+            shown = "; ".join(contract_defects[:5])
+            more = " …" if len(contract_defects) > 5 else ""
+            raise WorkflowFailure(
+                f"artifact violates the research artifact contract: "
+                f"{shown}{more}"
+            )
         anon_text = anonymize(raw, run_id)
         (out / f"run-{run_id}-anon.md").write_text(anon_text, encoding="utf-8")
         # The digest recorded here is what scoring later verifies: a scored
