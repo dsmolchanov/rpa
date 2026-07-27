@@ -806,6 +806,8 @@ def account(nodes):
     # tool_use) evidence — a child that died before emitting anything
     # still counts as a spawn.
     launches = sum(int(n.get("subagent_launches", 0) or 0) for n in nodes)
+    totals["subagent_children"] = len(distinct) + anonymous
+    totals["subagent_launches"] = launches
     totals["subagents_spawned"] = max(len(distinct) + anonymous, launches)
     return totals
 
@@ -1010,6 +1012,14 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
     effort_modes = set()
     started = None
     try:
+        # Immutable bindings recorded in the run record itself: orphan
+        # adoption after a crash trusts a record only when these match the
+        # current schedule's registered digests — a record produced under
+        # an earlier task revision or runtime configuration is stale, not
+        # adoptable.
+        record["config_digest"] = config_digest(config)
+        record["task_sha256"] = hashlib.sha256(
+            read_task_bytes(task_path)).hexdigest()
         validate_arm_parity(config)
         record["standard_topology"] = validate_arm_topology(config)
         if record["standard_topology"] and not scheduled \
@@ -1143,6 +1153,21 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
                 f"arm `{arm_name}` spawned "
                 f"{record['accounting']['subagents_spawned']} subagent(s) — "
                 f"forbidden by the pre-registered no-subagent policy"
+            )
+        if (record["accounting"]["subagent_launches"]
+                > record["accounting"]["subagent_children"]):
+            # Every node in the agent tree owes model/effort evidence. A
+            # Task launch whose child emitted nothing leaves a subagent
+            # with NO model-bearing nodes: the tree cannot be validated
+            # for runtime parity, so the run is invalid — never accepted
+            # as completed on main-context evidence alone.
+            raise InfraFailure(
+                f"subagent launch evidence exceeds model-bearing child "
+                f"identities (launches="
+                f"{record['accounting']['subagent_launches']}, children="
+                f"{record['accounting']['subagent_children']}) — a spawned "
+                f"subagent's effective model cannot be validated; run "
+                f"invalidated"
             )
         if artifact is None:
             raise WorkflowFailure(
@@ -1573,7 +1598,16 @@ def run_schedule(config, schedule_path, repos, output_dir, task_paths):
                     and orphan.get("arm") == entry["arm"]
                     and orphan.get("task") == entry["task"]
                     and orphan.get("status") in ("completed",
-                                                 "workflow_failure")):
+                                                 "workflow_failure")
+                    # Stale records are not orphans: adoption requires the
+                    # record's own immutable bindings to match the current
+                    # schedule — same task contents (digest covers the
+                    # pinned target-sha in frontmatter) and same registered
+                    # runtime configuration.
+                    and orphan.get("task_sha256")
+                    == schedule["task_digests"][entry["task"]]
+                    and orphan.get("config_digest")
+                    == schedule["config_digest"]):
                 orphans.append(orphan)
         if len(orphans) > 1:
             raise InfraFailure(
@@ -2145,6 +2179,12 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             "results": results,
             "complete": complete,
         }, indent=2) + "\n")
+
+    # The scoring id must survive a crash BEFORE the first judge record is
+    # written: persist the (possibly empty) batch state up front, so a
+    # restart resumes under the same id and can discover orphaned judge
+    # records instead of re-judging a document under a fresh id.
+    write_scoring_manifest(False)
 
     for i, doc_index in enumerate(order):
         if i < len(results):

@@ -407,6 +407,18 @@ def run_preflight():
             and record.get("accounting", {}).get("subagents_spawned") == 1,
             notes)
 
+        # On a NORMAL arm the same evidence gap is a parity fault: a Task
+        # launch whose child emitted no model-bearing node leaves part of
+        # the agent tree unvalidated — never accepted as completed.
+        config, _ = build_config(ws, "launch-no-child")
+        record = runner.run_task(config, "mock", task_lnc, repo,
+                                 ws / "out-lnc-parity")
+        ok &= check(
+            "launch without model-bearing child invalidates the run",
+            record["status"] == "infra_failure"
+            and "cannot be validated" in record.get("failure", ""),
+            notes)
+
         config, _ = build_config(ws, "normal")
         try:
             runner.run_task(config, "no-such-arm", task, repo,
@@ -802,6 +814,27 @@ def run_preflight():
         ok &= check(
             "ambiguous orphan run records refused (cannot attribute runs)",
             ambig_ok and manifest3["complete"] is True,
+            notes)
+        # A record produced under a different task revision or runtime
+        # configuration is STALE, not an orphan: adoption requires the
+        # record's own immutable bindings to match the current schedule.
+        m4 = json.loads(manifest_path.read_text(encoding="utf-8"))
+        m4["results"] = m4["results"][:1]
+        m4["complete"] = False
+        manifest_path.write_text(json.dumps(m4), encoding="utf-8")
+        stale_path = ws / "out-sched" / f"run-{dropped_run}.json"
+        stale_rec = json.loads(stale_path.read_text(encoding="utf-8"))
+        stale_rec["task_sha256"] = "0" * 64
+        stale_path.write_text(json.dumps(stale_rec), encoding="utf-8")
+        runs_b4 = len(list((ws / "out-sched").glob("run-*.json")))
+        manifest4 = runner.run_schedule(config, sched_path, repos_map,
+                                        ws / "out-sched", [str(task_s)])
+        runs_aft = len(list((ws / "out-sched").glob("run-*.json")))
+        ok &= check(
+            "stale orphan records not adopted (task/config digest bound)",
+            manifest4["complete"] is True
+            and manifest4["results"][1]["run_id"] != dropped_run
+            and runs_aft == runs_b4 + 1,
             notes)
 
         bad = dict(sched)
@@ -1331,6 +1364,40 @@ def run_preflight():
         ok &= check(
             "malformed scoring batch manifest classified as infra",
             malformed_ok, notes)
+        # The scoring id must survive a crash BEFORE the first judge record
+        # lands: the batch state is persisted up front, so a restart resumes
+        # under the same id instead of re-judging under a fresh one.
+        flaky_out = ws / "judge-batch-preinit"
+        flaky_cfg = json.loads(json.dumps(config))
+        flaky_cfg["judge_backend_cmd"] = [
+            "flaky-infra" if p == "no-artifact" else p
+            for p in flaky_cfg["judge_backend_cmd"]]
+        state_file = ws / "judge-flaky-state.txt"
+        os.environ["MOCK_STATE_FILE"] = str(state_file)
+        try:
+            try:
+                runner.score(flaky_cfg, docs, judge, flaky_out,
+                             scoring_seed=5, allow_unscheduled=True)
+                pre_ok = False
+            except runner.InfraFailure:
+                pre_ok = (flaky_out
+                          / "scoring-scorer-manifest.json").exists()
+            sid_crash = json.loads(
+                (flaky_out / "scoring-scorer-manifest.json")
+                .read_text(encoding="utf-8"))["scoring_id"]
+            flaky_res = runner.score(flaky_cfg, docs, judge, flaky_out,
+                                     scoring_seed=5, allow_unscheduled=True)
+        finally:
+            os.environ.pop("MOCK_STATE_FILE", None)
+        sm_flaky = json.loads(
+            (flaky_out / "scoring-scorer-manifest.json")
+            .read_text(encoding="utf-8"))
+        ok &= check(
+            "scoring id persisted before the first judge (crash-safe resume)",
+            pre_ok and len(flaky_res) == 2
+            and sm_flaky["scoring_id"] == sid_crash
+            and sm_flaky["complete"] is True,
+            notes)
         atomic_target = ws / "atomic-test.json"
         atomic_target.write_text("old", encoding="utf-8")
         runner.atomic_write_text(atomic_target, "new-content")
