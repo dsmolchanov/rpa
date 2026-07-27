@@ -685,6 +685,26 @@ def run_preflight():
         ok &= check(
             "config read errors classified as infrastructure failures",
             cfg_ok, notes)
+        empty_cfg = ws / "empty-config.json"
+        empty_cfg.write_text("{}", encoding="utf-8")
+        try:
+            runner.load_config(empty_cfg)
+            shape_ok = False
+        except runner.InfraFailure as exc:
+            shape_ok = "arms" in str(exc)
+        noarm_cfg = ws / "noarm-config.json"
+        noarm_cfg.write_text(json.dumps(
+            {"arms": {"baseline": {"installation_dir": "/x",
+                                   "sha256": "y"}},
+             "backend_cmd": ["x"]}), encoding="utf-8")
+        try:
+            runner.load_config(noarm_cfg)
+            shape_ok = False
+        except runner.InfraFailure as exc:
+            shape_ok = shape_ok and "missing required" in str(exc)
+        ok &= check(
+            "structurally invalid config refused at load (no deep KeyError)",
+            shape_ok, notes)
 
         config, _ = build_config(ws, "normal")
         repo_s, sha_s = make_git_repo(ws, "sched")

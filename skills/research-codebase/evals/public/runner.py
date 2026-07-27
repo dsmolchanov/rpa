@@ -278,15 +278,47 @@ def atomic_write_text(path, text):
 
 
 def load_config(path):
-    """User-input faults (missing/unreadable/malformed config) are
-    classified infrastructure failures, never raw tracebacks."""
+    """User-input faults (missing/unreadable/malformed config, wrong shape)
+    are classified infrastructure failures, never raw tracebacks: a
+    syntactically valid but structurally wrong config (e.g. `{}`) must not
+    surface later as a KeyError deep inside a mode."""
     try:
         with open(path, encoding="utf-8") as fh:
-            return json.load(fh)
+            config = json.load(fh)
     except OSError as exc:
         raise InfraFailure(f"cannot read config {path}: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise InfraFailure(f"config {path} is not valid JSON: {exc}") from exc
+    if not isinstance(config, dict):
+        raise InfraFailure(
+            f"config {path} must be a JSON object, got "
+            f"{type(config).__name__}"
+        )
+    arms = config.get("arms")
+    if not isinstance(arms, dict) or not arms:
+        raise InfraFailure(
+            f"config {path}: `arms` must be a non-empty object"
+        )
+    for arm_name, arm in arms.items():
+        if not isinstance(arm, dict):
+            raise InfraFailure(
+                f"config {path}: arm `{arm_name}` must be an object"
+            )
+        for required in ("installation_dir", "sha256", "model"):
+            if not arm.get(required):
+                raise InfraFailure(
+                    f"config {path}: arm `{arm_name}` is missing required "
+                    f"`{required}`"
+                )
+    if (not isinstance(config.get("backend_cmd"), list)
+            or not config["backend_cmd"]
+            or not all(isinstance(part, str)
+                       for part in config["backend_cmd"])):
+        raise InfraFailure(
+            f"config {path}: `backend_cmd` must be a non-empty list of "
+            f"strings"
+        )
+    return config
 
 
 def config_digest(config):
