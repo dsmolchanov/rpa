@@ -23,6 +23,7 @@ EXPECTED_TREE = {"input_tokens": 140, "output_tokens": 70, "tool_calls": 12}
 EXPECTED_MAIN = {"input_tokens": 100, "output_tokens": 50, "tool_calls": 7}
 EXPECTED_SUB = {"input_tokens": 40, "output_tokens": 20, "tool_calls": 5}
 SECRET = "SECRET-GROUND-TRUTH-MARKER"
+SEAL_SHA = None
 
 
 def make_git_repo(workspace, label, seed_research=False):
@@ -76,6 +77,7 @@ def build_config(workspace, mode, timeout=20):
         "nonstandard_config": True,
         "sandbox_cmd": [sys.executable, str(HERE / "mock_sandbox.py"),
                         "{workdir}", "--"],
+        "seal_package_sha256": SEAL_SHA,
         "backend_version": "mock-claude 1.0.0",
         "backend_version_cmd": [sys.executable, str(HERE / "mock_claude.py"),
                                 "--version"],
@@ -127,10 +129,33 @@ def check(name, condition, notes, detail=""):
 
 
 def run_preflight():
+    global SEAL_SHA
     notes = []
     ok = True
     with tempfile.TemporaryDirectory() as tmp:
         ws = Path(tmp)
+
+        # Sealed judge materials, created up front so every config
+        # registers the same seal package hash (part of the config digest).
+        judge = ws / "judge-prompt.md"
+        judge.write_text("Score this document per the sealed rubric.\n",
+                         encoding="utf-8")
+        ctx_file = ws / "sealed-context.md"
+        ctx_file.write_text(
+            "SEALED-CONTEXT: task prompt + ground truth for the sched task\n",
+            encoding="utf-8")
+        snap_file = ws / "external-snapshot.html"
+        snap_file.write_text(
+            "<html>SEALED-SNAPSHOT frozen external source</html>\n",
+            encoding="utf-8")
+        seal_file = ws / "seal-manifest.json"
+        seal_file.write_text(json.dumps({"files": {
+            judge.name: hashlib.sha256(judge.read_bytes()).hexdigest(),
+            ctx_file.name: hashlib.sha256(ctx_file.read_bytes()).hexdigest(),
+            snap_file.name: hashlib.sha256(
+                snap_file.read_bytes()).hexdigest(),
+        }}), encoding="utf-8")
+        SEAL_SHA = hashlib.sha256(seal_file.read_bytes()).hexdigest()
 
         record, out, echo_dir, sha = run_case(ws, "normal")
         ok &= check("clean run completes", record["status"] == "completed",
@@ -791,9 +816,6 @@ def run_preflight():
             doc = ws / f"anon-doc-{i}.md"
             doc.write_text(f"# Anonymized doc {i}\n", encoding="utf-8")
             docs.append(doc)
-        judge = ws / "judge-prompt.md"
-        judge.write_text("Score this document per the sealed rubric.\n",
-                         encoding="utf-8")
         judge_out = ws / "judge-out"
         placeholder_cfg = dict(config)
         placeholder_cfg.pop("judge_backend_cmd")
@@ -915,18 +937,7 @@ def run_preflight():
         sched_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         sched_docs = [ws / "out-sched" / f"run-{r['run_id']}-anon.md"
                       for r in sched_manifest["results"]]
-        ctx_file = ws / "sealed-context.md"
-        ctx_file.write_text(
-            "SEALED-CONTEXT: task prompt + ground truth for the sched task\n",
-            encoding="utf-8")
         sched_ctx = {Path(task_s).name: str(ctx_file)}
-        seal_file = ws / "seal-manifest.json"
-        seal_file.write_text(json.dumps({"files": {
-            Path(judge).name: hashlib.sha256(
-                Path(judge).read_bytes()).hexdigest(),
-            ctx_file.name: hashlib.sha256(
-                ctx_file.read_bytes()).hexdigest(),
-        }}), encoding="utf-8")
         echo_dir = ws / "echo-judge-ctx"
         os.environ["MOCK_ECHO_DIR"] = str(echo_dir)
         try:
@@ -982,6 +993,92 @@ def run_preflight():
         ok &= check(
             "judge inputs verified against the atomic seal (edit refused)",
             sealdrift_ok, notes)
+        forged_seal = ws / "seal-forged.json"
+        forged_ctx_hash = hashlib.sha256(
+            b"forged context").hexdigest()
+        forged_seal.write_text(json.dumps({"files": {
+            Path(judge).name: hashlib.sha256(
+                Path(judge).read_bytes()).hexdigest(),
+            ctx_file.name: forged_ctx_hash,
+        }}), encoding="utf-8")
+        try:
+            runner.score(config, sched_docs, judge, ws / "judge-forgedseal",
+                         scoring_seed=5, manifest_path=manifest_path,
+                         task_contexts=sched_ctx,
+                         seal_manifest_path=forged_seal)
+            forged_ok = False
+        except runner.InfraFailure as exc:
+            forged_ok = "seal_package_sha256" in str(exc)
+        ok &= check(
+            "recomputed seal manifest refused (bound to registered package hash)",
+            forged_ok, notes)
+
+        m3 = json.loads(manifest_path.read_text(encoding="utf-8"))
+        fab = dict(m3)
+        fab["complete"] = False
+        fab["results"] = [dict(m3["results"][0], artifact_sha256="0" * 64)]
+        manifest_path.write_text(json.dumps(fab), encoding="utf-8")
+        try:
+            runner.run_schedule(config, sched_path, repos_map,
+                                ws / "out-sched", [str(task_s)])
+            fab_ok = False
+        except runner.InfraFailure as exc:
+            fab_ok = "run record" in str(exc)
+        manifest_path.write_text(json.dumps(m3), encoding="utf-8")
+        ok &= check(
+            "resumed manifest results verified against immutable run records",
+            fab_ok, notes)
+
+        repo_snap, sha_snap = make_git_repo(ws, "snap")
+        task_snap = ws / "task-snap.md"
+        task_snap.write_text(
+            f"---\ntask-id: snap\ntarget-repo: mock-repo\n"
+            f"target-sha: {sha_snap}\nexternal-snapshots: true\n---\n\n"
+            f"## Task prompt\n\nSnapshot task.\n\n"
+            f"## Ground truth\n\n{SECRET}\n",
+            encoding="utf-8")
+        snap_cfg, _ = build_config(ws, "normal")
+        snap_sched = runner.make_schedule(snap_cfg, [str(task_snap)], 1,
+                                          seed=11, allow_nonstandard=True)
+        snap_sched_path = ws / "schedule-snap.json"
+        snap_sched_path.write_text(json.dumps(snap_sched), encoding="utf-8")
+        snap_manifest = runner.run_schedule(
+            snap_cfg, snap_sched_path, {"mock-repo": str(repo_snap)},
+            ws / "out-snap", [str(task_snap)])
+        snap_docs = [ws / "out-snap" / f"run-{r['run_id']}-anon.md"
+                     for r in snap_manifest["results"]]
+        snap_ctx = {task_snap.name: str(ctx_file)}
+        snap_manifest_path = ws / "out-snap" / "schedule-manifest.json"
+        try:
+            runner.score(snap_cfg, snap_docs, judge, ws / "judge-nosnap",
+                         scoring_seed=5, manifest_path=snap_manifest_path,
+                         task_contexts=snap_ctx,
+                         seal_manifest_path=seal_file,
+                         evidence_repos={"mock-repo": str(repo_snap)})
+            nosnap_ok = False
+        except runner.InfraFailure as exc:
+            nosnap_ok = "external" in str(exc) and "snapshots" in str(exc)
+        ok &= check(
+            "external-context task without sealed snapshots refused",
+            nosnap_ok, notes)
+        echo_dir = ws / "echo-snapverify"
+        os.environ["MOCK_ECHO_DIR"] = str(echo_dir)
+        try:
+            snap_res = runner.score(
+                snap_cfg, snap_docs, judge, ws / "judge-snap",
+                scoring_seed=5, manifest_path=snap_manifest_path,
+                task_contexts=snap_ctx, seal_manifest_path=seal_file,
+                evidence_repos={"mock-repo": str(repo_snap)},
+                task_snapshots={task_snap.name: str(snap_file)})
+        finally:
+            os.environ.pop("MOCK_ECHO_DIR", None)
+        snap_listing = (echo_dir / "cwd-listing.txt").read_text(
+            encoding="utf-8")
+        ok &= check(
+            "sealed external snapshots placed in the verifier workdir",
+            "_sealed-snapshots" in snap_listing
+            and snap_res[0].get("snapshots") == str(snap_file),
+            notes)
         try:
             runner.score(config, sched_docs[:1], judge, ws / "judge-subset",
                          scoring_seed=5, manifest_path=manifest_path)

@@ -266,6 +266,7 @@ def config_digest(config):
         "timeout_seconds": config.get("timeout_seconds"),
         "nonstandard_config": config.get("nonstandard_config", False),
         "sandbox_cmd": config.get("sandbox_cmd"),
+        "seal_package_sha256": config.get("seal_package_sha256"),
     }
     return hashlib.sha256(
         json.dumps(material, sort_keys=True).encode("utf-8")
@@ -1173,6 +1174,26 @@ def run_schedule(config, schedule_path, repos, output_dir, task_paths):
                 raise InfraFailure(
                     "existing manifest does not match the schedule prefix"
                 )
+            # The manifest is a convenience view; the immutable per-run
+            # record is the source of truth. A fabricated manifest (edited
+            # status, run_id, or digests) must never let the executor skip
+            # backends or feed scoring invented results.
+            record_path = out / f"run-{done.get('run_id')}.json"
+            if not record_path.exists():
+                raise InfraFailure(
+                    f"manifest result {done.get('index')} has no run record "
+                    f"on disk — fabricated or foreign manifest refused"
+                )
+            run_record = json.loads(record_path.read_text(encoding="utf-8"))
+            if (run_record.get("arm") != done.get("arm")
+                    or run_record.get("task") != done.get("task")
+                    or run_record.get("status") != done.get("status")
+                    or run_record.get("artifact_sha256")
+                    != done.get("artifact_sha256")):
+                raise InfraFailure(
+                    f"manifest result {done.get('index')} does not match its "
+                    f"immutable run record — edited manifest refused"
+                )
 
     def write_manifest(complete):
         manifest = {
@@ -1221,19 +1242,23 @@ def run_schedule(config, schedule_path, repos, output_dir, task_paths):
     return write_manifest(True)
 
 
-def _read_sealed(path, seal_files):
-    """Judge inputs (judge prompt, task contexts) are bound to the atomic
-    seal: the bytes actually read must match the digest recorded in the
-    sealed package's manifest, and each file is read exactly once before
-    any session launches — an edit after sealing or between judge calls is
-    refused, never silently mixed into the batch."""
+def _sealed_bytes(path, seal_files):
+    """Judge inputs (judge prompt, task contexts, external snapshots) are
+    bound to the atomic seal: the bytes actually read must match the digest
+    recorded in the sealed package's manifest, and each file is read exactly
+    once before any session launches — an edit after sealing or between
+    judge calls is refused, never silently mixed into the batch."""
     data = Path(path).read_bytes()
     if hashlib.sha256(data).hexdigest() != seal_files.get(Path(path).name):
         raise InfraFailure(
             f"{path}: contents differ from the atomic-seal manifest — "
             f"judge inputs must be the sealed artifacts"
         )
-    return data.decode("utf-8")
+    return data
+
+
+def _read_sealed(path, seal_files):
+    return _sealed_bytes(path, seal_files).decode("utf-8")
 
 
 def assert_blind_scorable(doc_path):
@@ -1272,7 +1297,7 @@ def assert_blind_scorable(doc_path):
 def score(config, doc_paths, judge_prompt_path, output_dir,
           evidence_repo=None, evidence_sha=None, scoring_seed=None,
           manifest_path=None, allow_unscheduled=False, evidence_repos=None,
-          task_contexts=None, seal_manifest_path=None):
+          task_contexts=None, seal_manifest_path=None, task_snapshots=None):
     """One fresh pinned backend session per document. The judge's full
     response text is preserved on disk — it IS the scoring artifact. Judge
     prompts live in the sealed package and are passed in at runtime.
@@ -1386,6 +1411,7 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                 "ITS OWN task's pinned repo@sha — pass `evidence_repos` "
                 "(NAME=PATH mapping), not a single evidence repo/sha"
             )
+        snapshot_by_doc = {}
         if evidence_repos is not None:
             # A holdout batch spans several target repositories: every
             # document is verified against the worktree of its own task's
@@ -1400,13 +1426,28 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                         f"registered evidence clone — supply it as "
                         f"{repo_name}=/path/to/frozen-clone"
                     )
-                doc_evidence[f"run-{r['run_id']}-anon.md"] = (
+                doc_name = f"run-{r['run_id']}-anon.md"
+                doc_evidence[doc_name] = (
                     evidence_repos[repo_name],
                     task_target_sha(task_text, r["task"]),
                 )
+                # External-context tasks: their claims are checked against
+                # the FROZEN sealed snapshots, not the live web (which the
+                # verifier rightly cannot reach).
+                if re.search(r"^external-snapshots:\s*true\s*$", task_text,
+                             re.MULTILINE):
+                    task_name = Path(r["task"]).name
+                    if not task_snapshots or task_name not in task_snapshots:
+                        raise InfraFailure(
+                            f"{r['task']}: task requires sealed external "
+                            f"snapshots — supply --task-snapshots "
+                            f"{task_name}=<sealed snapshot file/dir>"
+                        )
+                    snapshot_by_doc[doc_name] = task_snapshots[task_name]
     else:
         context_by_doc = None
         task_by_doc = None
+        snapshot_by_doc = {}
         if evidence_repos is not None:
             raise InfraFailure(
                 "`evidence_repos` requires manifest-bound scoring — for "
@@ -1419,9 +1460,25 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                 "(file → sha256) binding the judge prompt and every task "
                 "context to the sealed package"
             )
-        seal_files = json.loads(
-            Path(seal_manifest_path).read_text(encoding="utf-8")
-        ).get("files", {})
+        # Per-file hashes inside an untrusted JSON preserve nothing: the
+        # seal manifest itself is trusted only through the single package
+        # SHA-256 registered in the config at sealing time (and therefore
+        # digest-bound into the schedule before any outcome was known).
+        registered_seal = config.get("seal_package_sha256")
+        if not registered_seal:
+            raise InfraFailure(
+                "config must register `seal_package_sha256` — the atomic-"
+                "seal manifest is trusted only through the package hash "
+                "recorded at sealing"
+            )
+        seal_bytes = Path(seal_manifest_path).read_bytes()
+        if hashlib.sha256(seal_bytes).hexdigest() != registered_seal:
+            raise InfraFailure(
+                "seal manifest does not match the registered "
+                "`seal_package_sha256` — a recomputed or altered seal is "
+                "refused"
+            )
+        seal_files = json.loads(seal_bytes.decode("utf-8")).get("files", {})
         judge_prompt = _read_sealed(judge_prompt_path, seal_files)
         sealed_context_texts = {
             doc_name: _read_sealed(ctx_path, seal_files)
@@ -1472,6 +1529,19 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             profile, _ = make_profile(judge_root, "judge",
                                       settings=VERIFIER_SETTINGS)
             workdir = make_worktree(ev_repo, ev_sha, judge_root)
+            if Path(doc).name in snapshot_by_doc:
+                # Seal-verified frozen snapshots are placed INSIDE the
+                # confined workdir so the sandboxed verifier can read them.
+                snap_src = Path(snapshot_by_doc[Path(doc).name])
+                snap_dest = workdir / "_sealed-snapshots"
+                snap_dest.mkdir()
+                snap_paths = ([snap_src] if snap_src.is_file()
+                              else sorted(p for p in snap_src.rglob("*")
+                                          if p.is_file()))
+                for snap in snap_paths:
+                    (snap_dest / snap.name).write_bytes(
+                        _sealed_bytes(snap, seal_files)
+                    )
         else:
             profile, _ = make_profile(judge_root, "judge",
                                       settings=JUDGE_SETTINGS)
@@ -1519,6 +1589,7 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                              if context_by_doc is not None else None),
             "seal_manifest": (str(seal_manifest_path)
                               if seal_manifest_path is not None else None),
+            "snapshots": snapshot_by_doc.get(Path(doc).name),
             "effort_capture": effort_capture,
             "response": response,
             "accounting": account(nodes),
@@ -1579,7 +1650,13 @@ def main():
     parser.add_argument("--seal-manifest",
                         help="score mode with --manifest: atomic-seal "
                              "manifest (file → sha256) binding the judge "
-                             "prompt and task contexts to the sealed package")
+                             "prompt and task contexts to the sealed "
+                             "package; the manifest file itself must match "
+                             "the config's registered seal_package_sha256")
+    parser.add_argument("--task-snapshots", nargs="+",
+                        help="score mode, verifier role: TASKFILE=PATH "
+                             "mapping to sealed frozen external-source "
+                             "snapshots for external-context tasks")
     parser.add_argument("--output", default="runs", help="output directory")
     parser.add_argument("--make-schedule", action="store_true",
                         help="write a pre-registered randomized schedule "
@@ -1664,6 +1741,9 @@ def main():
             task_contexts = (parse_repo_mapping(args.task_contexts,
                                                 "--task-contexts")
                              if args.task_contexts else None)
+            task_snapshots = (parse_repo_mapping(args.task_snapshots,
+                                                 "--task-snapshots")
+                              if args.task_snapshots else None)
         except InfraFailure as exc:
             print(json.dumps({"status": "infra_failure", "failure": str(exc)}))
             sys.exit(1)
@@ -1675,7 +1755,8 @@ def main():
                         allow_unscheduled=args.unscheduled_docs,
                         evidence_repos=evidence_repos,
                         task_contexts=task_contexts,
-                        seal_manifest_path=args.seal_manifest)
+                        seal_manifest_path=args.seal_manifest,
+                        task_snapshots=task_snapshots)
         print(json.dumps([{k: r[k] for k in ("doc", "session_id")} for r in results]))
         sys.exit(0)
 
