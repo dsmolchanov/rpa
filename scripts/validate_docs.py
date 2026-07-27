@@ -548,6 +548,17 @@ def check_artifact_validator(root, errors):
         errors.append(
             "artifact validator accepted a timezone-less timestamp — the "
             "contract requires date and time WITH timezone")
+    nometa = fixtures / "artifact-no-metablock-invalid.md"
+    if not nometa.is_file():
+        errors.append("artifact-no-metablock-invalid.md fixture missing")
+        return
+    kn = _sp.run([_sys.executable, str(validator), str(nometa)],
+                 capture_output=True)
+    if kn.returncode == 0:
+        errors.append(
+            "artifact validator accepted a document without the body "
+            "metadata block (**Date**/**Researcher**/...) — template "
+            "enforcement is broken")
 
 
 def validate(root, exclude_fixtures=True):

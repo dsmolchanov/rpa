@@ -1231,6 +1231,14 @@ def run_preflight():
             encoding="utf-8")
         script_date_ok = not runner.artifact_validator.validate(
             script_date_doc)
+        fab_doc = ws / "2026-07-26-fab-sha.md"
+        fab_doc.write_text(
+            fn_doc.read_text(encoding="utf-8").replace(
+                "git_commit: '0000000000000000000000000000000000000000'",
+                "git_commit: '" + "0" * 12 + "f" * 28 + "'", 1),
+            encoding="utf-8")
+        fab_bad = runner.artifact_validator.validate(
+            fab_doc, expected_git_commit="0" * 40)
         ok &= check(
             "filename contract enforced; raw anonymization markers rejected",
             any("basename" in e for e in fn_bad)
@@ -1239,7 +1247,8 @@ def run_preflight():
             and not marker_lenient
             and any("researcher" in e and "anonymization marker" in e
                     for e in free_strict)
-            and script_date_ok,
+            and script_date_ok
+            and any("target-sha" in e for e in fab_bad),
             notes)
 
         record, _, _, _ = run_case(ws, "stale-artifact")

@@ -86,6 +86,10 @@ DATE_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?(\.\d+)?"
     r"(Z|[+-]\d{2}:?\d{2}| [A-Z]{2,5})$")
 GIT_COMMIT_RE = re.compile(r"^[0-9a-f]{7,40}$")
+META_LINE_RE = re.compile(
+    r"^\*\*(Date|Researcher|Git Commit|Branch|Repository)\*\*: *(.+)$")
+REQUIRED_META_LINES = ("Date", "Researcher", "Git Commit", "Branch",
+                       "Repository")
 ARTIFACT_BASENAME_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}-(ENG-\d+-)?[a-z0-9][a-z0-9-]*\.md$")
 
@@ -240,12 +244,15 @@ def validate(path, expected_git_commit=None, expected_repository=None,
                 errors.append(
                     f"`git_commit` must be a 7-40 char hex sha, "
                     f"got `{sval}`")
+            # The caller passes the RESOLVED full checkout sha (the
+            # harness resolves the task pin against the worktree HEAD), so
+            # an abbreviated recorded value must be a prefix of it — but a
+            # longer fabricated hash extending an abbreviated pin can
+            # never pass.
             elif expected_git_commit is not None and not (
                     sval == expected_git_commit
                     or (len(sval) >= 7
-                        and expected_git_commit.startswith(sval))
-                    or (len(expected_git_commit) >= 7
-                        and sval.startswith(expected_git_commit))):
+                        and expected_git_commit.startswith(sval))):
                 errors.append(
                     f"`git_commit` `{sval}` does not match the run's "
                     f"pinned target-sha `{expected_git_commit}`")
@@ -290,6 +297,30 @@ def validate(path, expected_git_commit=None, expected_repository=None,
     # carry non-whitespace content (subsections count as content for
     # Detailed Findings). The tail sections may legitimately be a bare
     # "None" note, which is still content.
+    # The contract's body template opens with the bold metadata block
+    # right after the title: all five lines are required with non-empty
+    # values (outside code fences).
+    fence = None
+    seen_meta = set()
+    for line in lines:
+        open_match = FENCE_OPEN_RE.match(line)
+        if fence is None and open_match:
+            fence = open_match.group(1)
+            continue
+        if fence is not None:
+            close_match = FENCE_CLOSE_RE.match(line)
+            if (close_match and close_match.group(1)[0] == fence[0]
+                    and len(close_match.group(1)) >= len(fence)):
+                fence = None
+            continue
+        meta_match = META_LINE_RE.match(line.strip())
+        if meta_match and meta_match.group(2).strip():
+            seen_meta.add(meta_match.group(1))
+    for label in REQUIRED_META_LINES:
+        if label not in seen_meta:
+            errors.append(
+                f"missing body metadata line `**{label}**: ...` (the "
+                f"contract's block after the title)")
     for section in CONTENT_REQUIRED_SECTIONS:
         if section not in matched:
             continue
