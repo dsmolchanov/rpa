@@ -72,6 +72,7 @@ Copy commands, agents, and scripts to your global Claude configuration:
 mkdir -p ~/.claude/commands
 mkdir -p ~/.claude/agents
 mkdir -p ~/.claude/scripts
+mkdir -p ~/.claude/skills
 mkdir -p ~/.claude/hooks
 
 # Copy commands
@@ -79,6 +80,9 @@ cp commands/*.md ~/.claude/commands/
 
 # Copy agents (enables parallel sub-agents)
 cp agents/*.md ~/.claude/agents/
+
+# Copy workflow skill packages (kernels the commands delegate to)
+cp -R skills/* ~/.claude/skills/
 
 # Optional: copy the compatibility bootstrap if using AI-DLC workflows
 cp CLAUDE.md ~/.claude/CLAUDE-rpa-aidlc.md

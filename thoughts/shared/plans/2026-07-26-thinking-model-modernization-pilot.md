@@ -392,6 +392,17 @@ sanitized examples; raw run artifacts stay in a private location.
    remains required once before baseline runs and must demonstrate the
    effort pin propagates to the whole session tree.
 
+**Candidate status (2026-07-27):** the behavioral rewrite landed on the
+owner's instruction («продолжай по очереди все»): kernel `SKILL.md`
+completed per §2 anatomy, six platform-neutral agent contracts extracted
+to `references/agent-contracts/`, `research-v2-*` reduced to thin
+adapters, `commands/research_codebase.md` reduced to the thin
+compatibility wrapper (opus parity pin retained), fleet routing isolated
+in `references/fleet-routing.md` for the ablation build, Quick Install
+copies `skills/`, plugin version bumped. **Not yet frozen:** dev-set
+tuning runs (Sequence step 3) and the candidate freeze (step 4) remain
+ahead; no holdout material has been seen by this implementation context.
+
 **Dev set status (Sequence step 2):** authored. Public tasks dev-3/dev-4
 (target: this repo) live at `skills/research-codebase/evals/public/dev-set/`;
 private tasks dev-1/dev-5 (livekit-voice-agent @ `9d65fff`) and dev-2
