@@ -123,6 +123,32 @@ def _valid_timestamp(sval):
     return True
 
 
+def _instant(sval):
+    """Normalized comparison value for a timestamp: a UTC-naive datetime
+    when the zone is resolvable offline (Z, numeric offset, UTC/GMT), or
+    an ("opaque", zone, wall_time) tuple for other named zones — those
+    compare equal only with the same zone name and wall time."""
+    match = DATE_PARTS_RE.match(sval)
+    if not match:
+        return None
+    try:
+        base = datetime.datetime(
+            int(match.group(1)), int(match.group(2)), int(match.group(3)),
+            int(match.group(4)), int(match.group(5)),
+            int(match.group(6) or 0))
+    except ValueError:
+        return None
+    zone = match.group(7).strip()
+    if match.group(8) is not None:
+        minutes = int(match.group(8)) * 60 + int(match.group(9) or 0)
+        if "-" in zone:
+            minutes = -minutes
+        return base - datetime.timedelta(minutes=minutes)
+    if zone in ("Z", "UTC", "GMT"):
+        return base
+    return ("opaque", zone, base)
+
+
 def _valid_date(sval):
     match = LAST_UPDATED_RE.match(sval)
     if not match:
@@ -339,14 +365,27 @@ def validate(path, expected_git_commit=None, expected_repository=None,
     body_meta = {}
     rq_heading_idx = matched.get("Research Question")
     if title is not None and rq_heading_idx is not None:
+        # The block is CONTIGUOUS: between the title and `## Research
+        # Question` the contract allows exactly the five metadata lines
+        # and blank lines — interleaved prose breaks the template shape.
         region = lines[title[2] + 1:headings[rq_heading_idx][2]]
         found_labels = []
+        stray = None
         for line in region:
+            if not line.strip():
+                continue
             meta_match = META_LINE_RE.match(line.strip())
             if meta_match and meta_match.group(2).strip():
                 found_labels.append(meta_match.group(1))
                 body_meta.setdefault(meta_match.group(1),
                                      meta_match.group(2).strip())
+            elif stray is None:
+                stray = line.strip()[:60]
+        if stray is not None:
+            errors.append(
+                f"the region between the title and `## Research Question` "
+                f"must contain only the five metadata lines and blank "
+                f"lines — found `{stray}`")
         for label in REQUIRED_META_LINES:
             if label not in found_labels:
                 errors.append(
@@ -411,13 +450,18 @@ def validate(path, expected_git_commit=None, expected_repository=None,
                     f"body `**Date**` must be an ISO date-time with "
                     f"timezone, got `{body_val}`")
             fm_date = str(meta.get("date", "") or "").strip()
-            # Representations of one instant differ (Z vs +00:00 vs
-            # named zone): agreement is checked at day precision.
-            if (fm_date and not _anonymized(fm_date)
-                    and fm_date[:10] != body_val[:10]):
-                errors.append(
-                    "body `**Date**` disagrees with the frontmatter "
-                    "`date` (different day)")
+            if fm_date and not _anonymized(fm_date):
+                # Both values come from ONE metadata collection: they
+                # must denote the same instant (representations may
+                # differ — Z vs +00:00 — but the moment may not).
+                body_instant = _instant(body_val)
+                fm_instant = _instant(fm_date)
+                if (body_instant is not None and fm_instant is not None
+                        and body_instant != fm_instant):
+                    errors.append(
+                        "body `**Date**` and frontmatter `date` denote "
+                        "different instants — both must come from the "
+                        "run's single metadata collection")
         else:
             fm_key = label.lower()
             fm_val = str(meta.get(fm_key, "") or "").strip()

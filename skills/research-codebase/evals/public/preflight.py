@@ -1263,6 +1263,21 @@ def run_preflight():
                 "date: '2026-07-27 00:00:00 +0300'", 1),
             encoding="utf-8")
         offset_ok = not runner.artifact_validator.validate(offset_doc)
+        timeshift_doc = ws / "2026-07-26-timeshift.md"
+        timeshift_doc.write_text(
+            fn_doc.read_text(encoding="utf-8").replace(
+                "**Date**: 2026-07-27T00:00:00Z",
+                "**Date**: 2026-07-27T05:00:00Z", 1),
+            encoding="utf-8")
+        timeshift_bad = runner.artifact_validator.validate(timeshift_doc)
+        prose_doc = ws / "2026-07-26-prose-block.md"
+        prose_doc.write_text(
+            fn_doc.read_text(encoding="utf-8").replace(
+                "**Researcher**: Fixture Researcher",
+                "Interleaved prose.\n**Researcher**: Fixture Researcher",
+                1),
+            encoding="utf-8")
+        prose_bad = runner.artifact_validator.validate(prose_doc)
         ok &= check(
             "filename contract enforced; raw anonymization markers rejected",
             any("basename" in e for e in fn_bad)
@@ -1276,7 +1291,10 @@ def run_preflight():
             and any("**Git Commit**" in e for e in bodymeta_bad)
             and any("date" in e for e in impossible_bad)
             and any("last_updated" in e for e in impossible_bad)
-            and offset_ok,
+            and offset_ok
+            and any("different instants" in e for e in timeshift_bad)
+            and any("only the five metadata lines" in e
+                    for e in prose_bad),
             notes)
 
         meta_script = (HERE.parents[3] / "scripts"

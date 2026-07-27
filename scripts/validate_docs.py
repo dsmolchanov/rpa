@@ -580,6 +580,17 @@ def check_artifact_validator(root, errors):
         errors.append(
             "artifact validator accepted metadata lines scattered outside "
             "the title-adjacent block — block placement is not enforced")
+    interleaved = fixtures / "artifact-interleaved-metablock-invalid.md"
+    if not interleaved.is_file():
+        errors.append("artifact-interleaved-metablock-invalid.md fixture "
+                      "missing")
+        return
+    ki = _sp.run([_sys.executable, str(validator), str(interleaved)],
+                 capture_output=True)
+    if ki.returncode == 0:
+        errors.append(
+            "artifact validator accepted prose interleaved inside the "
+            "metadata block — contiguity is not enforced")
 
 
 def validate(root, exclude_fixtures=True):
