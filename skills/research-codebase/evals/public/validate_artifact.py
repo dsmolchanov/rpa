@@ -80,9 +80,11 @@ FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 FENCE_CLOSE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})\s*$")
 # The contract requires "date and time with timezone in ISO format":
 # the timezone part is MANDATORY, an unzoned timestamp is ambiguous.
+# Accepted timezone forms: Z, a numeric offset, or the named-zone
+# suffix the prescribed `spec_metadata.sh` emits (`%Z`, e.g. ` UTC`).
 DATE_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?(\.\d+)?"
-    r"(Z|[+-]\d{2}:?\d{2})$")
+    r"(Z|[+-]\d{2}:?\d{2}| [A-Z]{2,5})$")
 GIT_COMMIT_RE = re.compile(r"^[0-9a-f]{7,40}$")
 ARTIFACT_BASENAME_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}-(ENG-\d+-)?[a-z0-9][a-z0-9-]*\.md$")

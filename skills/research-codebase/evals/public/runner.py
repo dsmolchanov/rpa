@@ -733,12 +733,19 @@ def _git(repo, *args):
     return proc.stdout.strip()
 
 
-def make_worktree(repo_dir, sha, workspace):
+def make_worktree(repo_dir, sha, workspace, name=None):
     """Disposable detached worktree at the pinned SHA, verified. The
     destination is resolved to an absolute path BEFORE reaching git:
     `git -C <repo>` resolves relative destinations under the repo while the
     caller would resolve them under its own cwd — two different places."""
-    dest = (Path(workspace) / "worktrees" / uuid.uuid4().hex[:12]).resolve()
+    slot = Path(workspace) / "worktrees" / uuid.uuid4().hex[:12]
+    # When the caller names the checkout, the worktree directory carries
+    # the CANONICAL target-repo name: the prescribed metadata script
+    # derives `repository` from the toplevel basename, so a uuid-named
+    # checkout would make every conforming workflow record a uuid and
+    # fail the run binding. The uuid stays in the parent for disposal
+    # uniqueness; the name is task identity, identical across arms.
+    dest = (slot / name).resolve() if name else slot.resolve()
     dest.parent.mkdir(parents=True, exist_ok=True)
     _git(repo_dir, "worktree", "add", "--detach", str(dest), sha)
     head = _git(dest, "rev-parse", "HEAD")
@@ -756,6 +763,12 @@ def remove_worktree(repo_dir, worktree):
         _git(repo_dir, "worktree", "remove", "--force", str(worktree))
     except InfraFailure:
         shutil.rmtree(worktree, ignore_errors=True)
+    parent = Path(worktree).parent
+    try:
+        if parent.name != "worktrees" and not any(parent.iterdir()):
+            parent.rmdir()
+    except OSError:
+        pass
 
 
 def spawn_session(cmd, prompt, cwd, env, timeout, resume=None,
@@ -1194,7 +1207,9 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
             prompt = f"{entrypoint} {prompt}".strip()
             record["entrypoint"] = entrypoint
         sha = task_target_sha(task_text, task_path)
-        worktree = make_worktree(repo_dir, sha, output_dir)
+        worktree = make_worktree(
+            repo_dir, sha, output_dir,
+            name=canonical_repo_name(task_target_repo(task_text, task_path)))
         record["target_sha"] = sha
         record["worktree"] = str(worktree)
         # Neutral profile label: an arm-named CLAUDE_CONFIG_DIR would

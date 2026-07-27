@@ -100,10 +100,21 @@ def write_artifact(commit=None):
                 text=True).stdout.strip() or "0" * 40
         except OSError:
             commit = "0" * 40
+    # `repository` is DERIVED from the checkout like the prescribed
+    # metadata script does (toplevel basename) — hard-coding it would
+    # hide a uuid-named worktree from the run-binding gate.
+    try:
+        top = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"], capture_output=True,
+            text=True).stdout.strip()
+    except OSError:
+        top = ""
+    repo_name = Path(top).name if top else Path.cwd().name
     research = Path("thoughts/shared/research")
     research.mkdir(parents=True, exist_ok=True)
     (research / "2026-07-26-mock-research.md").write_text(
-        ARTIFACT.replace("deadbeef", commit), encoding="utf-8")
+        ARTIFACT.replace("deadbeef", commit).replace("mock-repo", repo_name),
+        encoding="utf-8")
 
 
 def echo(name, value):
