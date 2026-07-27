@@ -544,6 +544,16 @@ def check_artifact_validator(root, errors):
             "artifact validator accepted the SUBTLE-invalid fixture "
             "(empty values / wrong status / prefix-only heading) — value "
             "and exact-heading enforcement is broken")
+    fenced = fixtures / "artifact-fenced-invalid.md"
+    if not fenced.is_file():
+        errors.append("artifact-fenced-invalid.md fixture missing")
+        return
+    kf = _sp.run([_sys.executable, str(validator), str(fenced)],
+                 capture_output=True)
+    if kf.returncode == 0:
+        errors.append(
+            "artifact validator accepted headings quoted inside a code "
+            "fence — structural parsing is broken")
 
 
 def validate(root, exclude_fixtures=True):

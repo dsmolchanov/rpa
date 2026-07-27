@@ -27,9 +27,13 @@ from pathlib import Path
 try:
     import yaml
 except ImportError:  # pragma: no cover
-    print("validate_artifact: PyYAML is required (registered dependency "
-          "of the docs-validate gate, pinned 6.0.2)", file=sys.stderr)
-    sys.exit(2)
+    # Shipped installs (plugin / Quick Install) carry no dependencies:
+    # the validator stays self-contained. When PyYAML (the registered
+    # dependency of the repo's docs-validate CI gate) is absent, a strict
+    # fallback parser accepts exactly the contract's flat mapping shape —
+    # scalars plus one flow list — and REJECTS anything richer, so the
+    # fallback can never be more permissive than real YAML parsing.
+    yaml = None
 
 REQUIRED_FRONTMATTER = (
     "date",
@@ -59,9 +63,63 @@ REQUIRED_EXACT_HEADINGS = (
 
 LAST_UPDATED_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
+HEADING_RE = re.compile(r"^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$")
+
 
 def _anonymized(value):
     return isinstance(value, str) and value.startswith("[anonymized:")
+
+
+def _parse_frontmatter_fallback(block, errors):
+    """Contract-shape parser for hosts without PyYAML: flat `key: value`
+    mapping, values scalars or one bracketed flow list. Anything richer is
+    rejected outright — stricter than YAML, never more permissive."""
+    meta = {}
+    for raw in block.splitlines():
+        if not raw.strip():
+            continue
+        if raw[:1] in (" ", "\t") or raw.lstrip().startswith("- "):
+            errors.append(
+                "frontmatter uses nested or multiline YAML — beyond the "
+                "contract's flat mapping (install PyYAML 6.0.2 for full "
+                "parsing, or flatten the frontmatter)")
+            return {}
+        if ":" not in raw:
+            errors.append(
+                f"frontmatter line is not `key: value`: `{raw.strip()[:60]}`")
+            return {}
+        key, _, val = raw.partition(":")
+        val = val.strip()
+        if val.startswith("[") and val.endswith("]"):
+            meta[key.strip()] = [
+                item.strip().strip("'\"")
+                for item in val[1:-1].split(",") if item.strip()
+            ]
+        else:
+            meta[key.strip()] = val.strip("'\"")
+    return meta
+
+
+def _headings_outside_fences(lines):
+    """Real Markdown ATX headings only: fenced code blocks (``` / ~~~) are
+    skipped, so a document QUOTING the artifact template cannot satisfy
+    the structural gate."""
+    headings = []
+    fence = None
+    for line in lines:
+        stripped = line.strip()
+        if fence is None and (stripped.startswith("```")
+                              or stripped.startswith("~~~")):
+            fence = stripped[:3]
+            continue
+        if fence is not None:
+            if stripped.startswith(fence):
+                fence = None
+            continue
+        match = HEADING_RE.match(line)
+        if match:
+            headings.append((len(match.group(1)), match.group(2).strip()))
+    return headings
 
 
 def validate(path):
@@ -85,15 +143,18 @@ def validate(path):
             meta = {}
         else:
             block = "\n".join(lines[1:end])
-            try:
-                meta = yaml.safe_load(block)
-            except yaml.YAMLError as exc:
-                errors.append(f"frontmatter is not valid YAML: {exc}")
-                meta = {}
-            if not isinstance(meta, dict):
-                if not errors:
-                    errors.append("frontmatter must be a YAML mapping")
-                meta = {}
+            if yaml is not None:
+                try:
+                    meta = yaml.safe_load(block)
+                except yaml.YAMLError as exc:
+                    errors.append(f"frontmatter is not valid YAML: {exc}")
+                    meta = {}
+                if not isinstance(meta, dict):
+                    if not errors:
+                        errors.append("frontmatter must be a YAML mapping")
+                    meta = {}
+            else:
+                meta = _parse_frontmatter_fallback(block, errors)
     for field in REQUIRED_FRONTMATTER:
         if field not in meta:
             errors.append(f"missing frontmatter field `{field}`")
@@ -121,16 +182,33 @@ def validate(path):
                 and not LAST_UPDATED_RE.match(sval)):
             errors.append(
                 f"`last_updated` must be YYYY-MM-DD, got `{sval}`")
-    stripped = [line.strip() for line in lines]
-    title = next((s for s in stripped if s.startswith("# Research:")), None)
-    if title is None or not title[len("# Research:"):].strip():
+    headings = _headings_outside_fences(lines)
+    title = next(((lvl, txt) for lvl, txt in headings
+                  if lvl == 1 and txt.startswith("Research:")), None)
+    if title is None or not title[1][len("Research:"):].strip():
         errors.append(
-            "missing document title `# Research: <topic>` (topic must be "
-            "non-empty)")
-    for heading in REQUIRED_EXACT_HEADINGS:
-        if heading not in stripped:
-            errors.append(f"missing required heading `{heading}` "
-                          f"(exact line)")
+            "missing document title `# Research: <topic>` (a real level-1 "
+            "Markdown heading with a non-empty topic)")
+    required = [(2, h[3:]) for h in REQUIRED_EXACT_HEADINGS]
+    pos = 0
+    for req in required:
+        found = None
+        for idx in range(pos, len(headings)):
+            if headings[idx] == req:
+                found = idx
+                break
+        if found is None:
+            if req in headings[:pos]:
+                errors.append(
+                    f"heading `## {req[1]}` appears out of the contract's "
+                    f"section order")
+            else:
+                errors.append(
+                    f"missing required heading `## {req[1]}` (a real "
+                    f"Markdown heading outside code fences, in contract "
+                    f"order)")
+        else:
+            pos = found + 1
     return errors
 
 

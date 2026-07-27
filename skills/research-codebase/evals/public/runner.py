@@ -108,6 +108,7 @@ Stdlib only.
 """
 
 import argparse
+import importlib.util
 import hashlib
 import json
 import random
@@ -121,6 +122,11 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
+
+_ARTIFACT_VALIDATOR_SPEC = importlib.util.spec_from_file_location(
+    "artifact_validator", Path(__file__).with_name("validate_artifact.py"))
+artifact_validator = importlib.util.module_from_spec(_ARTIFACT_VALIDATOR_SPEC)
+_ARTIFACT_VALIDATOR_SPEC.loader.exec_module(artifact_validator)
 
 MAX_CONTINUATIONS = 3
 DEFAULT_MAX_INFRA_RETRIES = 2
@@ -1322,6 +1328,21 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
             )
         raw = artifact.read_text(encoding="utf-8")
         (out / f"run-{run_id}-raw.md").write_text(raw, encoding="utf-8")
+        # The artifact contract is enforced by the harness itself, not by
+        # trusting the session to have followed its instructions: a fresh
+        # document that violates the contract is a COUNTED workflow
+        # failure — the workflow produced the wrong artifact — never a
+        # completed, scoreable replicate. The raw copy above is preserved
+        # as evidence.
+        contract_defects = artifact_validator.validate(artifact)
+        if contract_defects:
+            record["artifact_defects"] = contract_defects
+            shown = "; ".join(contract_defects[:5])
+            more = " …" if len(contract_defects) > 5 else ""
+            raise WorkflowFailure(
+                f"artifact violates the research artifact contract: "
+                f"{shown}{more}"
+            )
         anon_text = anonymize(raw, run_id)
         (out / f"run-{run_id}-anon.md").write_text(anon_text, encoding="utf-8")
         # The digest recorded here is what scoring later verifies: a scored

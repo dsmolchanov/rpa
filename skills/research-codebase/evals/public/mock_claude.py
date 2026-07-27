@@ -47,8 +47,41 @@ last_updated_by: Mock Researcher
 **Branch**: mock-branch
 **Repository**: mock-repo
 
+## Research Question
+Mock research question.
+
 ## Summary
 Deterministic mock artifact for the preflight.
+
+## Detailed Findings
+
+### Mock area
+- Mock finding (`mock/file.py:1`).
+
+## Code References
+- `mock/file.py:1` - Mock reference.
+
+## Architecture Documentation
+None (mock).
+
+## Historical Context (from thoughts/)
+None (mock).
+
+## Related Research
+None (mock).
+
+## Open Questions
+None (mock).
+"""
+
+ARTIFACT_BAD = """---
+date: 2026-07-26T00:00:00Z
+topic: "Nonconforming mock artifact"
+---
+
+# Wrong Title
+
+Free-form text without the contract's frontmatter or sections.
 """
 
 
@@ -246,6 +279,16 @@ def main():
         # drift (abort-wrong-model).
         print("workflow aborted by evaluated agent", file=sys.stderr)
         sys.exit(21)
+
+    if args.mode == "bad-artifact":
+        # Fresh document that VIOLATES the artifact contract: the harness
+        # must reject it as a counted workflow failure, never score it.
+        research = Path("thoughts/shared/research")
+        research.mkdir(parents=True, exist_ok=True)
+        (research / "mock-bad.md").write_text(ARTIFACT_BAD, encoding="utf-8")
+        emit({"type": "result", "session_id": session_id,
+              "result": "MOCK-VERDICT: wrote nonconforming document"})
+        return
 
     if args.mode == "silent-stop":
         # First call: greet-and-wait (no artifact). Only a resumed session

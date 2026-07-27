@@ -108,7 +108,7 @@ The task is complete when:
 | Gate | Applicability | Runner | When | Mode | Evidence |
 |---|---|---|---|---|---|
 | Metadata correctness | every document | `scripts/spec_metadata.sh` | before writing | blocking | script output used in frontmatter |
-| Artifact schema | every document | `evals/public/validate_artifact.py` (binds `references/artifact-contract.md`; fixture-proven in CI) | before finishing | blocking | validator exit 0 on the produced document |
+| Artifact schema | every document | `evals/public/validate_artifact.py` (binds `references/artifact-contract.md`; fixture-proven in CI; also enforced independently by the eval harness, which counts a rejected artifact as a workflow failure) | before finishing | blocking | validator exit 0 on the produced document |
 | Kernel/docs hygiene | this repo's own kernel files | `docs-validate` CI job | on PR | blocking | CI status |
 
 `not_applicable` outcomes must be stated with a reason (e.g. permalinks:

@@ -1186,6 +1186,14 @@ def run_preflight():
         # can neither be counted (no parity evidence) nor auto-re-executed
         # (counted failures are never replaced): it must BLOCK — one
         # attempt, blocking flag set, classified infra.
+        record, _, _, _ = run_case(ws, "bad-artifact")
+        ok &= check(
+            "nonconforming artifact is a counted workflow failure (gate)",
+            record["status"] == "workflow_failure"
+            and "artifact contract" in record.get("failure", "")
+            and record.get("artifact_defects"),
+            notes)
+
         record, _, _, _ = run_case(ws, "hang-silent", timeout=2,
                                    use_retries=True)
         ok &= check(
