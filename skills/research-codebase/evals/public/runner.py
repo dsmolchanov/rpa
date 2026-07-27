@@ -239,6 +239,31 @@ def hash_tree(root):
     return digest.hexdigest()
 
 
+def atomic_write_text(path, text):
+    """Crash-safe persistence for manifests and run records: the content is
+    written to a temp file in the same directory, flushed to disk, and
+    atomically swapped into place with os.replace — a crash mid-write can
+    never leave partial JSON that would block resuming already-observed
+    entries (and deleting a corrupt manifest to recover would rerun them,
+    which the protocol forbids)."""
+    path = Path(path)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=path.name + ".", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
 def load_config(path):
     with open(path, encoding="utf-8") as fh:
         return json.load(fh)
@@ -988,9 +1013,8 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1):
             record["wall_seconds"] = round(time.time() - started, 3)
         if worktree is not None:
             remove_worktree(repo_dir, worktree)
-    (out / f"run-{run_id}.json").write_text(
-        json.dumps(record, indent=2) + "\n", encoding="utf-8"
-    )
+    atomic_write_text(out / f"run-{run_id}.json",
+                      json.dumps(record, indent=2) + "\n")
     return record
 
 
@@ -1259,9 +1283,8 @@ def run_schedule(config, schedule_path, repos, output_dir, task_paths):
             "results": results,
             "complete": complete,
         }
-        manifest_path.write_text(
-            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
-        )
+        atomic_write_text(manifest_path,
+                          json.dumps(manifest, indent=2) + "\n")
         return manifest
 
     for entry in entries[len(results):]:
@@ -1761,12 +1784,12 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
         results = []
 
     def write_scoring_manifest(complete):
-        scoring_manifest_path.write_text(json.dumps({
+        atomic_write_text(scoring_manifest_path, json.dumps({
             "scoring_id": scoring_id,
             "identity": batch_identity,
             "results": results,
             "complete": complete,
-        }, indent=2) + "\n", encoding="utf-8")
+        }, indent=2) + "\n")
 
     for i, doc_index in enumerate(order):
         if i < len(results):
@@ -1794,9 +1817,8 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                 "presentation_index": i,
                 "scheduled": manifest_path is not None,
             }
-            (out / f"judge-{scoring_id}-{i}.json").write_text(
-                json.dumps(result, indent=2) + "\n", encoding="utf-8"
-            )
+            atomic_write_text(out / f"judge-{scoring_id}-{i}.json",
+                              json.dumps(result, indent=2) + "\n")
             results.append(result)
             write_scoring_manifest(False)
             continue
@@ -1900,9 +1922,8 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
         }
         if ev_repo:
             result["evidence_sha"] = ev_sha
-        (out / f"judge-{scoring_id}-{i}.json").write_text(
-            json.dumps(result, indent=2) + "\n", encoding="utf-8"
-        )
+        atomic_write_text(out / f"judge-{scoring_id}-{i}.json",
+                          json.dumps(result, indent=2) + "\n")
         results.append(result)
         write_scoring_manifest(False)
     judged = [r for r in results if not r.get("inconclusive")]
@@ -2064,18 +2085,24 @@ def main():
         except InfraFailure as exc:
             print(json.dumps({"status": "infra_failure", "failure": str(exc)}))
             sys.exit(1)
-        results = score(config, args.docs, args.judge_prompt, args.output,
-                        evidence_repo=args.evidence_repo,
-                        evidence_sha=args.evidence_sha,
-                        scoring_seed=args.scoring_seed,
-                        manifest_path=args.manifest,
-                        allow_unscheduled=args.unscheduled_docs,
-                        evidence_repos=evidence_repos,
-                        task_contexts=task_contexts,
-                        seal_manifest_path=args.seal_manifest,
-                        task_snapshots=task_snapshots,
-                        drift_report_path=args.drift_report,
-                        score_task_paths=args.tasks)
+        try:
+            results = score(config, args.docs, args.judge_prompt, args.output,
+                            evidence_repo=args.evidence_repo,
+                            evidence_sha=args.evidence_sha,
+                            scoring_seed=args.scoring_seed,
+                            manifest_path=args.manifest,
+                            allow_unscheduled=args.unscheduled_docs,
+                            evidence_repos=evidence_repos,
+                            task_contexts=task_contexts,
+                            seal_manifest_path=args.seal_manifest,
+                            task_snapshots=task_snapshots,
+                            drift_report_path=args.drift_report,
+                            score_task_paths=args.tasks)
+        except InfraFailure as exc:
+            # Expected operator-input rejections are classified, structured
+            # output — not a traceback indistinguishable from a crash.
+            print(json.dumps({"status": "infra_failure", "failure": str(exc)}))
+            sys.exit(1)
         print(json.dumps([
             {"doc": r["doc"], "inconclusive": True}
             if r.get("inconclusive")

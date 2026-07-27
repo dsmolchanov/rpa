@@ -971,6 +971,14 @@ def run_preflight():
         ok &= check(
             "reordered documents on resume refused (ordered identity)",
             reorder_ok, notes)
+        atomic_target = ws / "atomic-test.json"
+        atomic_target.write_text("old", encoding="utf-8")
+        runner.atomic_write_text(atomic_target, "new-content")
+        ok &= check(
+            "manifest writes are atomic (temp + fsync + os.replace, no leftovers)",
+            atomic_target.read_text(encoding="utf-8") == "new-content"
+            and not list(ws.glob("atomic-test.json.*")),
+            notes)
         ok &= check(
             "scorer judge role recorded (blind, evidence-free)",
             all(r.get("role") == "scorer" for r in results),
