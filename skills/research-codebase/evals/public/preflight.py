@@ -865,6 +865,21 @@ def run_preflight():
             notes)
 
         config, _ = build_config(ws, "normal")
+        config["workflow_abort_exit_codes"] = ["21"]
+        record = runner.run_task(config, "mock", task_ret, repo,
+                                 ws / "out-str-aborts")
+        abort_ok = (record["status"] == "infra_failure"
+                    and "list of integers" in record.get("failure", ""))
+        config["workflow_abort_exit_codes"] = 21
+        record = runner.run_task(config, "mock", task_ret, repo,
+                                 ws / "out-scalar-aborts")
+        ok &= check(
+            "invalid workflow_abort_exit_codes rejected (typed list required)",
+            abort_ok and record["status"] == "infra_failure"
+            and "list of integers" in record.get("failure", ""),
+            notes)
+
+        config, _ = build_config(ws, "normal")
         config["backend_version"] = "other-version 9.9"
         task_v = write_task(ws, "ver-mismatch", par_sha)
         record = runner.run_task(config, "mock", task_v, repo, ws / "out-ver")
@@ -924,11 +939,18 @@ def run_preflight():
         record, _, echo_tc, _ = run_case(ws, "timeout-with-child", timeout=2)
         child_pid = int((echo_tc / "child-pid.txt").read_text(
             encoding="utf-8").strip())
+        def _child_gone(pid):
+            # A zombie can linger when PID 1 does not reap orphans: it can
+            # no longer run or touch the worktree, so Z counts as gone.
+            try:
+                with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
+                    state = fh.read().rsplit(")", 1)[1].split()[0]
+                return state == "Z"
+            except OSError:
+                return True
         child_dead = False
         for _ in range(100):
-            try:
-                os.kill(child_pid, 0)
-            except ProcessLookupError:
+            if _child_gone(child_pid):
                 child_dead = True
                 break
             time.sleep(0.1)

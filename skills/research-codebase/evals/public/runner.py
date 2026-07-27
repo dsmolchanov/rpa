@@ -305,7 +305,7 @@ def load_config(path):
             raise InfraFailure(
                 f"config {path}: arm `{arm_name}` must be an object"
             )
-        for required in ("installation_dir", "sha256", "model"):
+        for required in ("installation_dir", "sha256", "model", "effort"):
             if not arm.get(required):
                 raise InfraFailure(
                     f"config {path}: arm `{arm_name}` is missing required "
@@ -824,6 +824,21 @@ def require_installation_mount(cmd):
         )
 
 
+def validate_abort_exits(config):
+    """String codes would never match integer return codes (silently
+    reclassifying genuine aborts as infra), and a scalar would crash
+    tuple(): the field must be a list of non-boolean integers."""
+    raw = config.get("workflow_abort_exit_codes", [])
+    if (not isinstance(raw, list)
+            or any(isinstance(code, bool) or not isinstance(code, int)
+                   for code in raw)):
+        raise InfraFailure(
+            f"`workflow_abort_exit_codes` must be a list of integers, "
+            f"got {raw!r}"
+        )
+    return tuple(raw)
+
+
 def validate_timeout(config):
     """A nonpositive or non-numeric timeout would make _spawn record a
     counted workflow failure without ever launching the backend — a
@@ -994,7 +1009,7 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
                                  arm.get("effort", "default"))
         cmd = apply_sandbox(config, cmd, worktree, profile)
         env = backend_env(profile)
-        abort_exits = tuple(config.get("workflow_abort_exit_codes", ()))
+        abort_exits = validate_abort_exits(config)
         before = snapshot_research(worktree)
         started = time.time()
         # ONE run-level deadline shared by the initial session and every
