@@ -79,6 +79,8 @@ def build_config(workspace, mode, timeout=20):
         "nonstandard_config": True,
         "sandbox_cmd": [sys.executable, str(HERE / "mock_sandbox.py"),
                         "{workdir}", "--"],
+        "drift_fetch_cmd": [sys.executable, str(HERE / "mock_fetch.py"),
+                            "{url}", "{dest}"],
         "seal_package_sha256": SEAL_SHA,
         "seal_manifest": SEAL_PATH,
         "backend_version": "mock-claude 1.0.0",
@@ -195,6 +197,11 @@ def run_preflight():
         }, "task_contexts": {
             "task-sched.md": "sealed-context.md",
             "task-snap.md": "sealed-context.md",
+        }, "snapshot_sources": {
+            "external-snapshots/a/index.html":
+                "https://mock.invalid/live/a/index.html",
+            "external-snapshots/b/index.html":
+                "https://mock.invalid/live/b/index.html",
         }, "files": seal_files_map}), encoding="utf-8")
         SEAL_SHA = hashlib.sha256(seal_file.read_bytes()).hexdigest()
         SEAL_PATH = str(seal_file)
@@ -1770,20 +1777,20 @@ def run_preflight():
             "<html>SEALED-SNAPSHOT A</html>\n", encoding="utf-8")
         (refetch_bad / "b" / "index.html").write_text(
             "<html>THE LIVE SOURCE CHANGED</html>\n", encoding="utf-8")
+        os.environ["MOCK_LIVE_ROOT"] = str(refetch_ok)
         drift_ok_file = ws / "drift-unchanged.json"
         drift_ok_file.write_text(json.dumps(
-            {task_snap.name: {"refetched": str(refetch_ok)}}),
-            encoding="utf-8")
+            {task_snap.name: {}}), encoding="utf-8")
         drift_bad_file = ws / "drift-drifted.json"
         drift_bad_file.write_text(json.dumps(
-            {task_snap.name: {"refetched": str(refetch_bad), "changed": {
+            {task_snap.name: {"changed": {
                 "external-snapshots/b/index.html": {
                     "material": True,
                     "rationale": "ground-truth section replaced"}}}}),
             encoding="utf-8")
         drift_cosmetic_file = ws / "drift-cosmetic.json"
         drift_cosmetic_file.write_text(json.dumps(
-            {task_snap.name: {"refetched": str(refetch_bad), "changed": {
+            {task_snap.name: {"changed": {
                 "external-snapshots/b/index.html": {
                     "material": False,
                     "rationale": "footer timestamp only; ground-truth "
@@ -1791,11 +1798,14 @@ def run_preflight():
             encoding="utf-8")
         drift_noadj_file = ws / "drift-noadj.json"
         drift_noadj_file.write_text(json.dumps(
-            {task_snap.name: {"refetched": str(refetch_bad)}}),
-            encoding="utf-8")
+            {task_snap.name: {}}), encoding="utf-8")
         drift_claim_file = ws / "drift-claim.json"
         drift_claim_file.write_text(json.dumps(
             {task_snap.name: {"status": "unchanged"}}), encoding="utf-8")
+        drift_local_file = ws / "drift-localcopy.json"
+        drift_local_file.write_text(json.dumps(
+            {task_snap.name: {"refetched": str(snap_dir)}}),
+            encoding="utf-8")
         try:
             runner.score(snap_cfg, snap_docs, judge, ws / "judge-nosnap",
                          scoring_seed=5, manifest_path=snap_manifest_path,
@@ -1861,6 +1871,7 @@ def run_preflight():
         ok &= check(
             "external-context scoring requires the pre-score drift report",
             nodrift_ok, notes)
+        os.environ["MOCK_LIVE_ROOT"] = str(refetch_bad)
         drift_res = runner.score(
             snap_cfg, snap_docs, judge, ws / "judge-drifted",
             scoring_seed=5, manifest_path=snap_manifest_path,
@@ -1892,7 +1903,7 @@ def run_preflight():
         # the adjudication details are part of the batch identity.
         drift_bad2_file = ws / "drift-drifted2.json"
         drift_bad2_file.write_text(json.dumps(
-            {task_snap.name: {"refetched": str(refetch_bad), "changed": {
+            {task_snap.name: {"changed": {
                 "external-snapshots/b/index.html": {
                     "material": True,
                     "rationale": "a different recorded basis"}}}}),
@@ -1926,7 +1937,7 @@ def run_preflight():
                          drift_report_path=drift_claim_file)
             claim_ok = False
         except runner.InfraFailure as exc:
-            claim_ok = "not evidence" in str(exc)
+            claim_ok = "materiality adjudication" in str(exc)
         ok &= check(
             "bare drift status claim refused (harness computes drift)",
             claim_ok, notes)
@@ -1947,6 +1958,7 @@ def run_preflight():
         sdm["complete"] = False
         sdm["results"] = []
         sd_manifest.write_text(json.dumps(sdm), encoding="utf-8")
+        os.environ["MOCK_LIVE_ROOT"] = str(refetch_ok)
         try:
             runner.score(snap_cfg, snap_docs, judge, ws / "judge-scorer-drift",
                          scoring_seed=5, manifest_path=snap_manifest_path,
@@ -1957,6 +1969,7 @@ def run_preflight():
             ddrift_ok = False
         except runner.InfraFailure as exc:
             ddrift_ok = "different identity" in str(exc)
+        os.environ["MOCK_LIVE_ROOT"] = str(refetch_bad)
         ok &= check(
             "changed drift decisions refused on resume (identity bound)",
             ddrift_ok, notes)
@@ -1987,6 +2000,42 @@ def run_preflight():
             and not cosmetic_res[0].get("inconclusive")
             and cosmetic_res[0].get("source_drift", {}).get("material") is False,
             notes)
+        # The gate must never trust operator-supplied bytes: a report that
+        # points `refetched` at any local copy (here: the sealed snapshot
+        # itself) is refused outright — the harness fetches the sealed
+        # source URLs itself.
+        try:
+            runner.score(snap_cfg, snap_docs, judge, ws / "judge-localcopy",
+                         scoring_seed=5, manifest_path=snap_manifest_path,
+                         score_task_paths=[str(task_snap)],
+                         task_contexts=snap_ctx, seal_manifest_path=seal_file,
+                         evidence_repos={"mock-repo": str(repo_snap)},
+                         task_snapshots={task_snap.name: str(snap_dir)},
+                         drift_report_path=drift_local_file)
+            localcopy_ok = False
+        except runner.InfraFailure as exc:
+            localcopy_ok = "not accepted" in str(exc)
+        ok &= check(
+            "local re-fetched copies refused (harness fetches live sources)",
+            localcopy_ok, notes)
+        empty_live = ws / "refetch-empty"
+        empty_live.mkdir()
+        os.environ["MOCK_LIVE_ROOT"] = str(empty_live)
+        try:
+            runner.score(snap_cfg, snap_docs, judge, ws / "judge-fetchfail",
+                         scoring_seed=5, manifest_path=snap_manifest_path,
+                         score_task_paths=[str(task_snap)],
+                         task_contexts=snap_ctx, seal_manifest_path=seal_file,
+                         evidence_repos={"mock-repo": str(repo_snap)},
+                         task_snapshots={task_snap.name: str(snap_dir)},
+                         drift_report_path=drift_ok_file)
+            fetchfail_ok = False
+        except runner.InfraFailure as exc:
+            fetchfail_ok = "live-source fetch failed" in str(exc)
+        os.environ.pop("MOCK_LIVE_ROOT", None)
+        ok &= check(
+            "failed live-source fetch classified as infra (no silent skip)",
+            fetchfail_ok, notes)
         vres3 = runner.score(config, sched_docs, judge, ws / "judge-sched",
                              scoring_seed=5, manifest_path=manifest_path,
                              score_task_paths=[str(task_s)],

@@ -367,6 +367,7 @@ def config_digest(config):
         "timeout_seconds": config.get("timeout_seconds"),
         "nonstandard_config": config.get("nonstandard_config", False),
         "sandbox_cmd": config.get("sandbox_cmd"),
+        "drift_fetch_cmd": config.get("drift_fetch_cmd"),
         "seal_package_sha256": config.get("seal_package_sha256"),
     }
     return hashlib.sha256(
@@ -1703,6 +1704,34 @@ def run_schedule(config, schedule_path, repos, output_dir, task_paths):
     return write_manifest(True)
 
 
+def _fetch_live_source(fetch_cmd, url, timeout):
+    """Source drift is verified against the LIVE authoritative source: the
+    harness itself fetches each sealed URL through the registered
+    `drift_fetch_cmd`. An operator-supplied local copy is never drift
+    evidence — it could be the sealed snapshot itself."""
+    dest_dir = Path(tempfile.mkdtemp(prefix="rpa-refetch-"))
+    dest = dest_dir / "fetched"
+    cmd = [part.replace("{url}", url).replace("{dest}", str(dest))
+           for part in fetch_cmd]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise InfraFailure(f"live-source fetch timed out for {url}") from exc
+    except OSError as exc:
+        raise InfraFailure(
+            f"cannot execute drift_fetch_cmd for {url}: {exc}") from exc
+    if proc.returncode != 0:
+        raise InfraFailure(
+            f"live-source fetch failed for {url} (exit {proc.returncode}): "
+            f"{proc.stderr.decode('utf-8', 'replace')[:200]}"
+        )
+    try:
+        return dest.read_bytes()
+    except OSError as exc:
+        raise InfraFailure(
+            f"drift_fetch_cmd produced no file for {url}: {exc}") from exc
+
+
 def _sealed_bytes(path, seal_files, key=None):
     """Judge inputs (judge prompt, task contexts, external snapshots) are
     bound to the atomic seal: the bytes actually read must match the digest
@@ -2086,38 +2115,61 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             if drift_report is None:
                 raise InfraFailure(
                     "external-context tasks require the pre-score source-"
-                    "drift report (--drift-report) with the re-fetched "
-                    "copies — re-fetch the sealed sources before scoring"
+                    "drift report (--drift-report) carrying materiality "
+                    "adjudications for any changed source — the harness "
+                    "re-fetches the sealed live sources itself"
+                )
+            fetch_cmd = config.get("drift_fetch_cmd")
+            if (not isinstance(fetch_cmd, list) or not fetch_cmd
+                    or not all(isinstance(p, str) for p in fetch_cmd)
+                    or not any("{url}" in p for p in fetch_cmd)
+                    or not any("{dest}" in p for p in fetch_cmd)):
+                raise InfraFailure(
+                    "external-context scoring requires a registered "
+                    "`drift_fetch_cmd` (non-empty command with {url} and "
+                    "{dest} placeholders) — the harness itself re-fetches "
+                    "every sealed live source; local copies are not "
+                    "accepted as drift evidence"
+                )
+            snapshot_sources = seal_doc.get("snapshot_sources")
+            if not isinstance(snapshot_sources, dict):
+                raise InfraFailure(
+                    "the sealed package must bind every external snapshot "
+                    "to its live source URL (`snapshot_sources`) — drift "
+                    "cannot be verified against unprovenanced copies"
                 )
             for doc_name, snap_path in snapshot_by_doc.items():
                 task_name = snap_task_by_doc[doc_name]
                 drift_entry = drift_report.get(task_name)
-                if (not isinstance(drift_entry, dict)
-                        or not drift_entry.get("refetched")):
+                if not isinstance(drift_entry, dict):
                     raise InfraFailure(
-                        f"{task_name}: drift report must supply the "
-                        f"re-fetched copy (`refetched`: path) — a bare "
-                        f"status claim is not evidence"
+                        f"{task_name}: drift report must carry an entry "
+                        f"for this task (adjudications for any changed "
+                        f"source) — the pre-score gate is explicit"
+                    )
+                if drift_entry.get("refetched"):
+                    # The gate never trusts operator-supplied bytes: a
+                    # local path could be the sealed snapshot itself.
+                    raise InfraFailure(
+                        f"{task_name}: drift report `refetched` paths are "
+                        f"not accepted — the harness fetches the sealed "
+                        f"source URLs itself"
                     )
                 snap_root = Path(snap_path)
-                refetched_root = Path(drift_entry["refetched"])
                 snap_items = _sealed_snapshot_items(snap_root, seal_files)
-                pairs = [
-                    (item, refetched_root if snap_root.is_file()
-                     else refetched_root / rel, seal_key)
-                    for item, rel, seal_key in snap_items
-                ]
                 changed_keys = []
-                for snap, refetched, seal_key in pairs:
-                    sealed_digest = seal_files[seal_key]
-                    if not refetched.exists():
+                for _snap, _rel, seal_key in snap_items:
+                    url = snapshot_sources.get(seal_key)
+                    if not url:
                         raise InfraFailure(
-                            f"{refetched}: re-fetched copy missing — "
-                            f"source drift cannot be verified"
+                            f"{task_name}: sealed snapshot `{seal_key}` "
+                            f"has no source URL in the sealed package — "
+                            f"drift cannot be verified"
                         )
-                    if hashlib.sha256(read_input_bytes(
-                            refetched, "re-fetched drift copy"
-                    )).hexdigest() != sealed_digest:
+                    fetched = _fetch_live_source(
+                        fetch_cmd, url, config["timeout_seconds"])
+                    if (hashlib.sha256(fetched).hexdigest()
+                            != seal_files[seal_key]):
                         changed_keys.append(seal_key)
                 if changed_keys:
                     # The registered gate is about MATERIAL drift in a
