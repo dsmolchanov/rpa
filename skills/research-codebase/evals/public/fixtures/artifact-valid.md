@@ -32,3 +32,15 @@ Minimal valid document proving the validator accepts the contract shape.
 
 ## Code References
 - `fixture/file.py:1` - Synthetic reference.
+
+## Architecture Documentation
+None — synthetic fixture.
+
+## Historical Context (from thoughts/)
+None — synthetic fixture.
+
+## Related Research
+None — synthetic fixture.
+
+## Open Questions
+None — synthetic fixture.

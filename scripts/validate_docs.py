@@ -533,6 +533,17 @@ def check_artifact_validator(root, errors):
         errors.append(
             "artifact validator accepted the INVALID fixture — the gate "
             "is a silent no-op")
+    subtle = fixtures / "artifact-subtle-invalid.md"
+    if not subtle.is_file():
+        errors.append("artifact-subtle-invalid.md fixture missing")
+        return
+    ks = _sp.run([_sys.executable, str(validator), str(subtle)],
+                 capture_output=True)
+    if ks.returncode == 0:
+        errors.append(
+            "artifact validator accepted the SUBTLE-invalid fixture "
+            "(empty values / wrong status / prefix-only heading) — value "
+            "and exact-heading enforcement is broken")
 
 
 def validate(root, exclude_fixtures=True):
