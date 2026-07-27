@@ -72,6 +72,7 @@ def build_config(workspace, mode, timeout=20):
         "judge_model": "opus",
         "judge_effort": "high",
         "workflow_abort_exit_codes": [21],
+        "nonstandard_config": True,
         "backend_version": "mock-claude 1.0.0",
         "backend_version_cmd": [sys.executable, str(HERE / "mock_claude.py"),
                                 "--version"],
@@ -82,7 +83,8 @@ def build_config(workspace, mode, timeout=20):
 def write_task(workspace, label, sha):
     task = Path(workspace) / f"task-{label}.md"
     task.write_text(
-        f"---\ntask-id: preflight-{label}\ntarget-sha: {sha}\nset: preflight\n---\n\n"
+        f"---\ntask-id: preflight-{label}\ntarget-repo: mock-repo\n"
+        f"target-sha: {sha}\nset: preflight\n---\n\n"
         f"## Task prompt\n\nThrowaway preflight task: research the mock subsystem.\n\n"
         f"## Ground truth\n\n{SECRET}\n",
         encoding="utf-8",
@@ -329,6 +331,17 @@ def run_preflight():
             arm_ok, notes)
 
         config, _ = build_config(ws, "normal")
+        config.pop("nonstandard_config")
+        task_topo = write_task(ws, "run-topology", par_sha)
+        record = runner.run_task(config, "mock", task_topo, repo,
+                                 ws / "out-run-topology")
+        ok &= check(
+            "run mode requires three-arm topology unless config is dev-marked",
+            record["status"] == "infra_failure"
+            and "three-arm topology" in record.get("failure", ""),
+            notes)
+
+        config, _ = build_config(ws, "normal")
         config["backend_cmd"] = [
             part for part in config["backend_cmd"]
             if part not in ("--plugin-dir", "{installation}")
@@ -384,19 +397,34 @@ def run_preflight():
         config["arms"]["second"] = dict(config["arms"]["mock"])
         config["arms"]["ablation"] = dict(config["arms"]["mock"],
                                           forbid_subagents=True)
+        six_tasks = [f"t-{c}.md" for c in "abcdef"]
         try:
-            runner.make_schedule(config, ["t-a.md", "t-b.md"], 3, seed=1)
+            runner.make_schedule(config, six_tasks, 3, seed=1)
             abl_ok = False
         except runner.InfraFailure as exc:
             abl_ok = "schedule_tasks" in str(exc)
         config["arms"]["ablation"]["schedule_tasks"] = ["t-a.md", "t-b.md"]
-        s_abl = runner.make_schedule(config, ["t-a.md", "t-b.md"], 3, seed=1)
+        s_abl = runner.make_schedule(config, six_tasks, 3, seed=1)
         ok &= check(
             "ablation arm requires explicit two-task scoping (standard 3-arm ok)",
             abl_ok
             and s_abl["nonstandard"] is False
             and sum(1 for e in s_abl["entries"] if e["arm"] == "ablation") == 6,
             notes)
+
+        try:
+            runner.make_schedule(config, ["t-a.md", "t-b.md"], 3, seed=1)
+            six_ok = False
+        except runner.InfraFailure as exc:
+            six_ok = "distinct holdout tasks" in str(exc)
+        try:
+            runner.make_schedule(config, six_tasks[:5] + ["t-a.md"], 3, seed=1)
+            six_ok = False
+        except runner.InfraFailure as exc:
+            six_ok = six_ok and "duplicate task paths" in str(exc)
+        ok &= check(
+            "standard schedule requires six unique holdout tasks",
+            six_ok, notes)
 
         config, _ = build_config(ws, "normal")
         repo_s, sha_s = make_git_repo(ws, "sched")
@@ -405,7 +433,8 @@ def run_preflight():
                                      allow_nonstandard=True)
         sched_path = ws / "schedule.json"
         sched_path.write_text(json.dumps(sched), encoding="utf-8")
-        manifest = runner.run_schedule(config, sched_path, repo_s,
+        repos_map = {"mock-repo": str(repo_s)}
+        manifest = runner.run_schedule(config, sched_path, repos_map,
                                        ws / "out-sched", [str(task_s)])
         ok &= check(
             "schedule executor runs every entry in order, records completion",
@@ -421,7 +450,7 @@ def run_preflight():
         m["complete"] = False
         manifest_path.write_text(json.dumps(m), encoding="utf-8")
         runs_before = len(list((ws / "out-sched").glob("run-*.json")))
-        manifest2 = runner.run_schedule(config, sched_path, repo_s,
+        manifest2 = runner.run_schedule(config, sched_path, repos_map,
                                         ws / "out-sched", [str(task_s)])
         runs_after = len(list((ws / "out-sched").glob("run-*.json")))
         ok &= check(
@@ -436,7 +465,7 @@ def run_preflight():
         bad_path = ws / "schedule-bad.json"
         bad_path.write_text(json.dumps(bad), encoding="utf-8")
         try:
-            runner.run_schedule(config, bad_path, repo_s,
+            runner.run_schedule(config, bad_path, repos_map,
                                 ws / "out-sched-bad", [str(task_s)])
             sched_ok = False
         except runner.InfraFailure as exc:
@@ -449,7 +478,7 @@ def run_preflight():
         config["arms"]["mock"]["model"] = "uniformly-changed"
         config["arms"]["mock"]["effort"] = "low"
         try:
-            runner.run_schedule(config, sched_path, repo_s,
+            runner.run_schedule(config, sched_path, repos_map,
                                 ws / "out-sched-drift", [str(task_s)])
             bind_ok = False
         except runner.InfraFailure as exc:
@@ -464,7 +493,7 @@ def run_preflight():
         m2["schedule_digest"] = "0" * 64
         manifest_path.write_text(json.dumps(m2), encoding="utf-8")
         try:
-            runner.run_schedule(config, sched_path, repo_s,
+            runner.run_schedule(config, sched_path, repos_map,
                                 ws / "out-sched", [str(task_s)])
             resume_ok = False
         except runner.InfraFailure as exc:
@@ -474,6 +503,16 @@ def run_preflight():
         ok &= check(
             "resumed manifest bound to the full schedule digest",
             resume_ok, notes)
+
+        try:
+            runner.run_schedule(config, sched_path, {"other-repo": str(repo_s)},
+                                ws / "out-sched-route", [str(task_s)])
+            route_ok = False
+        except runner.InfraFailure as exc:
+            route_ok = "no registered clone" in str(exc)
+        ok &= check(
+            "schedule entries routed to their task's registered clone",
+            route_ok, notes)
 
         config, _ = build_config(ws, "normal")
         task_ret = write_task(ws, "retries", par_sha)
@@ -782,6 +821,24 @@ def run_preflight():
         ok &= check(
             "subset or duplicated scoring inputs refused against the manifest",
             subset_ok, notes)
+        vres2 = runner.score(config, sched_docs, judge, ws / "judge-mverify",
+                             scoring_seed=5, manifest_path=manifest_path,
+                             evidence_repos={"mock-repo": str(repo_s)})
+        ok &= check(
+            "manifest verification maps each doc to its task's repo@sha",
+            all(r.get("role") == "verifier"
+                and r.get("evidence_sha") == sha_s for r in vres2),
+            notes)
+        try:
+            runner.score(config, sched_docs, judge, ws / "judge-mpair",
+                         scoring_seed=5, manifest_path=manifest_path,
+                         evidence_repo=str(repo_s), evidence_sha=sha_s)
+            mpair_ok = False
+        except runner.InfraFailure as exc:
+            mpair_ok = "NAME=PATH" in str(exc)
+        ok &= check(
+            "single shared evidence checkout refused for manifest batches",
+            mpair_ok, notes)
         ev_repo, ev_sha = make_git_repo(ws, "evidence")
         echo_dir = ws / "echo-verifier"
         os.environ["MOCK_ECHO_DIR"] = str(echo_dir)

@@ -1,4 +1,6 @@
 {
+  "nonstandard_config": false,
+  "_nonstandard_config_note": "Production/holdout configs keep this false: every run then requires the registered three-arm topology. Dev/tuning configs with fewer arms must set it true.",
   "_comment": "Eval-runner configuration example (pilot plan, prerequisite 5). Copy, fill in real installation dirs + hashes at candidate freeze, and keep the filled copy in the private eval workspace. All arms must share model/effort per the pinned runtime configuration (enforced by validate_arm_parity); only installation content differs. NOTE: with the real claude CLI the arm's `model` must equal the effective model id the CLI reports in stream events (e.g. a full claude-... id, not an alias) — establish the exact value during the real-backend preflight.",
   "arms": {
     "baseline": {

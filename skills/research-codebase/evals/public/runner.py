@@ -116,9 +116,11 @@ from pathlib import Path
 
 MAX_CONTINUATIONS = 3
 DEFAULT_MAX_INFRA_RETRIES = 2
-# The pilot protocol fixes the replicate count; schedules that deviate must
-# be explicitly marked nonstandard (dev-set tuning only, never holdout).
+# The pilot protocol fixes the replicate count and the holdout size;
+# schedules that deviate must be explicitly marked nonstandard (dev-set
+# tuning only, never holdout).
 REGISTERED_REPLICATES = 3
+REGISTERED_HOLDOUT_TASKS = 6
 CONTINUATION_MESSAGE = (
     "Proceed with the research as specified; no additional constraints."
 )
@@ -131,6 +133,7 @@ FINGERPRINT_KEYS = (
     "last_updated_by",
 )
 TARGET_SHA_RE = re.compile(r"^target-sha:\s*([0-9a-f]{7,40})\s*$", re.MULTILINE)
+TARGET_REPO_RE = re.compile(r"^target-repo:\s*(\S+)\s*$", re.MULTILINE)
 
 
 class InfraFailure(Exception):
@@ -212,6 +215,7 @@ def config_digest(config):
         "workflow_abort_exit_codes": config.get("workflow_abort_exit_codes"),
         "max_infra_retries": config.get("max_infra_retries"),
         "timeout_seconds": config.get("timeout_seconds"),
+        "nonstandard_config": config.get("nonstandard_config", False),
     }
     return hashlib.sha256(
         json.dumps(material, sort_keys=True).encode("utf-8")
@@ -324,6 +328,61 @@ def task_target_sha(task_text, task_path):
     if not match:
         raise InfraFailure(f"{task_path}: no pinned `target-sha` in frontmatter")
     return match.group(1)
+
+
+def task_target_repo(task_text, task_path):
+    match = TARGET_REPO_RE.search(task_text)
+    if not match:
+        raise InfraFailure(
+            f"{task_path}: no `target-repo` in frontmatter — every task "
+            f"must name its pinned repository"
+        )
+    return match.group(1).strip()
+
+
+def resolve_repo(task_path, repos):
+    """The registered holdout spans several repositories: each task names
+    its `target-repo` and the operator supplies a NAME=PATH clone mapping;
+    one clone can never serve a multi-repo schedule."""
+    text = Path(task_path).read_text(encoding="utf-8")
+    name = task_target_repo(text, task_path)
+    if name not in repos:
+        raise InfraFailure(
+            f"{task_path}: target-repo `{name}` has no registered clone — "
+            f"supply it as {name}=/path/to/clone"
+        )
+    return repos[name]
+
+
+def parse_repo_mapping(pairs, what):
+    repos = {}
+    for pair in pairs or []:
+        name, sep, path = pair.partition("=")
+        if not sep or not name.strip() or not path.strip():
+            raise InfraFailure(f"{what} entries must be NAME=PATH, got {pair!r}")
+        repos[name.strip()] = path.strip()
+    return repos
+
+
+def validate_arm_topology(config):
+    """Production (holdout) configs carry the registered three-arm topology
+    — baseline, candidate, exactly one no-subagent ablation arm — verified
+    before EVERY run, so a config that lost an arm cannot quietly produce
+    valid-looking runs. Dev configs must declare themselves with
+    `nonstandard_config: true`. Returns True when the topology is the
+    registered standard one."""
+    arms = config.get("arms", {})
+    ablation_arms = [name for name, arm in arms.items()
+                     if arm.get("forbid_subagents")]
+    standard = len(arms) == 3 and len(ablation_arms) == 1
+    if not standard and not config.get("nonstandard_config"):
+        raise InfraFailure(
+            f"registered three-arm topology required (baseline, candidate, "
+            f"exactly one no-subagent ablation arm); got {len(arms)} arm(s) "
+            f"with {len(ablation_arms)} ablation arm(s) — dev configs must "
+            f"set `nonstandard_config: true`"
+        )
+    return standard
 
 
 def _git(repo, *args):
@@ -692,6 +751,7 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1):
     started = None
     try:
         validate_arm_parity(config)
+        record["standard_topology"] = validate_arm_topology(config)
         record["backend_version"] = verify_backend_version(config)
         # Every registered installation is verified before EVERY run, so
         # drift in any arm halts the experiment before more data is
@@ -871,6 +931,9 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
     mark. A no-subagent (ablation) arm must be EXPLICITLY scoped to its two
     designated tasks via `schedule_tasks` — defaulting it to the full task
     list would silently widen the pre-registered third-arm comparison."""
+    tasks = [str(Path(t)) for t in task_paths]
+    if len(set(tasks)) != len(tasks):
+        raise InfraFailure("duplicate task paths in the schedule task list")
     ablation_arms = [name for name, arm in config.get("arms", {}).items()
                      if arm.get("forbid_subagents")]
     standard_topology = (len(config.get("arms", {})) == 3
@@ -891,8 +954,14 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
                 f"arm(s) with {len(ablation_arms)} ablation arm(s); dev-set "
                 f"tuning schedules must be explicitly marked nonstandard"
             )
+        if len(tasks) != REGISTERED_HOLDOUT_TASKS:
+            raise InfraFailure(
+                f"a standard (holdout) schedule requires exactly "
+                f"{REGISTERED_HOLDOUT_TASKS} distinct holdout tasks, got "
+                f"{len(tasks)}; dev-set tuning schedules must be explicitly "
+                f"marked nonstandard"
+            )
     validate_arm_parity(config)
-    tasks = [str(Path(t)) for t in task_paths]
     entries = []
     for arm_name in sorted(config["arms"]):
         arm = config["arms"][arm_name]
@@ -903,11 +972,12 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
                     f"explicit `schedule_tasks` — the plan scopes the third "
                     f"arm to its two designated tasks"
                 )
-            if len(arm["schedule_tasks"]) != 2:
+            if (len(arm["schedule_tasks"]) != 2
+                    or len(set(arm["schedule_tasks"])) != 2):
                 raise InfraFailure(
                     f"arm `{arm_name}` (no-subagent ablation) must be scoped "
-                    f"to exactly 2 designated tasks, got "
-                    f"{len(arm['schedule_tasks'])}"
+                    f"to exactly 2 DISTINCT designated tasks, got "
+                    f"{arm['schedule_tasks']!r}"
                 )
         arm_tasks = [str(Path(t)) for t in arm.get("schedule_tasks", tasks)]
         unknown = [t for t in arm_tasks if t not in tasks]
@@ -927,7 +997,8 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
         "seed": seed,
         "replicates": replicates,
         "nonstandard": (replicates != REGISTERED_REPLICATES
-                        or not standard_topology),
+                        or not standard_topology
+                        or len(tasks) != REGISTERED_HOLDOUT_TASKS),
         "tasks": tasks,
         "arms": sorted(config["arms"]),
         "config_digest": config_digest(config),
@@ -945,7 +1016,7 @@ def schedule_digest(schedule):
     ).hexdigest()
 
 
-def run_schedule(config, schedule_path, repo_dir, output_dir, task_paths):
+def run_schedule(config, schedule_path, repos, output_dir, task_paths):
     """Execute a pre-registered schedule in its recorded order. The expected
     schedule is RECONSTRUCTED from the registered config, the operator-
     supplied task set, and the recorded seed/replicates — the schedule
@@ -1019,8 +1090,11 @@ def run_schedule(config, schedule_path, repo_dir, output_dir, task_paths):
         return manifest
 
     for entry in entries[len(results):]:
+        # The registered holdout spans several repositories: each task is
+        # routed to the clone registered for its own `target-repo`.
+        entry_repo = resolve_repo(entry["task"], repos)
         attempts = run_task_with_retries(
-            config, entry["arm"], entry["task"], repo_dir, output_dir
+            config, entry["arm"], entry["task"], entry_repo, output_dir
         )
         final = attempts[-1]
         if final["status"] == "infra_failure":
@@ -1079,7 +1153,7 @@ def assert_blind_scorable(doc_path):
 
 def score(config, doc_paths, judge_prompt_path, output_dir,
           evidence_repo=None, evidence_sha=None, scoring_seed=None,
-          manifest_path=None, allow_unscheduled=False):
+          manifest_path=None, allow_unscheduled=False, evidence_repos=None):
     """One fresh pinned backend session per document. The judge's full
     response text is preserved on disk — it IS the scoring artifact. Judge
     prompts live in the sealed package and are passed in at runtime.
@@ -1111,6 +1185,7 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             "replicate is scored exactly once — ad-hoc/dev scoring must be "
             "explicitly marked unscheduled"
         )
+    doc_evidence = None
     if manifest_path is not None:
         # No post-hoc selection: the supplied documents must cover every
         # completed scheduled replicate exactly once — no subsets, no
@@ -1121,11 +1196,9 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                 "schedule manifest is incomplete — score only after the "
                 "whole schedule has run"
             )
-        expected_names = sorted(
-            f"run-{r['run_id']}-anon.md"
-            for r in manifest.get("results", [])
-            if r.get("status") == "completed"
-        )
+        completed = [r for r in manifest.get("results", [])
+                     if r.get("status") == "completed"]
+        expected_names = sorted(f"run-{r['run_id']}-anon.md" for r in completed)
         supplied_names = sorted(Path(d).name for d in doc_paths)
         if supplied_names != expected_names:
             raise InfraFailure(
@@ -1133,6 +1206,35 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                 f"replicate exactly once — expected {expected_names}, "
                 f"got {supplied_names}"
             )
+        if evidence_repo or evidence_sha:
+            raise InfraFailure(
+                "manifest-bound verification checks each document against "
+                "ITS OWN task's pinned repo@sha — pass `evidence_repos` "
+                "(NAME=PATH mapping), not a single evidence repo/sha"
+            )
+        if evidence_repos is not None:
+            # A holdout batch spans several target repositories: every
+            # document is verified against the worktree of its own task's
+            # pinned repo@sha, never one shared checkout.
+            doc_evidence = {}
+            for r in completed:
+                task_text = Path(r["task"]).read_text(encoding="utf-8")
+                repo_name = task_target_repo(task_text, r["task"])
+                if repo_name not in evidence_repos:
+                    raise InfraFailure(
+                        f"{r['task']}: target-repo `{repo_name}` has no "
+                        f"registered evidence clone — supply it as "
+                        f"{repo_name}=/path/to/frozen-clone"
+                    )
+                doc_evidence[f"run-{r['run_id']}-anon.md"] = (
+                    evidence_repos[repo_name],
+                    task_target_sha(task_text, r["task"]),
+                )
+    elif evidence_repos is not None:
+        raise InfraFailure(
+            "`evidence_repos` requires manifest-bound scoring — for "
+            "unscheduled verification use evidence_repo/evidence_sha"
+        )
     judge_prompt = Path(judge_prompt_path).read_text(encoding="utf-8")
     judge_cmd = config.get("judge_backend_cmd", config["backend_cmd"])
     if any("{installation}" in part for part in judge_cmd):
@@ -1153,11 +1255,15 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
     # same output directory must never overwrite each other's judge files.
     scoring_id = uuid.uuid4().hex[:8]
     results = []
-    role = "verifier" if evidence_repo else "scorer"
+    role = "verifier" if (evidence_repo or doc_evidence is not None) else "scorer"
     order = list(range(len(doc_paths)))
     random.Random(scoring_seed).shuffle(order)
     for i, doc_index in enumerate(order):
         doc, doc_text = doc_paths[doc_index], doc_texts[doc_index]
+        if doc_evidence is not None:
+            ev_repo, ev_sha = doc_evidence[Path(doc).name]
+        else:
+            ev_repo, ev_sha = evidence_repo, evidence_sha
         # Every judge session is a pinned session: the backend version is
         # re-probed per document, so an installation change mid-batch
         # cannot slip later documents onto an unregistered version.
@@ -1165,13 +1271,13 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
         # Each judge runs in its own root OUTSIDE the experiment tree:
         # nothing above the cwd leads to run artifacts. A scorer gets an
         # empty cwd and no inspection tools (JUDGE_SETTINGS); a verifier
-        # gets a disposable worktree of the frozen evidence at the pinned
-        # sha with read-only tools (VERIFIER_SETTINGS).
+        # gets a disposable worktree of THIS document's frozen evidence at
+        # its pinned sha with read-only tools (VERIFIER_SETTINGS).
         judge_root = Path(tempfile.mkdtemp(prefix="rpa-judge-"))
-        if evidence_repo:
+        if ev_repo:
             profile, _ = make_profile(judge_root, "judge",
                                       settings=VERIFIER_SETTINGS)
-            workdir = make_worktree(evidence_repo, evidence_sha, judge_root)
+            workdir = make_worktree(ev_repo, ev_sha, judge_root)
         else:
             profile, _ = make_profile(judge_root, "judge",
                                       settings=JUDGE_SETTINGS)
@@ -1184,8 +1290,8 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                 judge_cmd, prompt, str(workdir), env, config["timeout_seconds"]
             )
         finally:
-            if evidence_repo:
-                remove_worktree(evidence_repo, workdir)
+            if ev_repo:
+                remove_worktree(ev_repo, workdir)
         session_id, nodes, response = parse_transcript(stdout)
         if not response.strip():
             raise InfraFailure(f"judge session {session_id} returned no response text")
@@ -1206,8 +1312,8 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             "response": response,
             "accounting": account(nodes),
         }
-        if evidence_repo:
-            result["evidence_sha"] = evidence_sha
+        if ev_repo:
+            result["evidence_sha"] = ev_sha
         (out / f"judge-{scoring_id}-{i}.json").write_text(
             json.dumps(result, indent=2) + "\n", encoding="utf-8"
         )
@@ -1239,6 +1345,15 @@ def main():
     parser.add_argument("--scoring-seed", type=int,
                         help="score mode: recorded seed randomizing the "
                              "document presentation order")
+    parser.add_argument("--evidence-repos", nargs="+",
+                        help="score mode with --manifest, verifier role: "
+                             "NAME=PATH frozen-clone mapping; each document "
+                             "is verified against its own task's pinned "
+                             "repo@sha")
+    parser.add_argument("--repos", nargs="+",
+                        help="--run-schedule: NAME=PATH clone mapping; each "
+                             "task is routed to the clone registered for "
+                             "its target-repo")
     parser.add_argument("--manifest",
                         help="score mode: schedule manifest binding --docs "
                              "to completed scheduled replicates (exactly "
@@ -1296,13 +1411,15 @@ def main():
         sys.exit(0)
 
     if args.run_schedule:
-        if not (args.config and args.repo and args.tasks):
-            parser.error("--run-schedule requires --config, --repo, and "
-                         "--tasks (the registered task set, compared against "
-                         "the schedule)")
+        if not (args.config and args.repos and args.tasks):
+            parser.error("--run-schedule requires --config, --repos "
+                         "(NAME=PATH clone mapping), and --tasks (the "
+                         "registered task set, compared against the "
+                         "schedule)")
         config = load_config(args.config)
         try:
-            manifest = run_schedule(config, args.run_schedule, args.repo,
+            repos = parse_repo_mapping(args.repos, "--repos")
+            manifest = run_schedule(config, args.run_schedule, repos,
                                     args.output, args.tasks)
         except InfraFailure as exc:
             print(json.dumps({"status": "infra_failure", "failure": str(exc)}))
@@ -1321,12 +1438,20 @@ def main():
             parser.error("score mode requires --scoring-seed (recorded "
                          "randomization of the presentation order)")
         config = load_config(args.config)
+        try:
+            evidence_repos = (parse_repo_mapping(args.evidence_repos,
+                                                 "--evidence-repos")
+                              if args.evidence_repos else None)
+        except InfraFailure as exc:
+            print(json.dumps({"status": "infra_failure", "failure": str(exc)}))
+            sys.exit(1)
         results = score(config, args.docs, args.judge_prompt, args.output,
                         evidence_repo=args.evidence_repo,
                         evidence_sha=args.evidence_sha,
                         scoring_seed=args.scoring_seed,
                         manifest_path=args.manifest,
-                        allow_unscheduled=args.unscheduled_docs)
+                        allow_unscheduled=args.unscheduled_docs,
+                        evidence_repos=evidence_repos)
         print(json.dumps([{k: r[k] for k in ("doc", "session_id")} for r in results]))
         sys.exit(0)
 
