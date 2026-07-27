@@ -76,7 +76,10 @@ LAST_UPDATED_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 CONTENT_REQUIRED_SECTIONS = ("Research Question", "Summary",
                              "Detailed Findings")
 
-HEADING_RE = re.compile(r"^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$")
+# The optional closing hash sequence must be WHITESPACE-delimited (as
+# in CommonMark): `## Summary ##` reads as "Summary", but `## Summary#`
+# keeps its trailing hash and can never match a required heading.
+HEADING_RE = re.compile(r"^ {0,3}(#{1,6})\s+(.*?)(?:\s+#+)?\s*$")
 FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 FENCE_CLOSE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})\s*$")
 GIT_COMMIT_RE = re.compile(r"^[0-9a-f]{7,40}$")
@@ -160,6 +163,20 @@ def _valid_date(sval):
     return True
 
 
+def _unquote_scalar(val, errors, key):
+    """Quotes must be MATCHED: `"unterminated` is malformed YAML, not a
+    value starting with a quote character — silently normalizing it would
+    accept frontmatter real YAML parsing rejects."""
+    if val[:1] in ("'", '"'):
+        if len(val) < 2 or val[-1] != val[0]:
+            errors.append(
+                f"frontmatter `{key}`: unmatched quote in `{val[:40]}` — "
+                f"malformed YAML scalar")
+            return None
+        return val[1:-1]
+    return val
+
+
 def _parse_frontmatter_fallback(block, errors):
     """Contract-shape parser for hosts without PyYAML: flat `key: value`
     mapping, values scalars or one bracketed flow list. Anything richer is
@@ -181,12 +198,21 @@ def _parse_frontmatter_fallback(block, errors):
         key, _, val = raw.partition(":")
         val = val.strip()
         if val.startswith("[") and val.endswith("]"):
-            meta[key.strip()] = [
-                item.strip().strip("'\"")
-                for item in val[1:-1].split(",") if item.strip()
-            ]
+            items = []
+            for item in val[1:-1].split(","):
+                item = item.strip()
+                if not item:
+                    continue
+                unquoted = _unquote_scalar(item, errors, key.strip())
+                if unquoted is None:
+                    return {}
+                items.append(unquoted)
+            meta[key.strip()] = items
         else:
-            meta[key.strip()] = val.strip("'\"")
+            unquoted = _unquote_scalar(val, errors, key.strip())
+            if unquoted is None:
+                return {}
+            meta[key.strip()] = unquoted
     return meta
 
 

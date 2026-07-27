@@ -1278,6 +1278,37 @@ def run_preflight():
                 1),
             encoding="utf-8")
         prose_bad = runner.artifact_validator.validate(prose_doc)
+        hashhead_doc = ws / "2026-07-26-hashhead.md"
+        hashhead_doc.write_text(
+            fn_doc.read_text(encoding="utf-8").replace(
+                "## Summary", "## Summary#", 1),
+            encoding="utf-8")
+        hashhead_bad = runner.artifact_validator.validate(hashhead_doc)
+        import builtins as _bi
+        import importlib.util as _ilu
+        _real_import = _bi.__import__
+
+        def _no_yaml(name, *a, **k):
+            if name == "yaml":
+                raise ImportError("blocked for fallback probe")
+            return _real_import(name, *a, **k)
+
+        _bi.__import__ = _no_yaml
+        try:
+            _spec = _ilu.spec_from_file_location(
+                "va_noyaml", HERE / "validate_artifact.py")
+            va_noyaml = _ilu.module_from_spec(_spec)
+            _spec.loader.exec_module(va_noyaml)
+        finally:
+            _bi.__import__ = _real_import
+        unq_doc = ws / "2026-07-26-unquoted.md"
+        unq_doc.write_text(
+            fn_doc.read_text(encoding="utf-8").replace(
+                'topic: "Fixture topic (synthetic)"',
+                'topic: "unterminated', 1),
+            encoding="utf-8")
+        unq_bad = va_noyaml.validate(unq_doc)
+        fallback_valid_ok = not va_noyaml.validate(fn_doc)
         ok &= check(
             "filename contract enforced; raw anonymization markers rejected",
             any("basename" in e for e in fn_bad)
@@ -1294,7 +1325,10 @@ def run_preflight():
             and offset_ok
             and any("different instants" in e for e in timeshift_bad)
             and any("only the five metadata lines" in e
-                    for e in prose_bad),
+                    for e in prose_bad)
+            and any("## Summary" in e for e in hashhead_bad)
+            and any("unmatched quote" in e for e in unq_bad)
+            and fallback_valid_ok,
             notes)
 
         meta_script = (HERE.parents[3] / "scripts"
