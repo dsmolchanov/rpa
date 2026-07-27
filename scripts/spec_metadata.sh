@@ -4,7 +4,10 @@ set -euo pipefail
 # hacky script that is referenced by global research commands
 
 # Collect metadata
-DATETIME_TZ=$(date '+%Y-%m-%d %H:%M:%S %Z')
+# %z (numeric ISO offset) rather than %Z: zone NAMES can themselves be
+# numeric ("+03", "+1245") on some hosts, which downstream consumers
+# cannot distinguish from malformed offsets.
+DATETIME_TZ=$(date '+%Y-%m-%d %H:%M:%S %z')
 FILENAME_TS=$(date '+%Y-%m-%d_%H-%M-%S')
 
 if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then

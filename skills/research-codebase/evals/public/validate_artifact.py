@@ -79,17 +79,13 @@ CONTENT_REQUIRED_SECTIONS = ("Research Question", "Summary",
 HEADING_RE = re.compile(r"^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$")
 FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 FENCE_CLOSE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})\s*$")
-# The contract requires "date and time with timezone in ISO format":
-# the timezone part is MANDATORY, an unzoned timestamp is ambiguous.
-# Accepted timezone forms: Z, a numeric offset, or the named-zone
-# suffix the prescribed `spec_metadata.sh` emits (`%Z`, e.g. ` UTC`).
-DATE_RE = re.compile(
-    r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?(\.\d+)?"
-    r"(Z|[+-]\d{2}:?\d{2}| [A-Z]{2,5})$")
 GIT_COMMIT_RE = re.compile(r"^[0-9a-f]{7,40}$")
+# Zone forms: Z; a numeric offset attached or space-separated (the
+# script's %z emits " +0300"); a short numeric zone NAME (" +03",
+# " +1245" — hosts where %Z itself is numeric); a lettered zone name.
 DATE_PARTS_RE = re.compile(
     r"^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?"
-    r"(?:\.\d+)?(Z| [A-Z]{2,5}|([+-])(\d{2}):?(\d{2}))$")
+    r"(?:\.\d+)?(Z| [A-Z]{2,5}| ?[+-](\d{2})(?::?(\d{2}))?)$")
 META_LINE_RE = re.compile(
     r"^\*\*(Date|Researcher|Git Commit|Branch|Repository)\*\*: *(.+)$")
 REQUIRED_META_LINES = ("Date", "Researcher", "Git Commit", "Branch",
@@ -119,8 +115,10 @@ def _valid_timestamp(sval):
         datetime.datetime(year, month, day, hour, minute, second)
     except ValueError:
         return False
-    if match.group(8):  # numeric offset
-        if int(match.group(9)) > 23 or int(match.group(10)) > 59:
+    if match.group(8) is not None:  # numeric offset / numeric zone name
+        if int(match.group(8)) > 23:
+            return False
+        if match.group(9) is not None and int(match.group(9)) > 59:
             return False
     return True
 

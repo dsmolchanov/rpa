@@ -97,7 +97,14 @@ artifact applies the identical one-line `@AGENTS.md` import to its
 `CLAUDE.md` as a recorded build step, so both arms' installation artifacts
 — whose hashes the eval-runner verifies before every run (prerequisite 5)
 — load repository instructions identically, and instruction loading cannot
-be an arm difference.
+be an arm difference. The same overlay policy covers **metadata tooling**
+(recorded 2026-07-27, second candidate review): the baseline build also
+receives the current `scripts/spec_metadata.sh` — whose detached-HEAD
+branch fallback and numeric `%z` offset the artifact-compatibility gate
+depends on — because metadata collection is shared infrastructure, not
+evaluated workflow content; without it the frozen script's empty branch
+line in detached eval worktrees would turn conforming baseline runs into
+counted failures and corrupt the comparison.
 
 ## Baseline
 

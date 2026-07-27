@@ -1256,6 +1256,13 @@ def run_preflight():
                 "last_updated: '2026-13-40'", 1),
             encoding="utf-8")
         impossible_bad = runner.artifact_validator.validate(impossible_doc)
+        offset_doc = ws / "2026-07-26-offset-date.md"
+        offset_doc.write_text(
+            fn_doc.read_text(encoding="utf-8").replace(
+                "date: 2026-07-27T00:00:00Z",
+                "date: '2026-07-27 00:00:00 +0300'", 1),
+            encoding="utf-8")
+        offset_ok = not runner.artifact_validator.validate(offset_doc)
         ok &= check(
             "filename contract enforced; raw anonymization markers rejected",
             any("basename" in e for e in fn_bad)
@@ -1268,7 +1275,8 @@ def run_preflight():
             and any("target-sha" in e for e in fab_bad)
             and any("**Git Commit**" in e for e in bodymeta_bad)
             and any("date" in e for e in impossible_bad)
-            and any("last_updated" in e for e in impossible_bad),
+            and any("last_updated" in e for e in impossible_bad)
+            and offset_ok,
             notes)
 
         meta_script = (HERE.parents[3] / "scripts"
