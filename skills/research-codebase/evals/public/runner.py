@@ -91,6 +91,13 @@ Capability map (each proven by `--preflight` before any scored run):
      registered (`backend_version` + `backend_version_cmd`) and probed
      before every run and judge pass; drift between interleaved entries
      blocks the run.
+ 13. filesystem sandbox             — production configs must register
+     `sandbox_cmd`, a wrapper confining every evaluated and judge session
+     to its own working directory + profile ({workdir}/{profile} expand
+     per session); a clean CLAUDE_CONFIG_DIR alone is not filesystem
+     isolation, and without the sandbox a session could traverse to
+     sealed materials, prior artifacts, or manifests. Dev configs
+     (`nonstandard_config: true`) may omit it.
 
 The backend command is configurable (`backend_cmd`); production uses the
 `claude` CLI in headless mode, while `--preflight` uses the bundled
@@ -165,13 +172,43 @@ JUDGE_SETTINGS = {
 # read-only inspection tools stay available; anything that could mutate the
 # evidence or reach outside it (write/exec/web/subagents) is denied. The
 # verifier's cwd is a disposable worktree of the frozen evidence repo at the
-# pinned sha — never the experiment output tree.
+# pinned sha — never the experiment output tree — and the registered
+# `sandbox_cmd` (mandatory for production configs) confines its filesystem
+# to that worktree, so Read/Glob/Grep cannot follow absolute or parent
+# paths to manifests, raw artifacts, or sealed materials.
 VERIFIER_SETTINGS = {
     "permissions": {
         "deny": ["Bash", "Write", "Edit", "NotebookEdit",
                  "WebFetch", "WebSearch", "Task"]
     }
 }
+
+
+def apply_sandbox(config, cmd, workdir, profile):
+    """Filesystem isolation for spawned sessions. A clean CLAUDE_CONFIG_DIR
+    is NOT a filesystem sandbox: without one, an evaluated run or judge
+    could traverse parent or absolute paths to sealed tasks, ground truth,
+    rubric, judge prompts, prior artifacts, or manifests. Production
+    configs must register `sandbox_cmd` — a wrapper (e.g. bwrap or
+    sandbox-exec, validated during the real-backend preflight) that
+    confines the session to its own working directory and profile;
+    `{workdir}`/`{profile}` expand per session. Dev configs
+    (`nonstandard_config: true`) may omit it."""
+    sandbox = config.get("sandbox_cmd")
+    if not sandbox:
+        if not config.get("nonstandard_config"):
+            raise InfraFailure(
+                "production configs must register `sandbox_cmd` — evaluated "
+                "and judge sessions require filesystem isolation beyond a "
+                "clean profile"
+            )
+        return list(cmd)
+    prefix = []
+    for part in sandbox:
+        part = part.replace("{workdir}", str(workdir))
+        part = part.replace("{profile}", str(profile))
+        prefix.append(part)
+    return prefix + list(cmd)
 
 
 def hash_tree(root):
@@ -216,6 +253,7 @@ def config_digest(config):
         "max_infra_retries": config.get("max_infra_retries"),
         "timeout_seconds": config.get("timeout_seconds"),
         "nonstandard_config": config.get("nonstandard_config", False),
+        "sandbox_cmd": config.get("sandbox_cmd"),
     }
     return hashlib.sha256(
         json.dumps(material, sort_keys=True).encode("utf-8")
@@ -798,6 +836,7 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1):
         require_installation_mount(config["backend_cmd"])
         cmd = expand_backend_cmd(config["backend_cmd"], mount,
                                  arm.get("effort", "default"))
+        cmd = apply_sandbox(config, cmd, worktree, profile)
         env = backend_env(profile)
         abort_exits = tuple(config.get("workflow_abort_exit_codes", ()))
         before = snapshot_research(worktree)
@@ -1387,6 +1426,7 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             workdir = judge_root / "workdir"
             workdir.mkdir()
         env = backend_env(profile)
+        sandboxed_cmd = apply_sandbox(config, judge_cmd, workdir, profile)
         prompt_parts = [judge_prompt]
         if context_by_doc is not None:
             context_text = Path(
@@ -1399,7 +1439,8 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
         prompt = "\n\n".join(prompt_parts)
         try:
             stdout = spawn_session(
-                judge_cmd, prompt, str(workdir), env, config["timeout_seconds"]
+                sandboxed_cmd, prompt, str(workdir), env,
+                config["timeout_seconds"]
             )
         finally:
             if ev_repo:

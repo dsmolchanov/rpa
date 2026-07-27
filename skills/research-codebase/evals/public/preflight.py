@@ -73,6 +73,8 @@ def build_config(workspace, mode, timeout=20):
         "judge_effort": "high",
         "workflow_abort_exit_codes": [21],
         "nonstandard_config": True,
+        "sandbox_cmd": [sys.executable, str(HERE / "mock_sandbox.py"),
+                        "{workdir}", "--"],
         "backend_version": "mock-claude 1.0.0",
         "backend_version_cmd": [sys.executable, str(HERE / "mock_claude.py"),
                                 "--version"],
@@ -169,6 +171,12 @@ def run_preflight():
             and "profiles" in plugin_echo
             and runner.hash_tree(plugin_echo) == record["installation_sha256"],
             notes, Path(plugin_echo).name if plugin_echo else "missing")
+        sandbox_echo = (echo_dir / "sandbox.txt").read_text(
+            encoding="utf-8").strip()
+        ok &= check(
+            "evaluated session wrapped by the registered sandbox (workdir)",
+            sandbox_echo == record.get("worktree"),
+            notes)
         ok &= check(
             "worktree isolation (pinned sha recorded, disposable removed)",
             record.get("target_sha") == sha
@@ -341,6 +349,22 @@ def run_preflight():
             "run mode requires three-arm topology unless config is dev-marked",
             record["status"] == "infra_failure"
             and "three-arm topology" in record.get("failure", ""),
+            notes)
+
+        config, _ = build_config(ws, "normal")
+        base_arm = config["arms"].pop("mock")
+        config["arms"]["baseline"] = dict(base_arm)
+        config["arms"]["candidate"] = dict(base_arm)
+        config["arms"]["ablation"] = dict(base_arm, forbid_subagents=True)
+        config.pop("nonstandard_config")
+        config.pop("sandbox_cmd")
+        task_sbx = write_task(ws, "sandbox-req", par_sha)
+        record = runner.run_task(config, "baseline", task_sbx, repo,
+                                 ws / "out-sandbox-req")
+        ok &= check(
+            "production config requires a registered sandbox_cmd",
+            record["status"] == "infra_failure"
+            and "sandbox_cmd" in record.get("failure", ""),
             notes)
 
         config, _ = build_config(ws, "normal")
@@ -976,6 +1000,8 @@ def run_preflight():
         vdeny = json.loads(
             (Path(vres[0]["profile"]) / "settings.json").read_text(
                 encoding="utf-8")).get("permissions", {}).get("deny", [])
+        sandbox_echo = (echo_dir / "sandbox.txt").read_text(
+            encoding="utf-8").strip()
         ok &= check(
             "verifier judge gets read-only evidence worktree at pinned sha",
             vres[0].get("role") == "verifier"
@@ -983,6 +1009,10 @@ def run_preflight():
             and "README.md" in listing
             and not Path(vres[0]["cwd"]).exists()
             and "Read" not in vdeny and "Bash" in vdeny and "Write" in vdeny,
+            notes)
+        ok &= check(
+            "judge session sandbox confined to its evidence worktree",
+            sandbox_echo == vres[0].get("cwd"),
             notes)
 
     width = max(len(name) for name, _, _ in notes)
