@@ -545,6 +545,7 @@ def _node_from_event(event):
             "tool_calls": int(event.get("tool_calls", 0)),
             "subagent": bool(event.get("subagent", False)),
             "subagent_id": event.get("subagent_id"),
+            "subagent_launches": int(event.get("subagent_launches", 0)),
         }
     if event.get("type") == "assistant" and isinstance(event.get("message"), dict):
         message = event["message"]
@@ -553,6 +554,14 @@ def _node_from_event(event):
         tool_calls = sum(
             1 for block in content
             if isinstance(block, dict) and block.get("type") == "tool_use"
+        )
+        # A subagent LAUNCH is evidenced by the Task tool_use itself: a
+        # child that dies before emitting any assistant event must still
+        # count as delegation (the no-subagent policy hinges on this).
+        subagent_launches = sum(
+            1 for block in content
+            if isinstance(block, dict) and block.get("type") == "tool_use"
+            and block.get("name") == "Task"
         )
         # The real CLI reports cached prompt tokens SEPARATELY from
         # `input_tokens`; all input categories must count toward tree-wide
@@ -574,6 +583,7 @@ def _node_from_event(event):
             # subagent must stay distinguishable from one message each
             # from several subagents, or "subagents spawned" is unmeasurable.
             "subagent_id": event.get("parent_tool_use_id"),
+            "subagent_launches": subagent_launches,
         }
     return None
 
@@ -641,7 +651,11 @@ def account(nodes):
                 if n["subagent"] and n.get("subagent_id")}
     anonymous = sum(1 for n in nodes
                     if n["subagent"] and not n.get("subagent_id"))
-    totals["subagents_spawned"] = len(distinct) + anonymous
+    # Two independent signals: child-output evidence AND launch (Task
+    # tool_use) evidence — a child that died before emitting anything
+    # still counts as a spawn.
+    launches = sum(int(n.get("subagent_launches", 0) or 0) for n in nodes)
+    totals["subagents_spawned"] = max(len(distinct) + anonymous, launches)
     return totals
 
 
@@ -1118,6 +1132,44 @@ def schedule_digest(schedule):
     ).hexdigest()
 
 
+def verify_results_against_records(results, entries, out_dir, require_all):
+    """The manifest is a convenience view; immutable per-run records are the
+    source of truth. Every manifest result must align with its schedule
+    entry and match its `run-<id>.json` record — a fabricated or trimmed
+    manifest (invented run_ids, flipped statuses, forged digests, deleted
+    results) is refused. `require_all` additionally demands one result per
+    schedule entry (complete-experiment coverage for scoring)."""
+    if require_all and len(results) != len(entries):
+        raise InfraFailure(
+            "manifest results do not cover every schedule entry — a "
+            "post-hoc subset cannot pass as the complete experiment"
+        )
+    if len(results) > len(entries):
+        raise InfraFailure("manifest holds more results than the schedule")
+    for done, entry in zip(results, entries):
+        if (done.get("index"), done.get("arm"), done.get("task")) != (
+                entry["index"], entry["arm"], entry["task"]):
+            raise InfraFailure(
+                "manifest results misaligned with the schedule entries"
+            )
+        record_path = Path(out_dir) / f"run-{done.get('run_id')}.json"
+        if not record_path.exists():
+            raise InfraFailure(
+                f"manifest result {done.get('index')} has no run record "
+                f"on disk — fabricated or foreign manifest refused"
+            )
+        run_record = json.loads(record_path.read_text(encoding="utf-8"))
+        if (run_record.get("arm") != done.get("arm")
+                or run_record.get("task") != done.get("task")
+                or run_record.get("status") != done.get("status")
+                or run_record.get("artifact_sha256")
+                != done.get("artifact_sha256")):
+            raise InfraFailure(
+                f"manifest result {done.get('index')} does not match its "
+                f"immutable run record — edited manifest refused"
+            )
+
+
 def run_schedule(config, schedule_path, repos, output_dir, task_paths):
     """Execute a pre-registered schedule in its recorded order. The expected
     schedule is RECONSTRUCTED from the registered config, the operator-
@@ -1166,34 +1218,8 @@ def run_schedule(config, schedule_path, repos, output_dir, task_paths):
                 "mixed"
             )
         results = list(prior.get("results", []))
-        if len(results) > len(entries):
-            raise InfraFailure("existing manifest is longer than the schedule")
-        for done, entry in zip(results, entries):
-            if (done.get("index"), done.get("arm"), done.get("task")) != (
-                    entry["index"], entry["arm"], entry["task"]):
-                raise InfraFailure(
-                    "existing manifest does not match the schedule prefix"
-                )
-            # The manifest is a convenience view; the immutable per-run
-            # record is the source of truth. A fabricated manifest (edited
-            # status, run_id, or digests) must never let the executor skip
-            # backends or feed scoring invented results.
-            record_path = out / f"run-{done.get('run_id')}.json"
-            if not record_path.exists():
-                raise InfraFailure(
-                    f"manifest result {done.get('index')} has no run record "
-                    f"on disk — fabricated or foreign manifest refused"
-                )
-            run_record = json.loads(record_path.read_text(encoding="utf-8"))
-            if (run_record.get("arm") != done.get("arm")
-                    or run_record.get("task") != done.get("task")
-                    or run_record.get("status") != done.get("status")
-                    or run_record.get("artifact_sha256")
-                    != done.get("artifact_sha256")):
-                raise InfraFailure(
-                    f"manifest result {done.get('index')} does not match its "
-                    f"immutable run record — edited manifest refused"
-                )
+        verify_results_against_records(results, entries, out,
+                                       require_all=False)
 
     def write_manifest(complete):
         manifest = {
@@ -1242,14 +1268,17 @@ def run_schedule(config, schedule_path, repos, output_dir, task_paths):
     return write_manifest(True)
 
 
-def _sealed_bytes(path, seal_files):
+def _sealed_bytes(path, seal_files, key=None):
     """Judge inputs (judge prompt, task contexts, external snapshots) are
     bound to the atomic seal: the bytes actually read must match the digest
     recorded in the sealed package's manifest, and each file is read exactly
     once before any session launches — an edit after sealing or between
-    judge calls is refused, never silently mixed into the batch."""
+    judge calls is refused, never silently mixed into the batch. Manifest
+    keys are PACKAGE-RELATIVE paths (`key`), not basenames — two
+    `index.html` files in different snapshot subdirectories are distinct
+    sealed artifacts."""
     data = Path(path).read_bytes()
-    if hashlib.sha256(data).hexdigest() != seal_files.get(Path(path).name):
+    if hashlib.sha256(data).hexdigest() != seal_files.get(key or Path(path).name):
         raise InfraFailure(
             f"{path}: contents differ from the atomic-seal manifest — "
             f"judge inputs must be the sealed artifacts"
@@ -1340,6 +1369,26 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                 "schedule manifest is incomplete — score only after the "
                 "whole schedule has run"
             )
+        # The manifest's own flags and result list are not trusted: it must
+        # match its schedule (digest + one result per entry) and every
+        # result must match its immutable run record, or a trimmed/edited
+        # manifest could pass a post-hoc subset off as the experiment.
+        sched_ref = manifest.get("schedule")
+        if not sched_ref or not Path(sched_ref).exists():
+            raise InfraFailure(
+                "manifest's schedule file not found — scoring cannot verify "
+                "the manifest against its schedule"
+            )
+        sched_obj = json.loads(Path(sched_ref).read_text(encoding="utf-8"))
+        if manifest.get("schedule_digest") != schedule_digest(sched_obj):
+            raise InfraFailure(
+                "manifest does not match its schedule (schedule digest "
+                "mismatch)"
+            )
+        verify_results_against_records(
+            manifest.get("results", []), sched_obj.get("entries", []),
+            Path(manifest_path).parent, require_all=True
+        )
         # Judges run under the SAME sealed configuration the schedule
         # bound: judge command/model/effort, backend version, and policy
         # fields are all in the digest.
@@ -1532,15 +1581,29 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             if Path(doc).name in snapshot_by_doc:
                 # Seal-verified frozen snapshots are placed INSIDE the
                 # confined workdir so the sandboxed verifier can read them.
+                # Directory layout is preserved and seal keys are package-
+                # relative, so same-named files in different subdirectories
+                # stay distinct and never overwrite each other.
                 snap_src = Path(snapshot_by_doc[Path(doc).name])
                 snap_dest = workdir / "_sealed-snapshots"
                 snap_dest.mkdir()
-                snap_paths = ([snap_src] if snap_src.is_file()
-                              else sorted(p for p in snap_src.rglob("*")
-                                          if p.is_file()))
-                for snap in snap_paths:
-                    (snap_dest / snap.name).write_bytes(
-                        _sealed_bytes(snap, seal_files)
+                if snap_src.is_file():
+                    snap_items = [(snap_src, Path(snap_src.name),
+                                   snap_src.name)]
+                else:
+                    snap_items = []
+                    for snap in sorted(p for p in snap_src.rglob("*")
+                                       if p.is_file()):
+                        rel = snap.relative_to(snap_src)
+                        snap_items.append(
+                            (snap, rel,
+                             (Path(snap_src.name) / rel).as_posix())
+                        )
+                for snap, rel, seal_key in snap_items:
+                    dest = snap_dest / rel
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_bytes(
+                        _sealed_bytes(snap, seal_files, key=seal_key)
                     )
         else:
             profile, _ = make_profile(judge_root, "judge",

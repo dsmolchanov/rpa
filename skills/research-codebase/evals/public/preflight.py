@@ -144,16 +144,21 @@ def run_preflight():
         ctx_file.write_text(
             "SEALED-CONTEXT: task prompt + ground truth for the sched task\n",
             encoding="utf-8")
-        snap_file = ws / "external-snapshot.html"
-        snap_file.write_text(
-            "<html>SEALED-SNAPSHOT frozen external source</html>\n",
-            encoding="utf-8")
+        snap_dir = ws / "external-snapshots"
+        (snap_dir / "a").mkdir(parents=True)
+        (snap_dir / "b").mkdir(parents=True)
+        (snap_dir / "a" / "index.html").write_text(
+            "<html>SEALED-SNAPSHOT A</html>\n", encoding="utf-8")
+        (snap_dir / "b" / "index.html").write_text(
+            "<html>SEALED-SNAPSHOT B</html>\n", encoding="utf-8")
         seal_file = ws / "seal-manifest.json"
         seal_file.write_text(json.dumps({"files": {
             judge.name: hashlib.sha256(judge.read_bytes()).hexdigest(),
             ctx_file.name: hashlib.sha256(ctx_file.read_bytes()).hexdigest(),
-            snap_file.name: hashlib.sha256(
-                snap_file.read_bytes()).hexdigest(),
+            "external-snapshots/a/index.html": hashlib.sha256(
+                (snap_dir / "a" / "index.html").read_bytes()).hexdigest(),
+            "external-snapshots/b/index.html": hashlib.sha256(
+                (snap_dir / "b" / "index.html").read_bytes()).hexdigest(),
         }}), encoding="utf-8")
         SEAL_SHA = hashlib.sha256(seal_file.read_bytes()).hexdigest()
 
@@ -351,6 +356,18 @@ def run_preflight():
             "ablation no-subagent policy enforced at the harness boundary",
             record["status"] == "workflow_failure"
             and "no-subagent policy" in record.get("failure", ""),
+            notes)
+
+        config, _ = build_config(ws, "launch-no-child")
+        config["arms"]["mock"]["forbid_subagents"] = True
+        task_lnc = write_task(ws, "launch-no-child", par_sha)
+        record = runner.run_task(config, "mock", task_lnc, repo,
+                                 ws / "out-lnc")
+        ok &= check(
+            "subagent launch without child output still counts (Task evidence)",
+            record["status"] == "workflow_failure"
+            and "no-subagent policy" in record.get("failure", "")
+            and record.get("accounting", {}).get("subagents_spawned") == 1,
             notes)
 
         config, _ = build_config(ws, "normal")
@@ -953,6 +970,22 @@ def run_preflight():
             "manifest-bound scoring covers every completed replicate once",
             len(mres) == 2 and all(r.get("scheduled") for r in mres),
             notes)
+        m4 = json.loads(manifest_path.read_text(encoding="utf-8"))
+        trimmed = dict(m4)
+        trimmed["results"] = m4["results"][:1]
+        manifest_path.write_text(json.dumps(trimmed), encoding="utf-8")
+        try:
+            runner.score(config, sched_docs[:1], judge, ws / "judge-trim",
+                         scoring_seed=5, manifest_path=manifest_path,
+                         task_contexts=sched_ctx,
+                         seal_manifest_path=seal_file)
+            trim_ok = False
+        except runner.InfraFailure as exc:
+            trim_ok = "post-hoc subset" in str(exc)
+        manifest_path.write_text(json.dumps(m4), encoding="utf-8")
+        ok &= check(
+            "trimmed scoring manifest refused (verified against its schedule)",
+            trim_ok, notes)
         ok &= check(
             "per-task sealed context routed to each judge and recorded",
             "SEALED-CONTEXT" in judge_prompt_echo
@@ -1069,15 +1102,15 @@ def run_preflight():
                 scoring_seed=5, manifest_path=snap_manifest_path,
                 task_contexts=snap_ctx, seal_manifest_path=seal_file,
                 evidence_repos={"mock-repo": str(repo_snap)},
-                task_snapshots={task_snap.name: str(snap_file)})
+                task_snapshots={task_snap.name: str(snap_dir)})
         finally:
             os.environ.pop("MOCK_ECHO_DIR", None)
         snap_listing = (echo_dir / "cwd-listing.txt").read_text(
             encoding="utf-8")
         ok &= check(
-            "sealed external snapshots placed in the verifier workdir",
+            "sealed snapshots in verifier workdir (relative keys, layout kept)",
             "_sealed-snapshots" in snap_listing
-            and snap_res[0].get("snapshots") == str(snap_file),
+            and snap_res[0].get("snapshots") == str(snap_dir),
             notes)
         try:
             runner.score(config, sched_docs[:1], judge, ws / "judge-subset",

@@ -103,7 +103,8 @@ def emit_real_stream(model, session_id):
                                 "cache_read_input_tokens": 10,
                                 "output_tokens": 50},
                       "content": [{"type": "tool_use", "id": f"toolu_{i}",
-                                   "name": "Read", "input": {}}
+                                   "name": "Task" if i == 0 else "Read",
+                                   "input": {}}
                                   for i in range(7)]}})
     # TWO messages from ONE subagent (same parent_tool_use_id): the runner
     # must count one distinct spawned subagent, not two, while still
@@ -192,6 +193,17 @@ def main():
         if args.mode in ("wrong-model", "abort-wrong-model")
         else args.model
     )
+
+    if args.mode == "launch-no-child":
+        # Delegation happened (subagent_launches=1) but the child died
+        # before emitting anything: launch evidence alone must count.
+        emit({"type": "node", "model": model, "effort": args.effort,
+              "tool_calls": 7, "subagent_launches": 1,
+              "usage": {"input_tokens": 100, "output_tokens": 50}})
+        write_artifact()
+        emit({"type": "result", "session_id": session_id,
+              "result": "MOCK-VERDICT: coverage 7/10, evidence 9/10"})
+        return
     if args.mode == "wrong-effort":
         main_effort = sub_effort = "low"
     elif args.mode == "mixed-effort":
