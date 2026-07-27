@@ -6,6 +6,7 @@ throwaway task — offline, CI-runnable, zero model spend. A real-backend
 preflight on the throwaway task is still required once before baseline runs.
 """
 
+import hashlib
 import json
 import os
 import subprocess
@@ -919,12 +920,20 @@ def run_preflight():
             "SEALED-CONTEXT: task prompt + ground truth for the sched task\n",
             encoding="utf-8")
         sched_ctx = {Path(task_s).name: str(ctx_file)}
+        seal_file = ws / "seal-manifest.json"
+        seal_file.write_text(json.dumps({"files": {
+            Path(judge).name: hashlib.sha256(
+                Path(judge).read_bytes()).hexdigest(),
+            ctx_file.name: hashlib.sha256(
+                ctx_file.read_bytes()).hexdigest(),
+        }}), encoding="utf-8")
         echo_dir = ws / "echo-judge-ctx"
         os.environ["MOCK_ECHO_DIR"] = str(echo_dir)
         try:
             mres = runner.score(config, sched_docs, judge, ws / "judge-sched",
                                 scoring_seed=5, manifest_path=manifest_path,
-                                task_contexts=sched_ctx)
+                                task_contexts=sched_ctx,
+                                seal_manifest_path=seal_file)
         finally:
             os.environ.pop("MOCK_ECHO_DIR", None)
         judge_prompt_echo = (echo_dir / "prompt.txt").read_text(
@@ -950,6 +959,30 @@ def run_preflight():
             "manifest scoring without per-task sealed contexts refused",
             noctx_ok, notes)
         try:
+            runner.score(config, sched_docs, judge, ws / "judge-noseal",
+                         scoring_seed=5, manifest_path=manifest_path,
+                         task_contexts=sched_ctx)
+            noseal_ok = False
+        except runner.InfraFailure as exc:
+            noseal_ok = "atomic-seal manifest" in str(exc)
+        ok &= check(
+            "manifest scoring without the atomic-seal manifest refused",
+            noseal_ok, notes)
+        ctx_original = ctx_file.read_bytes()
+        ctx_file.write_bytes(ctx_original + b"\nEDITED AFTER SEALING\n")
+        try:
+            runner.score(config, sched_docs, judge, ws / "judge-sealdrift",
+                         scoring_seed=5, manifest_path=manifest_path,
+                         task_contexts=sched_ctx,
+                         seal_manifest_path=seal_file)
+            sealdrift_ok = False
+        except runner.InfraFailure as exc:
+            sealdrift_ok = "atomic-seal" in str(exc)
+        ctx_file.write_bytes(ctx_original)
+        ok &= check(
+            "judge inputs verified against the atomic seal (edit refused)",
+            sealdrift_ok, notes)
+        try:
             runner.score(config, sched_docs[:1], judge, ws / "judge-subset",
                          scoring_seed=5, manifest_path=manifest_path)
             subset_ok = False
@@ -961,7 +994,8 @@ def run_preflight():
         vres2 = runner.score(config, sched_docs, judge, ws / "judge-mverify",
                              scoring_seed=5, manifest_path=manifest_path,
                              evidence_repos={"mock-repo": str(repo_s)},
-                             task_contexts=sched_ctx)
+                             task_contexts=sched_ctx,
+                             seal_manifest_path=seal_file)
         ok &= check(
             "manifest verification maps each doc to its task's repo@sha",
             all(r.get("role") == "verifier"

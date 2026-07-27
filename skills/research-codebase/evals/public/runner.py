@@ -1221,6 +1221,21 @@ def run_schedule(config, schedule_path, repos, output_dir, task_paths):
     return write_manifest(True)
 
 
+def _read_sealed(path, seal_files):
+    """Judge inputs (judge prompt, task contexts) are bound to the atomic
+    seal: the bytes actually read must match the digest recorded in the
+    sealed package's manifest, and each file is read exactly once before
+    any session launches — an edit after sealing or between judge calls is
+    refused, never silently mixed into the batch."""
+    data = Path(path).read_bytes()
+    if hashlib.sha256(data).hexdigest() != seal_files.get(Path(path).name):
+        raise InfraFailure(
+            f"{path}: contents differ from the atomic-seal manifest — "
+            f"judge inputs must be the sealed artifacts"
+        )
+    return data.decode("utf-8")
+
+
 def assert_blind_scorable(doc_path):
     """Blinding is enforced at the score boundary itself: a raw runner
     artifact or any document whose fingerprint fields are not masked is
@@ -1257,7 +1272,7 @@ def assert_blind_scorable(doc_path):
 def score(config, doc_paths, judge_prompt_path, output_dir,
           evidence_repo=None, evidence_sha=None, scoring_seed=None,
           manifest_path=None, allow_unscheduled=False, evidence_repos=None,
-          task_contexts=None):
+          task_contexts=None, seal_manifest_path=None):
     """One fresh pinned backend session per document. The judge's full
     response text is preserved on disk — it IS the scoring artifact. Judge
     prompts live in the sealed package and are passed in at runtime.
@@ -1397,7 +1412,24 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                 "`evidence_repos` requires manifest-bound scoring — for "
                 "unscheduled verification use evidence_repo/evidence_sha"
             )
-    judge_prompt = Path(judge_prompt_path).read_text(encoding="utf-8")
+    if manifest_path is not None:
+        if seal_manifest_path is None:
+            raise InfraFailure(
+                "manifest-bound scoring requires the atomic-seal manifest "
+                "(file → sha256) binding the judge prompt and every task "
+                "context to the sealed package"
+            )
+        seal_files = json.loads(
+            Path(seal_manifest_path).read_text(encoding="utf-8")
+        ).get("files", {})
+        judge_prompt = _read_sealed(judge_prompt_path, seal_files)
+        sealed_context_texts = {
+            doc_name: _read_sealed(ctx_path, seal_files)
+            for doc_name, ctx_path in context_by_doc.items()
+        }
+    else:
+        judge_prompt = Path(judge_prompt_path).read_text(encoding="utf-8")
+        sealed_context_texts = None
     judge_cmd = config.get("judge_backend_cmd", config["backend_cmd"])
     if any("{installation}" in part for part in judge_cmd):
         raise InfraFailure(
@@ -1448,12 +1480,12 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
         env = backend_env(profile)
         sandboxed_cmd = apply_sandbox(config, judge_cmd, workdir, profile)
         prompt_parts = [judge_prompt]
-        if context_by_doc is not None:
-            context_text = Path(
-                context_by_doc[Path(doc).name]
-            ).read_text(encoding="utf-8")
+        if sealed_context_texts is not None:
+            # Preloaded and seal-verified once, before any session: a file
+            # swap between judge calls cannot change what judges see.
             prompt_parts.append(
-                "## Task-specific sealed context\n\n" + context_text
+                "## Task-specific sealed context\n\n"
+                + sealed_context_texts[Path(doc).name]
             )
         prompt_parts.append("---\n\n" + doc_text)
         prompt = "\n\n".join(prompt_parts)
@@ -1485,6 +1517,8 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                      if task_by_doc is not None else None),
             "task_context": (str(context_by_doc[Path(doc).name])
                              if context_by_doc is not None else None),
+            "seal_manifest": (str(seal_manifest_path)
+                              if seal_manifest_path is not None else None),
             "effort_capture": effort_capture,
             "response": response,
             "accounting": account(nodes),
@@ -1542,6 +1576,10 @@ def main():
                         help="score mode with --manifest: TASKFILE=CONTEXT "
                              "mapping from task file basename to its sealed "
                              "scoring context (task prompt + ground truth)")
+    parser.add_argument("--seal-manifest",
+                        help="score mode with --manifest: atomic-seal "
+                             "manifest (file → sha256) binding the judge "
+                             "prompt and task contexts to the sealed package")
     parser.add_argument("--output", default="runs", help="output directory")
     parser.add_argument("--make-schedule", action="store_true",
                         help="write a pre-registered randomized schedule "
@@ -1636,7 +1674,8 @@ def main():
                         manifest_path=args.manifest,
                         allow_unscheduled=args.unscheduled_docs,
                         evidence_repos=evidence_repos,
-                        task_contexts=task_contexts)
+                        task_contexts=task_contexts,
+                        seal_manifest_path=args.seal_manifest)
         print(json.dumps([{k: r[k] for k in ("doc", "session_id")} for r in results]))
         sys.exit(0)
 
