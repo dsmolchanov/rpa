@@ -1338,6 +1338,7 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
             artifact,
             expected_git_commit=sha,
             expected_repository=task_target_repo(task_text, task_path),
+            enforce_filename=True,
         )
         if contract_defects:
             record["artifact_defects"] = contract_defects

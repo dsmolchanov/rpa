@@ -1194,6 +1194,35 @@ def run_preflight():
             and record.get("artifact_defects"),
             notes)
 
+        fn_doc = ws / "notes.md"
+        fn_doc.write_text(
+            (HERE / "fixtures" / "artifact-valid.md").read_text(
+                encoding="utf-8"), encoding="utf-8")
+        fn_bad = runner.artifact_validator.validate(
+            fn_doc, enforce_filename=True)
+        fn_good_doc = ws / "2026-07-26-fixture-copy.md"
+        fn_good_doc.write_text(fn_doc.read_text(encoding="utf-8"),
+                               encoding="utf-8")
+        fn_good = runner.artifact_validator.validate(
+            fn_good_doc, enforce_filename=True)
+        anon_marker_doc = ws / "2026-07-26-marker-raw.md"
+        anon_marker_doc.write_text(
+            fn_doc.read_text(encoding="utf-8").replace(
+                "git_commit: '0000000000000000000000000000000000000000'",
+                "git_commit: '[anonymized:evil]'"),
+            encoding="utf-8")
+        marker_strict = runner.artifact_validator.validate(
+            anon_marker_doc, enforce_filename=True)
+        marker_lenient = runner.artifact_validator.validate(
+            anon_marker_doc, allow_anonymized=True)
+        ok &= check(
+            "filename contract enforced; raw anonymization markers rejected",
+            any("basename" in e for e in fn_bad)
+            and not fn_good
+            and any("git_commit" in e for e in marker_strict)
+            and not marker_lenient,
+            notes)
+
         record, _, _, _ = run_case(ws, "stale-artifact")
         ok &= check(
             "artifact metadata bound to the run's pinned checkout",

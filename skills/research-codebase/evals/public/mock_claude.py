@@ -102,7 +102,7 @@ def write_artifact(commit=None):
             commit = "0" * 40
     research = Path("thoughts/shared/research")
     research.mkdir(parents=True, exist_ok=True)
-    (research / "mock-research.md").write_text(
+    (research / "2026-07-26-mock-research.md").write_text(
         ARTIFACT.replace("deadbeef", commit), encoding="utf-8")
 
 

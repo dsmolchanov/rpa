@@ -12,12 +12,20 @@ report on failure. Used by the kernel's verification profile, by the
 pilot's artifact-compatibility gate, and — with the fixtures under
 `fixtures/` — proven non-no-op in this repo's CI.
 
-Anonymized scoring copies (`run-<id>-anon.md`) mask fingerprint values
-with `[anonymized:<id>]`; masked values satisfy the non-empty checks and
-skip format checks, so the gate applies to raw and anonymized documents
-alike.
+Raw artifacts are validated STRICTLY by default: format and run-binding
+checks apply to every value, and an `[anonymized:...]` marker in a raw
+document is itself a violation (a raw artifact carrying markers would
+dodge the pinned-checkout binding). Anonymized scoring copies
+(`run-<id>-anon.md`) are validated with the explicit
+`--allow-anonymized` mode, which exempts masked values from format and
+binding checks only. The runtime filename contract
+(`YYYY-MM-DD[-ENG-XXXX]-description.md`) is enforced when the caller
+opts in (`--enforce-filename`; the eval harness always does) — the
+standalone fixtures under `fixtures/` are deliberately outside that
+mode.
 
-Usage: validate_artifact.py <document.md> [...]
+Usage: validate_artifact.py [--allow-anonymized] [--enforce-filename]
+       [--expect-commit SHA] [--expect-repo NAME] <document.md> [...]
 """
 
 import re
@@ -76,6 +84,8 @@ DATE_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?(\.\d+)?"
     r"(Z|[+-]\d{2}:?\d{2})$")
 GIT_COMMIT_RE = re.compile(r"^[0-9a-f]{7,40}$")
+ARTIFACT_BASENAME_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}-(ENG-\d+-)?[a-z0-9][a-z0-9-]*\.md$")
 
 
 def _canonical_repo(name):
@@ -144,12 +154,17 @@ def _headings_outside_fences(lines):
     return headings
 
 
-def validate(path, expected_git_commit=None, expected_repository=None):
+def validate(path, expected_git_commit=None, expected_repository=None,
+             enforce_filename=False, allow_anonymized=False):
     errors = []
     try:
         text = Path(path).read_text(encoding="utf-8")
     except (OSError, ValueError) as exc:
         return [f"cannot read document: {exc}"]
+    if enforce_filename and not ARTIFACT_BASENAME_RE.match(Path(path).name):
+        errors.append(
+            f"artifact basename `{Path(path).name}` violates the contract "
+            f"pattern `YYYY-MM-DD[-ENG-XXXX]-description.md`")
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
         errors.append("frontmatter must open with `---` on line 1")
@@ -200,16 +215,17 @@ def validate(path, expected_git_commit=None, expected_repository=None):
         sval = str(value).strip()
         if field == "status" and sval != "complete":
             errors.append(f"`status` must be `complete`, got `{sval}`")
-        if (field == "last_updated" and not _anonymized(sval)
+        exempt = allow_anonymized and _anonymized(sval)
+        if (field == "last_updated" and not exempt
                 and not LAST_UPDATED_RE.match(sval)):
             errors.append(
                 f"`last_updated` must be YYYY-MM-DD, got `{sval}`")
-        if field == "date" and not _anonymized(sval) \
+        if field == "date" and not exempt \
                 and not DATE_RE.match(sval):
             errors.append(
                 f"`date` must be an ISO date-time (with timezone), "
                 f"got `{sval}`")
-        if field == "git_commit" and not _anonymized(sval):
+        if field == "git_commit" and not exempt:
             if not GIT_COMMIT_RE.match(sval):
                 errors.append(
                     f"`git_commit` must be a 7-40 char hex sha, "
@@ -221,7 +237,7 @@ def validate(path, expected_git_commit=None, expected_repository=None):
                 errors.append(
                     f"`git_commit` `{sval}` does not match the run's "
                     f"pinned target-sha `{expected_git_commit}`")
-        if (field == "repository" and not _anonymized(sval)
+        if (field == "repository" and not exempt
                 and expected_repository is not None
                 and _canonical_repo(sval)
                 != _canonical_repo(expected_repository)):
@@ -290,11 +306,20 @@ def main():
     parser.add_argument("--expect-repo",
                         help="run-bound target repo the artifact's "
                              "repository must match (canonical name)")
+    parser.add_argument("--enforce-filename", action="store_true",
+                        help="require the contract basename pattern "
+                             "(the eval harness always does)")
+    parser.add_argument("--allow-anonymized", action="store_true",
+                        help="anonymized-copy mode: exempt masked values "
+                             "from format/binding checks (never used on "
+                             "raw artifacts)")
     args = parser.parse_args()
     failed = False
     for path in args.documents:
         errors = validate(path, expected_git_commit=args.expect_commit,
-                          expected_repository=args.expect_repo)
+                          expected_repository=args.expect_repo,
+                          enforce_filename=args.enforce_filename,
+                          allow_anonymized=args.allow_anonymized)
         if errors:
             failed = True
             for err in errors:
