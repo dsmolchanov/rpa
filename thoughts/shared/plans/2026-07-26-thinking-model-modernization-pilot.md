@@ -550,17 +550,21 @@ parity `claude-opus-5` on every transcript node, effort pinned on the
 command line with `command_pin` capture (the real stream schema carries
 no per-node effort field — the registered two-mode policy), both stream
 schemas parsed with full tree-wide token accounting, and the artifact
-gate enforced uniformly. Final-wrapper outcomes: all three arms
-**completed** through the artifact gate — candidate (230 s), ablation
-(216 s, **zero subagents**: the pre-registered no-subagent policy
-held), baseline (318 s). **Recorded observation (from an earlier
-preflight run under the since-revised wrapper):** one baseline
-replicate produced an artifact the gate rejected — the legacy workflow
-wrapped body metadata values in backticks and improvised prose for the
-detached-HEAD branch value — while the final-wrapper baseline replicate
-passed; legacy formatting discipline is VARIABLE across replicates, so
-gate-failed baseline replicates remain a real possibility in holdout
-runs. The gate is pre-registered and uniform across arms and is NOT
+gate enforced uniformly. The wrapper's confinement was hardened twice
+in review (host paths absent rather than read-only; recursive
+read-only covering child mounts such as container /etc file mounts; a
+fresh private /dev/shm hiding the host's shared tmpfs), and the
+per-arm runs were re-executed after each revision. Final-wrapper
+outcomes: candidate **completed** (177 s) and ablation **completed**
+(243 s, **zero subagents**: the pre-registered no-subagent policy
+held); baseline mechanics green but its artifact was gate-rejected in
+this replicate. **Recorded observation (three baseline replicates
+across the preflight series):** legacy formatting discipline is
+VARIABLE — replicate 1 rejected (backticked body metadata values,
+improvised detached-HEAD branch prose), replicate 2 passed, replicate
+3 rejected (frontmatter `date` without a time component, backticked
+body values) — so gate-failed baseline replicates are a realistic
+holdout outcome. The gate is pre-registered and uniform across arms and is NOT
 adjusted post-freeze; any protocol amendment (e.g. separate judging of
 gate-failed artifacts' content) is an owner decision and would have to
 be registered before Sequence step 5 unseals the holdout. No real

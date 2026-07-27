@@ -46,10 +46,31 @@ def mount(*args):
 
 
 def bind_ro(src, newroot):
+    """Recursively read-only bind: --rbind carries every submount (e.g.
+    the /etc/hosts and /etc/resolv.conf file mounts of container
+    hosts), and a plain remount,ro covers only the top mount — each
+    child mount must be remounted read-only itself, or the registered
+    read-only surface silently carries writable holes."""
     dest = newroot + src
     os.makedirs(dest, exist_ok=True)
     mount("--rbind", src, dest)
     mount("--bind", "-o", "remount,ro", dest)
+    for child in _mounts_under(dest):
+        mount("-o", "remount,bind,ro", child)
+
+
+def _mounts_under(dest):
+    """Mount points strictly below `dest`, deepest first, from
+    /proc/self/mountinfo (field 5; octal escapes decoded)."""
+    prefix = dest.rstrip("/") + "/"
+    points = []
+    with open("/proc/self/mountinfo", encoding="utf-8") as fh:
+        for line in fh:
+            mp = line.split()[4]
+            mp = mp.encode("ascii").decode("unicode_escape")
+            if mp.startswith(prefix):
+                points.append(mp)
+    return sorted(points, key=len, reverse=True)
 
 
 def git_common_dir(workdir):
@@ -118,6 +139,13 @@ def main():
 
     os.makedirs(newroot + "/dev", exist_ok=True)
     mount("--rbind", "/dev", newroot + "/dev")
+    # Host /dev/shm is a regular shared tmpfs, not device nodes: files
+    # staged there by other processes must not be visible. A fresh
+    # private tmpfs gives the session working POSIX shared memory while
+    # hiding the host's (and this wrapper's own chroot scaffolding).
+    shm = newroot + "/dev/shm"
+    if os.path.isdir(shm):
+        mount("-t", "tmpfs", "tmpfs", shm)
     os.makedirs(newroot + "/proc", exist_ok=True)
     fresh_proc = subprocess.run(
         ["mount", "-t", "proc", "proc", newroot + "/proc"],
