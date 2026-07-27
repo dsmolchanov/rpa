@@ -465,21 +465,30 @@ def expand_backend_cmd(backend_cmd, mount, effort=None):
     return expanded
 
 
-def read_task_text(task_path):
-    """Task files are user-supplied CLI input: a missing, unreadable, or
-    non-UTF-8 file is an infrastructure fault reported through the
-    structured infra_failure contract, never a raw traceback."""
+def read_input_text(path, what):
+    """Operator-supplied files (task files, scoring documents, judge
+    prompts, seal manifests, drift copies) are CLI input: a missing,
+    unreadable, or non-UTF-8 file is an infrastructure fault reported
+    through the structured infra_failure contract, never a raw traceback."""
     try:
-        return Path(task_path).read_text(encoding="utf-8")
+        return Path(path).read_text(encoding="utf-8")
     except (OSError, ValueError) as exc:
-        raise InfraFailure(f"cannot read task file {task_path}: {exc}") from exc
+        raise InfraFailure(f"cannot read {what} {path}: {exc}") from exc
+
+
+def read_input_bytes(path, what):
+    try:
+        return Path(path).read_bytes()
+    except OSError as exc:
+        raise InfraFailure(f"cannot read {what} {path}: {exc}") from exc
+
+
+def read_task_text(task_path):
+    return read_input_text(task_path, "task file")
 
 
 def read_task_bytes(task_path):
-    try:
-        return Path(task_path).read_bytes()
-    except OSError as exc:
-        raise InfraFailure(f"cannot read task file {task_path}: {exc}") from exc
+    return read_input_bytes(task_path, "task file")
 
 
 def extract_task_prompt(task_path):
@@ -1518,15 +1527,42 @@ def run_schedule(config, schedule_path, repos, output_dir, task_paths):
                           json.dumps(manifest, indent=2) + "\n")
         return manifest
 
+    referenced_runs = {r.get("run_id") for r in results}
     for entry in entries[len(results):]:
         # The registered holdout spans several repositories: each task is
         # routed to the clone registered for its own `target-repo`.
         entry_repo = resolve_repo(entry["task"], repos)
-        attempts = run_task_with_retries(
-            config, entry["arm"], entry["task"], entry_repo, output_dir,
-            scheduled=True
-        )
-        final = attempts[-1]
+        # Crash window: run_task_with_retries atomically wrote a terminal
+        # run record, but the process died before the manifest update. The
+        # backend already ran for this entry — re-executing it would add an
+        # unaccounted observed replicate to the cell. A uniquely matching
+        # orphan record (terminal status, this entry's arm+task, not yet
+        # referenced by the manifest) is adopted instead of launched again.
+        orphans = []
+        for record_path in sorted(out.glob("run-*.json")):
+            if record_path.name.count("-") != 1:
+                continue
+            orphan = load_json_object(record_path, "run record")
+            if (orphan.get("run_id") not in referenced_runs
+                    and orphan.get("arm") == entry["arm"]
+                    and orphan.get("task") == entry["task"]
+                    and orphan.get("status") in ("completed",
+                                                 "workflow_failure")):
+                orphans.append(orphan)
+        if len(orphans) > 1:
+            raise InfraFailure(
+                f"schedule entry {entry['index']} ({entry['arm']} / "
+                f"{entry['task']}) has {len(orphans)} unreferenced terminal "
+                f"run records — ambiguous orphan adoption; the output "
+                f"directory holds runs the schedule cannot attribute"
+            )
+        if orphans:
+            final = orphans[0]
+        else:
+            final = run_task_with_retries(
+                config, entry["arm"], entry["task"], entry_repo, output_dir,
+                scheduled=True
+            )[-1]
         if final["status"] == "infra_failure":
             # Entry unfinished: persist progress so a re-run resumes HERE.
             write_manifest(False)
@@ -1542,10 +1578,11 @@ def run_schedule(config, schedule_path, repos, output_dir, task_paths):
             "task": entry["task"],
             "run_id": final["run_id"],
             "status": final["status"],
-            "attempts": len(attempts),
+            "attempts": final.get("attempt", 1),
             "artifact_sha256": final.get("artifact_sha256"),
             "task_sha256": schedule["task_digests"][entry["task"]],
         })
+        referenced_runs.add(final["run_id"])
         write_manifest(False)
     return write_manifest(True)
 
@@ -1559,7 +1596,7 @@ def _sealed_bytes(path, seal_files, key=None):
     keys are PACKAGE-RELATIVE paths (`key`), not basenames — two
     `index.html` files in different snapshot subdirectories are distinct
     sealed artifacts."""
-    data = Path(path).read_bytes()
+    data = read_input_bytes(path, "sealed judge input")
     if hashlib.sha256(data).hexdigest() != seal_files.get(key or Path(path).name):
         raise InfraFailure(
             f"{path}: contents differ from the atomic-seal manifest — "
@@ -1618,7 +1655,7 @@ def assert_blind_scorable(doc_path):
             f"{doc_path}: raw runner artifact — blind scoring requires the "
             f"anonymized copy (`run-<id>-anon.md`)"
         )
-    text = path.read_text(encoding="utf-8")
+    text = read_input_text(path, "scoring document")
     lines = text.splitlines()
     if lines and lines[0].strip() == "---":
         for idx in range(1, len(lines)):
@@ -1766,7 +1803,8 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
         digest_by_name = {f"run-{r['run_id']}-anon.md": r.get("artifact_sha256")
                           for r in completed}
         for doc in doc_paths:
-            actual = hashlib.sha256(Path(doc).read_bytes()).hexdigest()
+            actual = hashlib.sha256(
+                read_input_bytes(doc, "scoring document")).hexdigest()
             if actual != digest_by_name.get(Path(doc).name):
                 raise InfraFailure(
                     f"{doc}: contents differ from the artifact digest "
@@ -1871,7 +1909,7 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                 "seal manifest is trusted only through the package hash "
                 "recorded at sealing"
             )
-        seal_bytes = Path(seal_manifest_path).read_bytes()
+        seal_bytes = read_input_bytes(seal_manifest_path, "seal manifest")
         if hashlib.sha256(seal_bytes).hexdigest() != registered_seal:
             raise InfraFailure(
                 "seal manifest does not match the registered "
@@ -1957,8 +1995,9 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                             f"{refetched}: re-fetched copy missing — "
                             f"source drift cannot be verified"
                         )
-                    if hashlib.sha256(
-                            refetched.read_bytes()).hexdigest() != sealed_digest:
+                    if hashlib.sha256(read_input_bytes(
+                            refetched, "re-fetched drift copy"
+                    )).hexdigest() != sealed_digest:
                         changed_keys.append(seal_key)
                 if changed_keys:
                     # The registered gate is about MATERIAL drift in a
@@ -1983,19 +2022,24 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                             )
                         if adj["material"]:
                             material = True
+                    # The full adjudication basis (changed keys, verdicts,
+                    # rationales) is preserved for BOTH outcomes: it lands
+                    # in the result record and, via the drift-notes digest,
+                    # in the batch identity — a corrected material-drift
+                    # report between interruption and resume is a different
+                    # batch even when the same task stays inconclusive.
+                    drift_notes[doc_name] = {
+                        "changed": changed_keys,
+                        "material": material,
+                        "adjudications": {
+                            key: adjudications[key]
+                            for key in changed_keys
+                        },
+                    }
                     if material:
                         inconclusive_docs.add(doc_name)
-                    else:
-                        drift_notes[doc_name] = {
-                            "changed": changed_keys,
-                            "material": False,
-                            "adjudications": {
-                                key: adjudications[key]
-                                for key in changed_keys
-                            },
-                        }
     else:
-        judge_prompt = Path(judge_prompt_path).read_text(encoding="utf-8")
+        judge_prompt = read_input_text(judge_prompt_path, "judge prompt")
         sealed_context_texts = None
     judge_cmd = config.get("judge_backend_cmd", config["backend_cmd"])
     if any("{installation}" in part for part in judge_cmd):
@@ -2130,6 +2174,7 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                 "inconclusive": True,
                 "reason": ("external source drift — task inconclusive per "
                            "the registered protocol"),
+                "source_drift": drift_notes.get(Path(doc).name),
                 "task": (task_by_doc.get(Path(doc).name)
                          if task_by_doc is not None else None),
                 "scoring_seed": scoring_seed,

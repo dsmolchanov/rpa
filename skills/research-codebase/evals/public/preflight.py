@@ -761,6 +761,7 @@ def run_preflight():
 
         manifest_path = ws / "out-sched" / "schedule-manifest.json"
         m = json.loads(manifest_path.read_text(encoding="utf-8"))
+        dropped_run = m["results"][1]["run_id"]
         m["results"] = m["results"][:1]
         m["complete"] = False
         manifest_path.write_text(json.dumps(m), encoding="utf-8")
@@ -768,11 +769,39 @@ def run_preflight():
         manifest2 = runner.run_schedule(config, sched_path, repos_map,
                                         ws / "out-sched", [str(task_s)])
         runs_after = len(list((ws / "out-sched").glob("run-*.json")))
+        # The truncated manifest simulates the crash window between the
+        # atomic run-record write and the manifest update: the completed
+        # orphan record must be ADOPTED, never executed again — a second
+        # backend launch would add an unaccounted observed replicate.
         ok &= check(
-            "schedule progress persisted and resumed (no duplicate reruns)",
+            "schedule resume adopts the orphan run record (no extra replicate)",
             manifest2["complete"] is True
             and len(manifest2["results"]) == 2
-            and runs_after == runs_before + 1,
+            and manifest2["results"][1]["run_id"] == dropped_run
+            and runs_after == runs_before,
+            notes)
+        m3 = json.loads(manifest_path.read_text(encoding="utf-8"))
+        m3["results"] = m3["results"][:1]
+        m3["complete"] = False
+        manifest_path.write_text(json.dumps(m3), encoding="utf-8")
+        fake_orphan = json.loads(
+            (ws / "out-sched" / f"run-{dropped_run}.json")
+            .read_text(encoding="utf-8"))
+        fake_orphan["run_id"] = "feedfacefeed"
+        (ws / "out-sched" / "run-feedfacefeed.json").write_text(
+            json.dumps(fake_orphan), encoding="utf-8")
+        try:
+            runner.run_schedule(config, sched_path, repos_map,
+                                ws / "out-sched", [str(task_s)])
+            ambig_ok = False
+        except runner.InfraFailure as exc:
+            ambig_ok = "ambiguous orphan" in str(exc)
+        (ws / "out-sched" / "run-feedfacefeed.json").unlink()
+        manifest3 = runner.run_schedule(config, sched_path, repos_map,
+                                        ws / "out-sched", [str(task_s)])
+        ok &= check(
+            "ambiguous orphan run records refused (cannot attribute runs)",
+            ambig_ok and manifest3["complete"] is True,
             notes)
 
         bad = dict(sched)
@@ -1264,6 +1293,24 @@ def run_preflight():
         ok &= check(
             "missing judge record on resume refused (no unbacked scores)",
             gone_ok, notes)
+        try:
+            runner.score(config, [ws / "no-such-doc.md"], judge,
+                         ws / "judge-missing-doc", scoring_seed=5,
+                         allow_unscheduled=True)
+            missdoc_ok = False
+        except runner.InfraFailure as exc:
+            missdoc_ok = "cannot read scoring document" in str(exc)
+        bad_doc = ws / "binary-doc.md"
+        bad_doc.write_bytes(b"\xff\xfe\x00 not utf-8")
+        try:
+            runner.score(config, [bad_doc], judge, ws / "judge-binary-doc",
+                         scoring_seed=5, allow_unscheduled=True)
+            bindoc_ok = False
+        except runner.InfraFailure as exc:
+            bindoc_ok = "cannot read scoring document" in str(exc)
+        ok &= check(
+            "missing or non-UTF-8 scoring document classified as infra",
+            missdoc_ok and bindoc_ok, notes)
         atomic_target = ws / "atomic-test.json"
         atomic_target.write_text("old", encoding="utf-8")
         runner.atomic_write_text(atomic_target, "new-content")
@@ -1633,6 +1680,47 @@ def run_preflight():
             and drift_res[0].get("inconclusive") is True
             and "session_id" not in drift_res[0],
             notes)
+        # The reported basis for exclusion (changed keys, verdicts,
+        # rationales) must survive into the excluded record itself, not
+        # collapse to a generic reason.
+        ok &= check(
+            "material drift adjudication preserved in the excluded record",
+            drift_res[0].get("source_drift", {}).get("material") is True
+            and drift_res[0]["source_drift"]["changed"]
+            == ["external-snapshots/b/index.html"]
+            and drift_res[0]["source_drift"]["adjudications"][
+                "external-snapshots/b/index.html"]["rationale"]
+            == "ground-truth section replaced",
+            notes)
+        # A corrected material-drift report between interruption and resume
+        # is a different batch even when the same task stays inconclusive:
+        # the adjudication details are part of the batch identity.
+        drift_bad2_file = ws / "drift-drifted2.json"
+        drift_bad2_file.write_text(json.dumps(
+            {task_snap.name: {"refetched": str(refetch_bad), "changed": {
+                "external-snapshots/b/index.html": {
+                    "material": True,
+                    "rationale": "a different recorded basis"}}}}),
+            encoding="utf-8")
+        mdr_manifest = (ws / "judge-drifted"
+                        / "scoring-verifier-manifest.json")
+        mdm = json.loads(mdr_manifest.read_text(encoding="utf-8"))
+        mdm["complete"] = False
+        mdr_manifest.write_text(json.dumps(mdm), encoding="utf-8")
+        try:
+            runner.score(snap_cfg, snap_docs, judge, ws / "judge-drifted",
+                         scoring_seed=5, manifest_path=snap_manifest_path,
+                         score_task_paths=[str(task_snap)],
+                         task_contexts=snap_ctx, seal_manifest_path=seal_file,
+                         evidence_repos={"mock-repo": str(repo_snap)},
+                         task_snapshots={task_snap.name: str(snap_dir)},
+                         drift_report_path=drift_bad2_file)
+            mdrift_ok = False
+        except runner.InfraFailure as exc:
+            mdrift_ok = "different identity" in str(exc)
+        ok &= check(
+            "changed material-drift basis refused on resume (same exclusions)",
+            mdrift_ok, notes)
         try:
             runner.score(snap_cfg, snap_docs, judge, ws / "judge-claim",
                          scoring_seed=5, manifest_path=snap_manifest_path,
