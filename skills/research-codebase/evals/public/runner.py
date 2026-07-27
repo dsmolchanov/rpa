@@ -823,6 +823,15 @@ def _node_from_event(event):
         }
     if event.get("type") == "assistant" and isinstance(event.get("message"), dict):
         message = event["message"]
+        # The real CLI also emits CLIENT-GENERATED assistant notices (e.g.
+        # "Unknown command: ...") marked `model: "<synthetic>"`. They are
+        # not API turns: no runtime ran and no usage was consumed, so they
+        # are excluded from parity validation and accounting. A session
+        # consisting only of synthetic notices therefore yields no nodes —
+        # exactly the no-parity-evidence case, which blocks instead of
+        # counting (real-backend shakedown finding, 2026-07-27).
+        if message.get("model") == "<synthetic>":
+            return None
         usage = message.get("usage") or {}
         content = message.get("content") or []
         tool_calls = sum(

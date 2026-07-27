@@ -93,6 +93,15 @@ def emit_real_stream(model, session_id):
     No per-node effort field — exactly like the real CLI."""
     emit({"type": "system", "subtype": "init", "session_id": session_id,
           "model": model})
+    # Client-generated notice exactly like the real CLI's synthetic
+    # assistant events: must be EXCLUDED from parity and accounting (the
+    # declared totals below do not include it).
+    emit({"type": "assistant", "session_id": session_id,
+          "parent_tool_use_id": None,
+          "message": {"model": "<synthetic>",
+                      "usage": {},
+                      "content": [{"type": "text",
+                                   "text": "client notice: plugin loaded"}]}})
     # Input usage is split across the real CLI's three categories (fresh +
     # cache creation + cache read); the declared totals stay 100/40, so the
     # preflight only passes if the parser sums ALL input categories.

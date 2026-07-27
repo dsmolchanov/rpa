@@ -29,6 +29,11 @@ Current Opus-class models delegate readily — the cap here is a
   big enough that doing it inline would crowd out synthesis. A narrow
   "where is Y" question is usually a couple of Grep/Glob calls — answer
   it directly.
+- **Cap (registered for the pilot): at most 6 fleet-agent spawns per
+  research run, at most 4 running concurrently.** The cap is a budget,
+  not a target — typical runs use fewer; exceeding it is a defect, not a
+  judgment call. Follow-up rounds on the same document count against the
+  same run's cap.
 - Typical shape for a subsystem question: locators (code and, if history
   matters, thoughts) in parallel first; then analyzers on the few most
   promising targets; web research only on external-dependency questions.
