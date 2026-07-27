@@ -416,6 +416,26 @@ private tasks dev-1/dev-5 (livekit-voice-agent @ `9d65fff`) and dev-2
 (neomenu @ `aa8b8d1`) were delivered to the owner for the private eval
 workspace per the privacy rule and are not committed here.
 
+**Dev-set tuning round 1 (Sequence step 3, recorded 2026-07-27, owner
+instruction «запускай прогоны на dev-сете»; the sequencing exception for
+running ahead of the seal and the formal preflight is documented in
+Ordering note 2 below):** candidate (merged master,
+opus/high, real backend, harness-enforced artifact gate) ran dev-3 and
+dev-4 directly (dev config, nonstandard topology). Round 1: both runs
+covered their full visible ground truth with zero subagents spawned
+(dev-3's over-orchestration probe passed), but BOTH artifacts were
+counted workflow failures on metadata discipline — dev-3 improvised
+divergent prose for the detached-HEAD branch value in frontmatter vs
+body; dev-4 inserted a checkout caveat paragraph inside the
+title-adjacent metadata block. One kernel Process-guidance fix
+(metadata collected once; `detached@<short-sha>` for detached
+checkouts; byte-identical repetition across both placements; nothing
+but the five lines in the block). Round 2 on the tuned kernel: both
+tasks completed through the artifact gate with full ground-truth
+coverage, zero subagents, and lower cost (dev-4: 43 tool calls / 359 s
+vs 73 / 531 s in round 1). Private-target dev tasks (dev-1/2/5) run
+from the private eval workspace; only aggregates come back here.
+
 **Ordering note (explicit owner decision, 2026-07-26):** dev-set authoring
 was executed together with prerequisite 5 on the owner's explicit
 instruction ("продолжай с eval-runner и dev-set"), ahead of the atomic
@@ -425,6 +445,23 @@ never count toward the pass bar, no baseline/candidate/holdout run has
 been executed, and the atomic seal plus the real-backend preflight remain
 hard blockers before any scored run. The sealed holdout is untouched by
 this change and is still authored in a separate session.
+
+**Ordering note 2 (explicit owner decision, 2026-07-27):** dev-set tuning
+RUNS were likewise executed ahead of the atomic seal (prerequisite 3) and
+the formal real-backend preflight, on the owner's explicit instruction
+(«запускай прогоны на dev-сете»), issued immediately after a status
+report that stated the seal was still pending owner-side and the formal
+preflight deferred to candidate freeze — the ordering context was before
+the owner when the instruction was given. Scope of this exception: the
+public dev tasks only (dev-3/dev-4), on the candidate arm, as protocol
+tuning evidence. It changes nothing about the pass bar: dev runs are
+never counted toward it, no baseline or holdout run has been executed,
+no holdout material has entered this context, and the atomic seal plus
+the formal real-backend preflight on the pinned configuration remain
+hard blockers before any scored run. (The 2026-07-27 mechanical CLI
+shakedown validated the integration path — namespaced entrypoint, model
+pin resolution, stream parsing — but does not substitute for the formal
+preflight, which still stands.)
 
 ## Sequence
 
