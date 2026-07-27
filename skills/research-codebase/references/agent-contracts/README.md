@@ -14,7 +14,10 @@ contract, budget, and failure/escalation behavior.
 | `research-thoughts-analyzer.md` | `agents/research-v2-thoughts-analyzer.md` |
 | `research-web-researcher.md` | `agents/research-v2-web-researcher.md` |
 
-The adapters are thin (tools, model policy, contract pointer). The legacy
+The adapters are thin (tools, model policy, contract pointer). The two
+locator adapters carry `Read` solely to load their own contract file —
+an authority bound stated in the contracts themselves (repository and
+document contents are never read; locating is not analyzing). The legacy
 shared fleet (`agents/codebase-*.md`, `agents/thoughts-*.md`,
 `agents/web-search-researcher.md`) is untouched during the pilot — it
 serves the frozen baseline and the other command families; any post-pilot

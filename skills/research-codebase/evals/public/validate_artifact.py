@@ -63,6 +63,10 @@ REQUIRED_EXACT_HEADINGS = (
 
 LAST_UPDATED_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
+# Sections that must carry non-whitespace content, not just a heading.
+CONTENT_REQUIRED_SECTIONS = ("Research Question", "Summary",
+                             "Detailed Findings")
+
 HEADING_RE = re.compile(r"^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$")
 
 
@@ -106,7 +110,7 @@ def _headings_outside_fences(lines):
     the structural gate."""
     headings = []
     fence = None
-    for line in lines:
+    for line_idx, line in enumerate(lines):
         stripped = line.strip()
         if fence is None and (stripped.startswith("```")
                               or stripped.startswith("~~~")):
@@ -118,7 +122,8 @@ def _headings_outside_fences(lines):
             continue
         match = HEADING_RE.match(line)
         if match:
-            headings.append((len(match.group(1)), match.group(2).strip()))
+            headings.append((len(match.group(1)), match.group(2).strip(),
+                             line_idx))
     return headings
 
 
@@ -183,22 +188,24 @@ def validate(path):
             errors.append(
                 f"`last_updated` must be YYYY-MM-DD, got `{sval}`")
     headings = _headings_outside_fences(lines)
-    title = next(((lvl, txt) for lvl, txt in headings
-                  if lvl == 1 and txt.startswith("Research:")), None)
+    title = next((h for h in headings
+                  if h[0] == 1 and h[1].startswith("Research:")), None)
     if title is None or not title[1][len("Research:"):].strip():
         errors.append(
             "missing document title `# Research: <topic>` (a real level-1 "
             "Markdown heading with a non-empty topic)")
     required = [(2, h[3:]) for h in REQUIRED_EXACT_HEADINGS]
+    keys = [(lvl, txt) for lvl, txt, _ in headings]
+    matched = {}
     pos = 0
     for req in required:
         found = None
         for idx in range(pos, len(headings)):
-            if headings[idx] == req:
+            if keys[idx] == req:
                 found = idx
                 break
         if found is None:
-            if req in headings[:pos]:
+            if req in keys[:pos]:
                 errors.append(
                     f"heading `## {req[1]}` appears out of the contract's "
                     f"section order")
@@ -208,7 +215,27 @@ def validate(path):
                     f"Markdown heading outside code fences, in contract "
                     f"order)")
         else:
+            matched[req[1]] = found
             pos = found + 1
+    # Headings alone are not a document: the load-bearing sections must
+    # carry non-whitespace content (subsections count as content for
+    # Detailed Findings). The tail sections may legitimately be a bare
+    # "None" note, which is still content.
+    for section in CONTENT_REQUIRED_SECTIONS:
+        if section not in matched:
+            continue
+        h_idx = matched[section]
+        start_line = headings[h_idx][2] + 1
+        end_line = len(lines)
+        for later in headings[h_idx + 1:]:
+            if later[0] <= 2:
+                end_line = later[2]
+                break
+        body_lines = lines[start_line:end_line]
+        if not any(l.strip() for l in body_lines):
+            errors.append(
+                f"section `## {section}` is empty — headings alone do not "
+                f"answer the research task")
     return errors
 
 

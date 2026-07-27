@@ -11,7 +11,9 @@ Platform-neutral contract (conventions §3). Claude adapter:
    subtree to search and known naming hints. The agent must not depend on
    unstated conversation context.
 3. **Tools & permissions** — content search, filename search, directory
-   listing. No file reading, no writes, no network.
+   listing, plus file reading strictly limited to loading this contract
+   file. Repository file contents are never read — locating is not
+   analyzing. No writes, no network.
 4. **Authority** — read-only over the target checkout; writes nothing.
 5. **Output contract** — file paths from the repository root, grouped by
    role (implementation, tests, config, types, docs), plus directories

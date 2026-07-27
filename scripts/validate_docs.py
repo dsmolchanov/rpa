@@ -472,32 +472,6 @@ def check_links(root, errors, exclude_fixtures=True):
             )
 
 
-def check_inline_contracts(root, errors):
-    """Adapters whose minimal toolset excludes file reading render their
-    kernel agent contract inline between `<!-- contract:begin PATH -->` and
-    `<!-- contract:end -->` markers. The kernel file stays authoritative:
-    this gate fails when a rendering drifts from its source, so the inline
-    copy can never silently fork (conventions SS9 via SS4 binding)."""
-    import re as _re
-    marker = _re.compile(
-        r"<!-- contract:begin (\S+) -->\n(.*?)<!-- contract:end -->",
-        _re.DOTALL)
-    for path in sorted((root / "agents").glob("*.md")):
-        text = path.read_text(encoding="utf-8")
-        for match in marker.finditer(text):
-            contract_rel, rendered = match.group(1), match.group(2)
-            contract_path = root / contract_rel
-            if not contract_path.is_file():
-                errors.append(
-                    f"{path.relative_to(root)}: inline contract points to "
-                    f"missing file {contract_rel}")
-                continue
-            if rendered != contract_path.read_text(encoding="utf-8"):
-                errors.append(
-                    f"{path.relative_to(root)}: inline contract rendering "
-                    f"differs from {contract_rel} — re-sync the adapter")
-
-
 def check_artifact_validator(root, errors):
     """The research artifact contract is bound as an executable gate:
     the validator must accept the positive fixture and reject the negative
@@ -554,6 +528,16 @@ def check_artifact_validator(root, errors):
         errors.append(
             "artifact validator accepted headings quoted inside a code "
             "fence — structural parsing is broken")
+    hollow = fixtures / "artifact-empty-sections-invalid.md"
+    if not hollow.is_file():
+        errors.append("artifact-empty-sections-invalid.md fixture missing")
+        return
+    kh = _sp.run([_sys.executable, str(validator), str(hollow)],
+                 capture_output=True)
+    if kh.returncode == 0:
+        errors.append(
+            "artifact validator accepted a document of empty sections — "
+            "content enforcement is broken")
 
 
 def validate(root, exclude_fixtures=True):
@@ -562,7 +546,6 @@ def validate(root, exclude_fixtures=True):
     check_agents(root, errors)
     check_skills(root, errors)
     check_json_manifests(root, errors)
-    check_inline_contracts(root, errors)
     check_artifact_validator(root, errors)
     check_links(root, errors, exclude_fixtures=exclude_fixtures)
     return errors

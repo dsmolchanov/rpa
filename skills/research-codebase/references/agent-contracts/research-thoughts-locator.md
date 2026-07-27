@@ -10,7 +10,9 @@ Platform-neutral contract (conventions §3). Claude adapter:
 2. **Bounded input** — the topic and its likely synonyms/identifiers
    (ticket numbers, component names).
 3. **Tools & permissions** — content/filename search and directory
-   listing under `thoughts/`. No writes, no network.
+   listing under `thoughts/`, plus file reading strictly limited to
+   loading this contract file. Document contents are never read —
+   locating is not analyzing. No writes, no network.
 4. **Authority** — read-only; writes nothing.
 5. **Output contract** — matching documents grouped by type (research /
    plans / tickets / PRs / handoffs / notes), newest first, each with its
