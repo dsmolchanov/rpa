@@ -116,9 +116,14 @@ def main():
         # then re-run this script for the mount work.
         env = dict(os.environ)
         env[STAGE2_MARK] = "1"
+        # -p/-f: a private PID namespace (with the fork PID 1 requires),
+        # so the session's /proc cannot enumerate host processes — a
+        # sibling orchestrator's cmdline carries private eval paths.
+        # --kill-child ties the inner tree to the wrapper's lifetime for
+        # the runner's timeout process-tree kill.
         os.execvpe("unshare",
-                   ["unshare", "-rm", "--", sys.executable,
-                    os.path.abspath(__file__),
+                   ["unshare", "-rmpf", "--kill-child", "--",
+                    sys.executable, os.path.abspath(__file__),
                     "--confine-to", workdir, "--profile", profile,
                     "--"] + cmd,
                    env)
@@ -151,10 +156,12 @@ def main():
         ["mount", "-t", "proc", "proc", newroot + "/proc"],
         capture_output=True)
     if fresh_proc.returncode != 0:
-        # Container kernels commonly refuse a fresh proc mount inside
-        # an unprivileged userns (masked /proc paths); the host bind
-        # carries the same view the session already had.
-        mount("--rbind", "/proc", newroot + "/proc")
+        # FAIL CLOSED: a bind of the outer /proc would re-expose the
+        # host PID namespace this wrapper just left — sibling process
+        # cmdlines can carry private eval paths.
+        sys.exit("ns_sandbox: cannot mount a private /proc for the new "
+                 "PID namespace: "
+                 + fresh_proc.stderr.decode(errors="replace").strip())
 
     os.makedirs(newroot + "/tmp", exist_ok=True)
     mount("-t", "tmpfs", "tmpfs", newroot + "/tmp")

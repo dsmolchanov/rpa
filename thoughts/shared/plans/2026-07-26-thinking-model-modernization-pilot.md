@@ -550,21 +550,23 @@ parity `claude-opus-5` on every transcript node, effort pinned on the
 command line with `command_pin` capture (the real stream schema carries
 no per-node effort field — the registered two-mode policy), both stream
 schemas parsed with full tree-wide token accounting, and the artifact
-gate enforced uniformly. The wrapper's confinement was hardened twice
-in review (host paths absent rather than read-only; recursive
-read-only covering child mounts such as container /etc file mounts; a
-fresh private /dev/shm hiding the host's shared tmpfs), and the
-per-arm runs were re-executed after each revision. Final-wrapper
-outcomes: candidate **completed** (177 s) and ablation **completed**
-(243 s, **zero subagents**: the pre-registered no-subagent policy
-held); baseline mechanics green but its artifact was gate-rejected in
-this replicate. **Recorded observation (three baseline replicates
-across the preflight series):** legacy formatting discipline is
-VARIABLE — replicate 1 rejected (backticked body metadata values,
-improvised detached-HEAD branch prose), replicate 2 passed, replicate
-3 rejected (frontmatter `date` without a time component, backticked
-body values) — so gate-failed baseline replicates are a realistic
-holdout outcome. The gate is pre-registered and uniform across arms and is NOT
+gate enforced uniformly. The wrapper's confinement was hardened three
+times in review (host paths absent rather than read-only; recursive
+read-only covering child mounts such as container /etc file mounts
+plus a fresh private /dev/shm hiding the host's shared tmpfs; a
+private PID namespace — `unshare -rmpf --kill-child` — with a fresh
+`/proc` that FAILS CLOSED rather than falling back to a host bind
+that would re-expose sibling process cmdlines), and the per-arm runs
+were re-executed after each revision. Final-wrapper outcomes (series
+4): all three arms **completed** through the artifact gate —
+candidate (176 s), baseline (137 s), ablation (269 s, **zero
+subagents**: the pre-registered no-subagent policy held). **Recorded
+observation (four baseline replicates across the preflight series):**
+legacy formatting discipline is VARIABLE — rejected (backticked body
+metadata values, improvised detached-HEAD branch prose), passed,
+rejected (frontmatter `date` without a time component, backticked
+values), passed — so gate-failed baseline replicates are a realistic
+holdout outcome (2 of 4 here). The gate is pre-registered and uniform across arms and is NOT
 adjusted post-freeze; any protocol amendment (e.g. separate judging of
 gate-failed artifacts' content) is an owner decision and would have to
 be registered before Sequence step 5 unseals the holdout. No real
