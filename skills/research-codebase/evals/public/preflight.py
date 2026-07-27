@@ -162,9 +162,10 @@ def run_preflight():
             notes)
         plugin_echo = (echo_dir / "plugin-dir.txt").read_text(encoding="utf-8").strip()
         ok &= check(
-            "installation mounted into profile and passed to backend",
+            "installation mounted at an arm-neutral path, passed to backend",
             plugin_echo
-            and Path(plugin_echo).name == "mock"
+            and Path(plugin_echo).name == "installation"
+            and "mock" not in plugin_echo
             and "profiles" in plugin_echo
             and runner.hash_tree(plugin_echo) == record["installation_sha256"],
             notes, Path(plugin_echo).name if plugin_echo else "missing")
@@ -263,7 +264,8 @@ def run_preflight():
         ok &= check(
             "workflow abort keeps partial-transcript accounting",
             record.get("accounting", {}).get("tree") == EXPECTED_TREE
-            and len(record.get("nodes", [])) == 2,
+            and len(record.get("nodes", [])) == 2
+            and record.get("effort_capture") == "per_node",
             notes, json.dumps(record.get("accounting", {}).get("tree")))
 
         record, _, _, _ = run_case(ws, "abort-wrong-model")
@@ -860,12 +862,41 @@ def run_preflight():
         sched_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         sched_docs = [ws / "out-sched" / f"run-{r['run_id']}-anon.md"
                       for r in sched_manifest["results"]]
-        mres = runner.score(config, sched_docs, judge, ws / "judge-sched",
-                            scoring_seed=5, manifest_path=manifest_path)
+        ctx_file = ws / "sealed-context.md"
+        ctx_file.write_text(
+            "SEALED-CONTEXT: task prompt + ground truth for the sched task\n",
+            encoding="utf-8")
+        sched_ctx = {Path(task_s).name: str(ctx_file)}
+        echo_dir = ws / "echo-judge-ctx"
+        os.environ["MOCK_ECHO_DIR"] = str(echo_dir)
+        try:
+            mres = runner.score(config, sched_docs, judge, ws / "judge-sched",
+                                scoring_seed=5, manifest_path=manifest_path,
+                                task_contexts=sched_ctx)
+        finally:
+            os.environ.pop("MOCK_ECHO_DIR", None)
+        judge_prompt_echo = (echo_dir / "prompt.txt").read_text(
+            encoding="utf-8")
         ok &= check(
             "manifest-bound scoring covers every completed replicate once",
             len(mres) == 2 and all(r.get("scheduled") for r in mres),
             notes)
+        ok &= check(
+            "per-task sealed context routed to each judge and recorded",
+            "SEALED-CONTEXT" in judge_prompt_echo
+            and all(r.get("task") == str(task_s)
+                    and r.get("task_context") == str(ctx_file)
+                    for r in mres),
+            notes)
+        try:
+            runner.score(config, sched_docs, judge, ws / "judge-noctx",
+                         scoring_seed=5, manifest_path=manifest_path)
+            noctx_ok = False
+        except runner.InfraFailure as exc:
+            noctx_ok = "sealed context" in str(exc)
+        ok &= check(
+            "manifest scoring without per-task sealed contexts refused",
+            noctx_ok, notes)
         try:
             runner.score(config, sched_docs[:1], judge, ws / "judge-subset",
                          scoring_seed=5, manifest_path=manifest_path)
@@ -877,7 +908,8 @@ def run_preflight():
             subset_ok, notes)
         vres2 = runner.score(config, sched_docs, judge, ws / "judge-mverify",
                              scoring_seed=5, manifest_path=manifest_path,
-                             evidence_repos={"mock-repo": str(repo_s)})
+                             evidence_repos={"mock-repo": str(repo_s)},
+                             task_contexts=sched_ctx)
         ok &= check(
             "manifest verification maps each doc to its task's repo@sha",
             all(r.get("role") == "verifier"
@@ -886,7 +918,8 @@ def run_preflight():
         try:
             runner.score(config, sched_docs, judge, ws / "judge-mpair",
                          scoring_seed=5, manifest_path=manifest_path,
-                         evidence_repo=str(repo_s), evidence_sha=sha_s)
+                         evidence_repo=str(repo_s), evidence_sha=sha_s,
+                         task_contexts=sched_ctx)
             mpair_ok = False
         except runner.InfraFailure as exc:
             mpair_ok = "NAME=PATH" in str(exc)
@@ -921,7 +954,8 @@ def run_preflight():
         try:
             runner.score(config, sched_docs, judge, ws / "judge-taskdrift",
                          scoring_seed=5, manifest_path=manifest_path,
-                         evidence_repos={"mock-repo": str(repo_s)})
+                         evidence_repos={"mock-repo": str(repo_s)},
+                         task_contexts=sched_ctx)
             sdrift_ok = False
         except runner.InfraFailure as exc:
             sdrift_ok = "task file changed" in str(exc)

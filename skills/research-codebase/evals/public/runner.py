@@ -275,7 +275,10 @@ def make_profile(workspace, label, installation_dir=None, settings=None):
     mount = None
     expected_entries = ["settings.json"]
     if installation_dir is not None:
-        mount = profile / "plugins" / label
+        # Neutral mount path for EVERY arm: the backend sees the same
+        # `plugins/installation` label regardless of arm, so command and
+        # profile paths cannot reveal which arm a session belongs to.
+        mount = profile / "plugins" / "installation"
         shutil.copytree(installation_dir, mount)
         expected_entries = ["plugins", "settings.json"]
     entries = sorted(p.name for p in profile.iterdir())
@@ -760,6 +763,7 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1):
     out.mkdir(parents=True, exist_ok=True)
     worktree = None
     all_nodes = []
+    effort_modes = set()
     started = None
     try:
         validate_arm_parity(config)
@@ -783,7 +787,10 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1):
         worktree = make_worktree(repo_dir, sha, output_dir)
         record["target_sha"] = sha
         record["worktree"] = str(worktree)
-        profile, mount = make_profile(output_dir, arm_name, arm["installation_dir"])
+        # Neutral profile label: an arm-named CLAUDE_CONFIG_DIR would
+        # reveal the arm to the session just like an arm-named mount.
+        profile, mount = make_profile(output_dir, "session",
+                                      arm["installation_dir"])
         mount_hash = hash_tree(mount)
         if mount_hash != arm["sha256"]:
             raise InfraFailure("mounted installation copy hash mismatch")
@@ -794,7 +801,6 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1):
         env = backend_env(profile)
         abort_exits = tuple(config.get("workflow_abort_exit_codes", ()))
         before = snapshot_research(worktree)
-        effort_modes = set()
         started = time.time()
         # ONE run-level deadline shared by the initial session and every
         # continuation: a per-session reset would grant stop-prone arms up
@@ -903,6 +909,11 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1):
         if all_nodes and "accounting" not in record:
             record["accounting"] = account(all_nodes)
             record["nodes"] = all_nodes
+        # Counted failures must also record which effort evidence accepted
+        # them (per_node vs command_pin) — the capture mode is part of the
+        # audit trail, not only of completed runs.
+        if "effort_capture" not in record and len(effort_modes) == 1:
+            record["effort_capture"] = effort_modes.pop()
         if started is not None and "wall_seconds" not in record:
             record["wall_seconds"] = round(time.time() - started, 3)
         if worktree is not None:
@@ -1186,7 +1197,8 @@ def assert_blind_scorable(doc_path):
 
 def score(config, doc_paths, judge_prompt_path, output_dir,
           evidence_repo=None, evidence_sha=None, scoring_seed=None,
-          manifest_path=None, allow_unscheduled=False, evidence_repos=None):
+          manifest_path=None, allow_unscheduled=False, evidence_repos=None,
+          task_contexts=None):
     """One fresh pinned backend session per document. The judge's full
     response text is preserved on disk — it IS the scoring artifact. Judge
     prompts live in the sealed package and are passed in at runtime.
@@ -1273,6 +1285,27 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                     f"recorded at run time — scored documents must be the "
                     f"exact run artifacts"
                 )
+        # An artifact is not required to restate its question: each judge
+        # gets ITS document's task-specific sealed context (task prompt +
+        # ground-truth note), routed via the manifest's run→task mapping.
+        if task_contexts is None:
+            raise InfraFailure(
+                "manifest-bound scoring requires per-task sealed contexts "
+                "(task_contexts: TASKFILE=CONTEXT) so each judge scores "
+                "against its own task's prompt and ground truth"
+            )
+        context_by_doc = {}
+        task_by_doc = {}
+        for r in completed:
+            task_name = Path(r["task"]).name
+            if task_name not in task_contexts:
+                raise InfraFailure(
+                    f"no sealed scoring context supplied for task "
+                    f"{task_name} — every scored task needs one"
+                )
+            doc_name = f"run-{r['run_id']}-anon.md"
+            context_by_doc[doc_name] = task_contexts[task_name]
+            task_by_doc[doc_name] = r["task"]
         if evidence_repo or evidence_sha:
             raise InfraFailure(
                 "manifest-bound verification checks each document against "
@@ -1297,11 +1330,14 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                     evidence_repos[repo_name],
                     task_target_sha(task_text, r["task"]),
                 )
-    elif evidence_repos is not None:
-        raise InfraFailure(
-            "`evidence_repos` requires manifest-bound scoring — for "
-            "unscheduled verification use evidence_repo/evidence_sha"
-        )
+    else:
+        context_by_doc = None
+        task_by_doc = None
+        if evidence_repos is not None:
+            raise InfraFailure(
+                "`evidence_repos` requires manifest-bound scoring — for "
+                "unscheduled verification use evidence_repo/evidence_sha"
+            )
     judge_prompt = Path(judge_prompt_path).read_text(encoding="utf-8")
     judge_cmd = config.get("judge_backend_cmd", config["backend_cmd"])
     if any("{installation}" in part for part in judge_cmd):
@@ -1351,7 +1387,16 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             workdir = judge_root / "workdir"
             workdir.mkdir()
         env = backend_env(profile)
-        prompt = judge_prompt + "\n\n---\n\n" + doc_text
+        prompt_parts = [judge_prompt]
+        if context_by_doc is not None:
+            context_text = Path(
+                context_by_doc[Path(doc).name]
+            ).read_text(encoding="utf-8")
+            prompt_parts.append(
+                "## Task-specific sealed context\n\n" + context_text
+            )
+        prompt_parts.append("---\n\n" + doc_text)
+        prompt = "\n\n".join(prompt_parts)
         try:
             stdout = spawn_session(
                 judge_cmd, prompt, str(workdir), env, config["timeout_seconds"]
@@ -1375,6 +1420,10 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             "presentation_index": i,
             "scheduled": manifest_path is not None,
             "judge_model": judge_model,
+            "task": (task_by_doc.get(Path(doc).name)
+                     if task_by_doc is not None else None),
+            "task_context": (str(context_by_doc[Path(doc).name])
+                             if context_by_doc is not None else None),
             "effort_capture": effort_capture,
             "response": response,
             "accounting": account(nodes),
@@ -1428,6 +1477,10 @@ def main():
     parser.add_argument("--unscheduled-docs", action="store_true",
                         help="score mode: explicitly allow ad-hoc/dev "
                              "scoring without a schedule manifest")
+    parser.add_argument("--task-contexts", nargs="+",
+                        help="score mode with --manifest: TASKFILE=CONTEXT "
+                             "mapping from task file basename to its sealed "
+                             "scoring context (task prompt + ground truth)")
     parser.add_argument("--output", default="runs", help="output directory")
     parser.add_argument("--make-schedule", action="store_true",
                         help="write a pre-registered randomized schedule "
@@ -1509,6 +1562,9 @@ def main():
             evidence_repos = (parse_repo_mapping(args.evidence_repos,
                                                  "--evidence-repos")
                               if args.evidence_repos else None)
+            task_contexts = (parse_repo_mapping(args.task_contexts,
+                                                "--task-contexts")
+                             if args.task_contexts else None)
         except InfraFailure as exc:
             print(json.dumps({"status": "infra_failure", "failure": str(exc)}))
             sys.exit(1)
@@ -1518,7 +1574,8 @@ def main():
                         scoring_seed=args.scoring_seed,
                         manifest_path=args.manifest,
                         allow_unscheduled=args.unscheduled_docs,
-                        evidence_repos=evidence_repos)
+                        evidence_repos=evidence_repos,
+                        task_contexts=task_contexts)
         print(json.dumps([{k: r[k] for k in ("doc", "session_id")} for r in results]))
         sys.exit(0)
 
