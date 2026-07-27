@@ -817,6 +817,28 @@ def run_preflight():
             "non-boolean nonstandard_config refused (truthy string trap)",
             flag_ok, notes)
 
+        typed_cfg = ws / "config-badtypes.json"
+        base_cfg, _ = build_config(ws, "normal")
+        bad_typed = json.loads(json.dumps(base_cfg))
+        bad_typed["arms"]["mock"]["model"] = ["opus"]
+        typed_cfg.write_text(json.dumps(bad_typed), encoding="utf-8")
+        try:
+            runner.load_config(typed_cfg)
+            typed_ok = False
+        except runner.InfraFailure as exc:
+            typed_ok = "non-empty string" in str(exc)
+        bad_typed2 = json.loads(json.dumps(base_cfg))
+        bad_typed2["sandbox_cmd"] = 7
+        typed_cfg.write_text(json.dumps(bad_typed2), encoding="utf-8")
+        try:
+            runner.load_config(typed_cfg)
+            typed2_ok = False
+        except runner.InfraFailure as exc:
+            typed2_ok = "list of" in str(exc)
+        ok &= check(
+            "wrong-typed config fields refused at load (full schema)",
+            typed_ok and typed2_ok, notes)
+
         config, _ = build_config(ws, "normal")
         repo_s, sha_s = make_git_repo(ws, "sched")
         task_s = write_task(ws, "sched", sha_s)
@@ -984,6 +1006,17 @@ def run_preflight():
         ok &= check(
             "schedule entries routed to their task's registered clone",
             route_ok, notes)
+        qual_task = ws / "task-qualified.md"
+        qual_task.write_text(
+            f"---\ntask-id: q\ntarget-repo: dsmolchanov/mock-repo\n"
+            f"target-sha: {'0' * 40}\n---\n\n## Task prompt\n\nQ.\n",
+            encoding="utf-8")
+        route_a = runner.resolve_repo(qual_task, {"mock-repo": "/clone-a"})
+        route_b = runner.resolve_repo(
+            qual_task, {"dsmolchanov/mock-repo": "/clone-b"})
+        ok &= check(
+            "qualified target-repo routed via canonical mapping keys",
+            route_a == "/clone-a" and route_b == "/clone-b", notes)
 
         original_task_bytes = Path(task_s).read_bytes()
         Path(task_s).write_bytes(original_task_bytes + b"\n<!-- edited -->\n")

@@ -326,6 +326,26 @@ def load_config(path):
         raise InfraFailure(
             f"config {path}: `arms` must be a non-empty object"
         )
+    def require_str(value, what, required=True):
+        if value is None and not required:
+            return
+        if not isinstance(value, str) or not value.strip():
+            raise InfraFailure(
+                f"config {path}: {what} must be a non-empty string, "
+                f"got {value!r}"
+            )
+
+    def require_cmd(value, what, required=False):
+        if value is None and not required:
+            return
+        if (not isinstance(value, list) or not value
+                or not all(isinstance(part, str) and part
+                           for part in value)):
+            raise InfraFailure(
+                f"config {path}: {what} must be a non-empty list of "
+                f"strings, got {value!r}"
+            )
+
     for arm_name, arm in arms.items():
         if not isinstance(arm, dict):
             raise InfraFailure(
@@ -337,6 +357,21 @@ def load_config(path):
                     f"config {path}: arm `{arm_name}` is missing required "
                     f"`{required}`"
                 )
+            # Presence is not shape: a truthy wrong-typed value (e.g.
+            # `"model": ["opus"]`) must fail HERE, classified, not as a
+            # TypeError deep inside parity validation.
+            require_str(arm.get(required), f"arm `{arm_name}` `{required}`")
+        require_str(arm.get("entrypoint"),
+                    f"arm `{arm_name}` `entrypoint`", required=False)
+        if ("forbid_subagents" in arm
+                and not isinstance(arm["forbid_subagents"], bool)):
+            raise InfraFailure(
+                f"config {path}: arm `{arm_name}` `forbid_subagents` must "
+                f"be a boolean, got {arm['forbid_subagents']!r}"
+            )
+        if arm.get("schedule_tasks") is not None:
+            require_cmd(arm.get("schedule_tasks"),
+                        f"arm `{arm_name}` `schedule_tasks`")
     if ("nonstandard_config" in config
             and not isinstance(config["nonstandard_config"], bool)):
         raise InfraFailure(
@@ -345,14 +380,20 @@ def load_config(path):
             f"\"false\" would silently select dev mode and bypass the "
             f"production safeguards"
         )
-    if (not isinstance(config.get("backend_cmd"), list)
-            or not config["backend_cmd"]
-            or not all(isinstance(part, str)
-                       for part in config["backend_cmd"])):
-        raise InfraFailure(
-            f"config {path}: `backend_cmd` must be a non-empty list of "
-            f"strings"
-        )
+    require_cmd(config.get("backend_cmd"), "`backend_cmd`", required=True)
+    require_cmd(config.get("judge_backend_cmd"), "`judge_backend_cmd`")
+    require_cmd(config.get("backend_version_cmd"), "`backend_version_cmd`")
+    require_cmd(config.get("sandbox_cmd"), "`sandbox_cmd`")
+    require_cmd(config.get("drift_fetch_cmd"), "`drift_fetch_cmd`")
+    require_str(config.get("judge_model"), "`judge_model`", required=False)
+    require_str(config.get("judge_effort"), "`judge_effort`",
+                required=False)
+    require_str(config.get("backend_version"), "`backend_version`",
+                required=False)
+    require_str(config.get("seal_manifest"), "`seal_manifest`",
+                required=False)
+    require_str(config.get("seal_package_sha256"),
+                "`seal_package_sha256`", required=False)
     return config
 
 
@@ -595,18 +636,41 @@ def task_target_repo(task_text, task_path):
     return match.group(1).strip()
 
 
+def canonical_repo_name(name):
+    """`target-repo` frontmatter may be qualified (dsmolchanov/rpa) or bare
+    (rpa); coverage validation, routing, and evidence mapping share ONE
+    canonical form — the final path component, lowercased — so a
+    valid-looking schedule can never stall on a spelling mismatch between
+    the task files and the operator's NAME=PATH mapping."""
+    return name.strip().rstrip("/").rsplit("/", 1)[-1].lower()
+
+
+def resolve_repo_mapping(name, repos, what):
+    canon = {}
+    for key, path in repos.items():
+        ckey = canonical_repo_name(key)
+        if ckey in canon and canon[ckey] != path:
+            raise InfraFailure(
+                f"{what}: two different clones registered for repository "
+                f"`{ckey}` — mapping keys must be unambiguous"
+            )
+        canon[ckey] = path
+    cname = canonical_repo_name(name)
+    if cname not in canon:
+        raise InfraFailure(
+            f"target-repo `{name}` has no registered clone in {what} — "
+            f"supply it as {cname}=/path/to/clone"
+        )
+    return canon[cname]
+
+
 def resolve_repo(task_path, repos):
     """The registered holdout spans several repositories: each task names
     its `target-repo` and the operator supplies a NAME=PATH clone mapping;
     one clone can never serve a multi-repo schedule."""
     text = read_task_text(task_path)
     name = task_target_repo(text, task_path)
-    if name not in repos:
-        raise InfraFailure(
-            f"{task_path}: target-repo `{name}` has no registered clone — "
-            f"supply it as {name}=/path/to/clone"
-        )
-    return repos[name]
+    return resolve_repo_mapping(name, repos, "--repos")
 
 
 def parse_repo_mapping(pairs, what):
@@ -1407,7 +1471,7 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
                 )
             seen_numbers[number] = task
             full_repo = task_target_repo(cov_text, task)
-            repo_name = full_repo.rsplit("/", 1)[-1].lower()
+            repo_name = canonical_repo_name(full_repo)
             if repo_name not in REGISTERED_HOLDOUT_REPOS:
                 raise InfraFailure(
                     f"{task}: target-repo `{full_repo}` is not a registered "
@@ -2043,14 +2107,10 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                 # document is verified against the worktree of its own
                 # task's pinned repo@sha, never one shared checkout.
                 repo_name = task_target_repo(task_text, r["task"])
-                if repo_name not in evidence_repos:
-                    raise InfraFailure(
-                        f"{r['task']}: target-repo `{repo_name}` has no "
-                        f"registered evidence clone — supply it as "
-                        f"{repo_name}=/path/to/frozen-clone"
-                    )
+                evidence_clone = resolve_repo_mapping(
+                    repo_name, evidence_repos, "--evidence-repos")
                 doc_evidence[doc_name] = (
-                    evidence_repos[repo_name],
+                    evidence_clone,
                     task_target_sha(task_text, r["task"]),
                 )
             # External-context tasks apply to BOTH judge roles: the
