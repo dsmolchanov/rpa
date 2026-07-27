@@ -131,6 +131,9 @@ REGISTERED_HOLDOUT_TASKS = 6
 # The plan fixes the fleet-ablation arm to these two archetypes; a standard
 # schedule validates the scoped tasks' `archetype` frontmatter against them.
 REGISTERED_ABLATION_ARCHETYPES = ("subsystem-explanation", "narrow where-is")
+# The holdout spans this many registered repositories, one task per
+# archetype (six distinct archetypes across the six tasks).
+REGISTERED_HOLDOUT_REPOS = 3
 CONTINUATION_MESSAGE = (
     "Proceed with the research as specified; no additional constraints."
 )
@@ -1110,6 +1113,34 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
                 f"{len(tasks)}; dev-set tuning schedules must be explicitly "
                 f"marked nonstandard"
             )
+        # Full coverage matrix, not just a count: exactly one task per
+        # archetype and coverage across every registered repository.
+        seen_archetypes = []
+        seen_repos = set()
+        for task in tasks:
+            cov_text = Path(task).read_text(encoding="utf-8")
+            cov_match = re.search(
+                r"^archetype:\s*\"?([^\"\n]+?)\"?\s*$",
+                cov_text, re.MULTILINE)
+            if not cov_match:
+                raise InfraFailure(
+                    f"{task}: no `archetype` frontmatter — a standard "
+                    f"schedule validates the full coverage matrix"
+                )
+            seen_archetypes.append(cov_match.group(1))
+            seen_repos.add(task_target_repo(cov_text, task))
+        if len(set(seen_archetypes)) != REGISTERED_HOLDOUT_TASKS:
+            raise InfraFailure(
+                f"a standard schedule requires exactly one task per "
+                f"archetype ({REGISTERED_HOLDOUT_TASKS} distinct), got "
+                f"{sorted(seen_archetypes)!r}"
+            )
+        if len(seen_repos) != REGISTERED_HOLDOUT_REPOS:
+            raise InfraFailure(
+                f"a standard schedule must span the "
+                f"{REGISTERED_HOLDOUT_REPOS} registered repositories, got "
+                f"{sorted(seen_repos)}"
+            )
     validate_arm_parity(config)
     entries = []
     for arm_name in sorted(config["arms"]):
@@ -1436,6 +1467,7 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             "explicitly marked unscheduled"
         )
     doc_evidence = None
+    role = "verifier" if (evidence_repo or evidence_repos is not None) else "scorer"
     if manifest_path is not None:
         # No post-hoc selection: the supplied documents must cover every
         # completed scheduled replicate exactly once — no subsets, no
@@ -1658,6 +1690,19 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                     f"`{expected_ctx}` for this task — swapped contexts "
                     f"refused"
                 )
+        seal_prompts = seal_doc.get("judge_prompts", {})
+        expected_prompt = seal_prompts.get(role)
+        if not expected_prompt:
+            raise InfraFailure(
+                f"the sealed package records no judge prompt for role "
+                f"`{role}` — the seal must bind each role to its prompt"
+            )
+        if Path(judge_prompt_path).name != expected_prompt:
+            raise InfraFailure(
+                f"supplied judge prompt `{Path(judge_prompt_path).name}` is "
+                f"not the sealed `{role}` prompt `{expected_prompt}` — "
+                f"role/prompt mixups refused"
+            )
         judge_prompt = _read_sealed(judge_prompt_path, seal_files)
         sealed_context_texts = {
             doc_name: _read_sealed(ctx_path, seal_files)
@@ -1767,7 +1812,6 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
     doc_texts = [assert_blind_scorable(doc) for doc in doc_paths]
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
-    role = "verifier" if (evidence_repo or doc_evidence is not None) else "scorer"
     order = list(range(len(doc_paths)))
     random.Random(scoring_seed).shuffle(order)
     # Judge batches are resumable and atomic: progress persists after every
@@ -1932,6 +1976,14 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                 sandboxed_cmd, prompt, str(workdir), env,
                 config["timeout_seconds"]
             )
+        except WorkflowFailure as wf:
+            # Judges have no workflow outcome: a timed-out judge session
+            # is an invalid session (infrastructure) — resume the batch
+            # and it re-executes only the unfinished documents.
+            raise InfraFailure(
+                f"judge session failed ({wf}) — invalid judge session; "
+                f"resume the scoring batch to re-execute it"
+            ) from wf
         finally:
             if ev_repo:
                 remove_worktree(ev_repo, workdir)

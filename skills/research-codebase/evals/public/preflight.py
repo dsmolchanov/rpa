@@ -152,7 +152,10 @@ def run_preflight():
         (snap_dir / "b" / "index.html").write_text(
             "<html>SEALED-SNAPSHOT B</html>\n", encoding="utf-8")
         seal_file = ws / "seal-manifest.json"
-        seal_file.write_text(json.dumps({"task_contexts": {
+        seal_file.write_text(json.dumps({"judge_prompts": {
+            "scorer": "judge-prompt.md",
+            "verifier": "judge-prompt.md",
+        }, "task_contexts": {
             "task-sched.md": "sealed-context.md",
             "task-snap.md": "sealed-context.md",
         }, "files": {
@@ -444,12 +447,15 @@ def run_preflight():
         dummy_tasks = []
         archetypes = {"a": "1 — subsystem-explanation",
                       "b": "3 — narrow where-is"}
+        dummy_repos = {"a": "mock-repo", "b": "mock-repo",
+                       "c": "mock-repo-2", "d": "mock-repo-2",
+                       "e": "mock-repo-3", "f": "mock-repo-3"}
         for c in "abcdef":
             arch = archetypes.get(c, f"9 — other-{c}")
             dt = ws / f"t-{c}.md"
             dt.write_text(
                 f"---\ntask-id: dummy-{c}\narchetype: \"{arch}\"\n"
-                f"target-repo: mock-repo\n"
+                f"target-repo: {dummy_repos[c]}\n"
                 f"target-sha: {'0' * 40}\n---\n\n## Task prompt\n\nDummy {c}.\n",
                 encoding="utf-8")
             dummy_tasks.append(str(dt))
@@ -587,6 +593,44 @@ def run_preflight():
         ok &= check(
             "standard topology requires the named baseline/candidate roles",
             roles_ok, notes)
+
+        cov_cfg, _ = build_config(ws, "normal")
+        cov_cfg.pop("nonstandard_config")
+        cov_base = cov_cfg["arms"].pop("mock")
+        cov_cfg["arms"]["baseline"] = dict(cov_base)
+        cov_cfg["arms"]["candidate"] = dict(cov_base)
+        cov_cfg["arms"]["ablation"] = dict(cov_base, forbid_subagents=True,
+                                           schedule_tasks=[d_a, d_b])
+        dup_arch = ws / "t-dup-arch.md"
+        dup_arch.write_text(
+            (ws / "t-f.md").read_text(encoding="utf-8").replace(
+                "9 — other-f", "1 — subsystem-explanation"),
+            encoding="utf-8")
+        try:
+            runner.make_schedule(cov_cfg, six_tasks[:5] + [str(dup_arch)],
+                                 3, seed=1)
+            cov_ok = False
+        except runner.InfraFailure as exc:
+            cov_ok = "one task per archetype" in str(exc)
+        same_repo_tasks = []
+        for c in "abcdef":
+            sr = ws / f"t-sr-{c}.md"
+            sr.write_text(
+                (ws / f"t-{c}.md").read_text(encoding="utf-8").replace(
+                    "mock-repo-2", "mock-repo").replace(
+                    "mock-repo-3", "mock-repo"),
+                encoding="utf-8")
+            same_repo_tasks.append(str(sr))
+        cov_cfg["arms"]["ablation"]["schedule_tasks"] = [
+            same_repo_tasks[0], same_repo_tasks[1]]
+        try:
+            runner.make_schedule(cov_cfg, same_repo_tasks, 3, seed=1)
+            cov_ok2 = False
+        except runner.InfraFailure as exc:
+            cov_ok2 = "registered repositories" in str(exc)
+        ok &= check(
+            "standard schedule validates the full coverage matrix",
+            cov_ok and cov_ok2, notes)
 
         config, _ = build_config(ws, "normal")
         repo_s, sha_s = make_git_repo(ws, "sched")
@@ -1143,6 +1187,32 @@ def run_preflight():
         ok &= check(
             "context not sealed FOR this task refused (association bound)",
             swap_ok, notes)
+        try:
+            runner.score(config, sched_docs, ctx_file, ws / "judge-roleprompt",
+                         scoring_seed=5, manifest_path=manifest_path,
+                         score_task_paths=[str(task_s)],
+                         task_contexts=sched_ctx,
+                         seal_manifest_path=seal_file)
+            roleprompt_ok = False
+        except runner.InfraFailure as exc:
+            roleprompt_ok = "not the sealed" in str(exc)
+        ok &= check(
+            "judge prompt bound to its role in the seal (mixups refused)",
+            roleprompt_ok, notes)
+        to_cfg, _ = build_config(ws, "normal", timeout=2)
+        to_cfg["judge_backend_cmd"] = [sys.executable,
+                                       str(HERE / "mock_claude.py"),
+                                       "--mode", "timeout",
+                                       "--effort", "{effort}"]
+        try:
+            runner.score(to_cfg, docs, judge, ws / "judge-timeout",
+                         scoring_seed=5, allow_unscheduled=True)
+            jto_ok = False
+        except runner.InfraFailure as exc:
+            jto_ok = "judge session" in str(exc)
+        ok &= check(
+            "judge timeout classified as infrastructure (batch resumable)",
+            jto_ok, notes)
         try:
             runner.score(config, sched_docs, judge, ws / "judge-noseal",
                          scoring_seed=5, manifest_path=manifest_path,
