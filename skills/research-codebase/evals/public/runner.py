@@ -128,6 +128,9 @@ DEFAULT_MAX_INFRA_RETRIES = 2
 # tuning only, never holdout).
 REGISTERED_REPLICATES = 3
 REGISTERED_HOLDOUT_TASKS = 6
+# The plan fixes the fleet-ablation arm to these two archetypes; a standard
+# schedule validates the scoped tasks' `archetype` frontmatter against them.
+REGISTERED_ABLATION_ARCHETYPES = ("subsystem-explanation", "narrow where-is")
 CONTINUATION_MESSAGE = (
     "Proceed with the research as specified; no additional constraints."
 )
@@ -1082,6 +1085,30 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
                     f"to exactly 2 DISTINCT designated tasks, got "
                     f"{arm['schedule_tasks']!r}"
                 )
+            if not allow_nonstandard:
+                # The designation is not free: the plan fixes the third arm
+                # to specific archetypes, validated from the tasks' own
+                # `archetype` frontmatter.
+                found = []
+                for scoped in arm["schedule_tasks"]:
+                    scoped_text = Path(scoped).read_text(encoding="utf-8")
+                    match = re.search(
+                        r"^archetype:\s*\"?([^\"\n]+?)\"?\s*$",
+                        scoped_text, re.MULTILINE)
+                    if not match:
+                        raise InfraFailure(
+                            f"{scoped}: no `archetype` frontmatter — the "
+                            f"ablation scope is bound to registered "
+                            f"archetypes"
+                        )
+                    found.append(match.group(1))
+                for registered in REGISTERED_ABLATION_ARCHETYPES:
+                    if not any(registered in f for f in found):
+                        raise InfraFailure(
+                            f"ablation arm must be scoped to the registered "
+                            f"archetypes {REGISTERED_ABLATION_ARCHETYPES}, "
+                            f"got {found!r}"
+                        )
         arm_tasks = [str(Path(t)) for t in arm.get("schedule_tasks", tasks)]
         unknown = [t for t in arm_tasks if t not in tasks]
         if unknown:
@@ -1326,7 +1353,8 @@ def assert_blind_scorable(doc_path):
 def score(config, doc_paths, judge_prompt_path, output_dir,
           evidence_repo=None, evidence_sha=None, scoring_seed=None,
           manifest_path=None, allow_unscheduled=False, evidence_repos=None,
-          task_contexts=None, seal_manifest_path=None, task_snapshots=None):
+          task_contexts=None, seal_manifest_path=None, task_snapshots=None,
+          drift_report_path=None):
     """One fresh pinned backend session per document. The judge's full
     response text is preserved on disk — it IS the scoring artifact. Judge
     prompts live in the sealed package and are passed in at runtime.
@@ -1461,6 +1489,11 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                 "(NAME=PATH mapping), not a single evidence repo/sha"
             )
         snapshot_by_doc = {}
+        inconclusive_docs = set()
+        drift_report = None
+        if drift_report_path is not None:
+            drift_report = json.loads(
+                Path(drift_report_path).read_text(encoding="utf-8"))
         if evidence_repos is not None:
             # A holdout batch spans several target repositories: every
             # document is verified against the worktree of its own task's
@@ -1493,10 +1526,33 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                             f"{task_name}=<sealed snapshot file/dir>"
                         )
                     snapshot_by_doc[doc_name] = task_snapshots[task_name]
+                    # Registered source-drift gate: the live sources are
+                    # re-fetched BEFORE scoring (by the operator's recorded
+                    # drift-check step) and the outcome supplied here; a
+                    # drifted source makes the task inconclusive — its
+                    # documents are recorded, never judged.
+                    if drift_report is None:
+                        raise InfraFailure(
+                            f"{r['task']}: external-context task requires "
+                            f"the pre-score source-drift report "
+                            f"(--drift-report) — re-fetch the sealed "
+                            f"sources and record drift before scoring"
+                        )
+                    drift_entry = drift_report.get(task_name)
+                    if (not isinstance(drift_entry, dict)
+                            or drift_entry.get("status")
+                            not in ("unchanged", "drifted")):
+                        raise InfraFailure(
+                            f"{r['task']}: drift report has no valid entry "
+                            f"(status must be unchanged|drifted)"
+                        )
+                    if drift_entry["status"] == "drifted":
+                        inconclusive_docs.add(doc_name)
     else:
         context_by_doc = None
         task_by_doc = None
         snapshot_by_doc = {}
+        inconclusive_docs = set()
         if evidence_repos is not None:
             raise InfraFailure(
                 "`evidence_repos` requires manifest-bound scoring — for "
@@ -1560,6 +1616,25 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
     random.Random(scoring_seed).shuffle(order)
     for i, doc_index in enumerate(order):
         doc, doc_text = doc_paths[doc_index], doc_texts[doc_index]
+        if Path(doc).name in inconclusive_docs:
+            # Task inconclusive per the registered source-drift gate:
+            # recorded, never judged.
+            result = {
+                "doc": str(doc),
+                "inconclusive": True,
+                "reason": ("external source drift — task inconclusive per "
+                           "the registered protocol"),
+                "task": (task_by_doc.get(Path(doc).name)
+                         if task_by_doc is not None else None),
+                "scoring_seed": scoring_seed,
+                "presentation_index": i,
+                "scheduled": manifest_path is not None,
+            }
+            (out / f"judge-{scoring_id}-{i}.json").write_text(
+                json.dumps(result, indent=2) + "\n", encoding="utf-8"
+            )
+            results.append(result)
+            continue
         if doc_evidence is not None:
             ev_repo, ev_sha = doc_evidence[Path(doc).name]
         else:
@@ -1663,9 +1738,10 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             json.dumps(result, indent=2) + "\n", encoding="utf-8"
         )
         results.append(result)
-    if len({r["session_id"] for r in results}) != len(results) or len(
-        {r["profile"] for r in results}
-    ) != len(results):
+    judged = [r for r in results if not r.get("inconclusive")]
+    if len({r["session_id"] for r in judged}) != len(judged) or len(
+        {r["profile"] for r in judged}
+    ) != len(judged):
         raise InfraFailure("judge sessions were not fresh/isolated")
     return results
 
@@ -1720,6 +1796,12 @@ def main():
                         help="score mode, verifier role: TASKFILE=PATH "
                              "mapping to sealed frozen external-source "
                              "snapshots for external-context tasks")
+    parser.add_argument("--drift-report",
+                        help="score mode: JSON drift report from the "
+                             "pre-score re-fetch of sealed external "
+                             "sources ({taskfile: {status: "
+                             "unchanged|drifted}}); drifted tasks are "
+                             "recorded inconclusive, never judged")
     parser.add_argument("--output", default="runs", help="output directory")
     parser.add_argument("--make-schedule", action="store_true",
                         help="write a pre-registered randomized schedule "
@@ -1819,7 +1901,8 @@ def main():
                         evidence_repos=evidence_repos,
                         task_contexts=task_contexts,
                         seal_manifest_path=args.seal_manifest,
-                        task_snapshots=task_snapshots)
+                        task_snapshots=task_snapshots,
+                        drift_report_path=args.drift_report)
         print(json.dumps([{k: r[k] for k in ("doc", "session_id")} for r in results]))
         sys.exit(0)
 

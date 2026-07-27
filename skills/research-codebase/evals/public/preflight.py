@@ -432,10 +432,14 @@ def run_preflight():
             notes)
 
         dummy_tasks = []
+        archetypes = {"a": "1 — subsystem-explanation",
+                      "b": "3 — narrow where-is"}
         for c in "abcdef":
+            arch = archetypes.get(c, f"9 — other-{c}")
             dt = ws / f"t-{c}.md"
             dt.write_text(
-                f"---\ntask-id: dummy-{c}\ntarget-repo: mock-repo\n"
+                f"---\ntask-id: dummy-{c}\narchetype: \"{arch}\"\n"
+                f"target-repo: mock-repo\n"
                 f"target-sha: {'0' * 40}\n---\n\n## Task prompt\n\nDummy {c}.\n",
                 encoding="utf-8")
             dummy_tasks.append(str(dt))
@@ -532,6 +536,17 @@ def run_preflight():
             and s_abl["nonstandard"] is False
             and sum(1 for e in s_abl["entries"] if e["arm"] == "ablation") == 6,
             notes)
+
+        config["arms"]["ablation"]["schedule_tasks"] = [d_a, d_c]
+        try:
+            runner.make_schedule(config, six_tasks, 3, seed=1)
+            arch_ok = False
+        except runner.InfraFailure as exc:
+            arch_ok = "registered archetypes" in str(exc)
+        config["arms"]["ablation"]["schedule_tasks"] = [d_a, d_b]
+        ok &= check(
+            "ablation scope bound to the registered archetypes",
+            arch_ok, notes)
 
         try:
             runner.make_schedule(config, [d_a, d_b], 3, seed=1)
@@ -1082,6 +1097,12 @@ def run_preflight():
                      for r in snap_manifest["results"]]
         snap_ctx = {task_snap.name: str(ctx_file)}
         snap_manifest_path = ws / "out-snap" / "schedule-manifest.json"
+        drift_ok_file = ws / "drift-unchanged.json"
+        drift_ok_file.write_text(json.dumps(
+            {task_snap.name: {"status": "unchanged"}}), encoding="utf-8")
+        drift_bad_file = ws / "drift-drifted.json"
+        drift_bad_file.write_text(json.dumps(
+            {task_snap.name: {"status": "drifted"}}), encoding="utf-8")
         try:
             runner.score(snap_cfg, snap_docs, judge, ws / "judge-nosnap",
                          scoring_seed=5, manifest_path=snap_manifest_path,
@@ -1102,7 +1123,8 @@ def run_preflight():
                 scoring_seed=5, manifest_path=snap_manifest_path,
                 task_contexts=snap_ctx, seal_manifest_path=seal_file,
                 evidence_repos={"mock-repo": str(repo_snap)},
-                task_snapshots={task_snap.name: str(snap_dir)})
+                task_snapshots={task_snap.name: str(snap_dir)},
+                drift_report_path=drift_ok_file)
         finally:
             os.environ.pop("MOCK_ECHO_DIR", None)
         snap_listing = (echo_dir / "cwd-listing.txt").read_text(
@@ -1111,6 +1133,31 @@ def run_preflight():
             "sealed snapshots in verifier workdir (relative keys, layout kept)",
             "_sealed-snapshots" in snap_listing
             and snap_res[0].get("snapshots") == str(snap_dir),
+            notes)
+        try:
+            runner.score(snap_cfg, snap_docs, judge, ws / "judge-nodrift",
+                         scoring_seed=5, manifest_path=snap_manifest_path,
+                         task_contexts=snap_ctx, seal_manifest_path=seal_file,
+                         evidence_repos={"mock-repo": str(repo_snap)},
+                         task_snapshots={task_snap.name: str(snap_dir)})
+            nodrift_ok = False
+        except runner.InfraFailure as exc:
+            nodrift_ok = "drift report" in str(exc) or "--drift-report" in str(exc)
+        ok &= check(
+            "external-context scoring requires the pre-score drift report",
+            nodrift_ok, notes)
+        drift_res = runner.score(
+            snap_cfg, snap_docs, judge, ws / "judge-drifted",
+            scoring_seed=5, manifest_path=snap_manifest_path,
+            task_contexts=snap_ctx, seal_manifest_path=seal_file,
+            evidence_repos={"mock-repo": str(repo_snap)},
+            task_snapshots={task_snap.name: str(snap_dir)},
+            drift_report_path=drift_bad_file)
+        ok &= check(
+            "drifted external source makes the task inconclusive (not judged)",
+            len(drift_res) == 1
+            and drift_res[0].get("inconclusive") is True
+            and "session_id" not in drift_res[0],
             notes)
         try:
             runner.score(config, sched_docs[:1], judge, ws / "judge-subset",
