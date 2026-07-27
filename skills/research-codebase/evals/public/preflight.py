@@ -1247,6 +1247,15 @@ def run_preflight():
             encoding="utf-8")
         bodymeta_bad = runner.artifact_validator.validate(
             bodymeta_doc, expected_git_commit="0" * 40)
+        impossible_doc = ws / "2026-07-26-impossible.md"
+        impossible_doc.write_text(
+            fn_doc.read_text(encoding="utf-8").replace(
+                "date: 2026-07-27T00:00:00Z",
+                "date: '2026-99-99T29:61:00Z'", 1).replace(
+                "last_updated: 2026-07-27",
+                "last_updated: '2026-13-40'", 1),
+            encoding="utf-8")
+        impossible_bad = runner.artifact_validator.validate(impossible_doc)
         ok &= check(
             "filename contract enforced; raw anonymization markers rejected",
             any("basename" in e for e in fn_bad)
@@ -1257,7 +1266,9 @@ def run_preflight():
                     for e in free_strict)
             and script_date_ok
             and any("target-sha" in e for e in fab_bad)
-            and any("**Git Commit**" in e for e in bodymeta_bad),
+            and any("**Git Commit**" in e for e in bodymeta_bad)
+            and any("date" in e for e in impossible_bad)
+            and any("last_updated" in e for e in impossible_bad),
             notes)
 
         record, _, _, _ = run_case(ws, "stale-artifact")

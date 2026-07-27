@@ -28,6 +28,7 @@ Usage: validate_artifact.py [--allow-anonymized] [--enforce-filename]
        [--expect-commit SHA] [--expect-repo NAME] <document.md> [...]
 """
 
+import datetime
 import re
 import sys
 from pathlib import Path
@@ -86,6 +87,9 @@ DATE_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?(\.\d+)?"
     r"(Z|[+-]\d{2}:?\d{2}| [A-Z]{2,5})$")
 GIT_COMMIT_RE = re.compile(r"^[0-9a-f]{7,40}$")
+DATE_PARTS_RE = re.compile(
+    r"^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?"
+    r"(?:\.\d+)?(Z| [A-Z]{2,5}|([+-])(\d{2}):?(\d{2}))$")
 META_LINE_RE = re.compile(
     r"^\*\*(Date|Researcher|Git Commit|Branch|Repository)\*\*: *(.+)$")
 REQUIRED_META_LINES = ("Date", "Researcher", "Git Commit", "Branch",
@@ -100,6 +104,36 @@ def _canonical_repo(name):
 
 def _anonymized(value):
     return isinstance(value, str) and value.startswith("[anonymized:")
+
+
+def _valid_timestamp(sval):
+    """Shape AND calendar: 2026-99-99T29:61:00Z is regex-shaped but not a
+    real instant."""
+    match = DATE_PARTS_RE.match(sval)
+    if not match:
+        return False
+    year, month, day, hour, minute = (int(match.group(i))
+                                      for i in range(1, 6))
+    second = int(match.group(6) or 0)
+    try:
+        datetime.datetime(year, month, day, hour, minute, second)
+    except ValueError:
+        return False
+    if match.group(8):  # numeric offset
+        if int(match.group(9)) > 23 or int(match.group(10)) > 59:
+            return False
+    return True
+
+
+def _valid_date(sval):
+    match = LAST_UPDATED_RE.match(sval)
+    if not match:
+        return False
+    try:
+        datetime.date(int(sval[0:4]), int(sval[5:7]), int(sval[8:10]))
+    except ValueError:
+        return False
+    return True
 
 
 def _parse_frontmatter_fallback(block, errors):
@@ -231,11 +265,11 @@ def validate(path, expected_git_commit=None, expected_repository=None,
             errors.append(f"`status` must be `complete`, got `{sval}`")
         exempt = allow_anonymized and _anonymized(sval)
         if (field == "last_updated" and not exempt
-                and not LAST_UPDATED_RE.match(sval)):
+                and not _valid_date(sval)):
             errors.append(
                 f"`last_updated` must be YYYY-MM-DD, got `{sval}`")
         if field == "date" and not exempt \
-                and not DATE_RE.match(sval):
+                and not _valid_timestamp(sval):
             errors.append(
                 f"`date` must be an ISO date-time (with timezone), "
                 f"got `{sval}`")
@@ -300,30 +334,39 @@ def validate(path, expected_git_commit=None, expected_repository=None,
     # The contract's body template opens with the bold metadata block
     # right after the title: all five lines are required with non-empty
     # values (outside code fences).
-    fence = None
-    seen_meta = set()
+    # The metadata block is CONTIGUOUS and ORDERED between the title and
+    # `## Research Question` — matching the five lines anywhere in the
+    # document (scattered or appended at the end) is not the contract's
+    # shape.
     body_meta = {}
-    for line in lines:
-        open_match = FENCE_OPEN_RE.match(line)
-        if fence is None and open_match:
-            fence = open_match.group(1)
-            continue
-        if fence is not None:
-            close_match = FENCE_CLOSE_RE.match(line)
-            if (close_match and close_match.group(1)[0] == fence[0]
-                    and len(close_match.group(1)) >= len(fence)):
-                fence = None
-            continue
-        meta_match = META_LINE_RE.match(line.strip())
-        if meta_match and meta_match.group(2).strip():
-            seen_meta.add(meta_match.group(1))
-            body_meta.setdefault(meta_match.group(1),
-                                 meta_match.group(2).strip())
-    for label in REQUIRED_META_LINES:
-        if label not in seen_meta:
+    rq_heading_idx = matched.get("Research Question")
+    if title is not None and rq_heading_idx is not None:
+        region = lines[title[2] + 1:headings[rq_heading_idx][2]]
+        found_labels = []
+        for line in region:
+            meta_match = META_LINE_RE.match(line.strip())
+            if meta_match and meta_match.group(2).strip():
+                found_labels.append(meta_match.group(1))
+                body_meta.setdefault(meta_match.group(1),
+                                     meta_match.group(2).strip())
+        for label in REQUIRED_META_LINES:
+            if label not in found_labels:
+                errors.append(
+                    f"missing body metadata line `**{label}**: ...` in "
+                    f"the block between the title and `## Research "
+                    f"Question`")
+        contract_order = [l for l in REQUIRED_META_LINES
+                          if l in found_labels]
+        appearance = [l for l in found_labels
+                      if l in REQUIRED_META_LINES]
+        if appearance != contract_order:
             errors.append(
-                f"missing body metadata line `**{label}**: ...` (the "
-                f"contract's block after the title)")
+                "body metadata block is out of the contract's order "
+                "(Date, Researcher, Git Commit, Branch, Repository)")
+    else:
+        errors.append(
+            "body metadata block could not be located — it must sit "
+            "between `# Research: <topic>` and `## Research Question`")
     # The visible block is DATA, not decoration: its checkout-bound
     # values must agree with the frontmatter and, when the caller
     # supplies run expectations, with the run itself.
@@ -365,7 +408,7 @@ def validate(path, expected_git_commit=None, expected_repository=None,
                     f"in a raw artifact")
             continue
         if label == "Date":
-            if not DATE_RE.match(body_val):
+            if not _valid_timestamp(body_val):
                 errors.append(
                     f"body `**Date**` must be an ISO date-time with "
                     f"timezone, got `{body_val}`")

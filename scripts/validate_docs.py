@@ -569,6 +569,17 @@ def check_artifact_validator(root, errors):
         errors.append(
             "artifact validator accepted body metadata disagreeing with "
             "the frontmatter — duplicated-field cross-checks are broken")
+    scattered = fixtures / "artifact-scattered-metablock-invalid.md"
+    if not scattered.is_file():
+        errors.append("artifact-scattered-metablock-invalid.md fixture "
+                      "missing")
+        return
+    ks2 = _sp.run([_sys.executable, str(validator), str(scattered)],
+                  capture_output=True)
+    if ks2.returncode == 0:
+        errors.append(
+            "artifact validator accepted metadata lines scattered outside "
+            "the title-adjacent block — block placement is not enforced")
 
 
 def validate(root, exclude_fixtures=True):
