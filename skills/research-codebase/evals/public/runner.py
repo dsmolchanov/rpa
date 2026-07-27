@@ -1511,6 +1511,7 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
         snapshot_by_doc = {}
         snap_task_by_doc = {}
         inconclusive_docs = set()
+        drift_notes = {}
         drift_report = None
         if drift_report_path is not None:
             drift_report = json.loads(
@@ -1554,6 +1555,7 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
         task_by_doc = None
         snapshot_by_doc = {}
         inconclusive_docs = set()
+        drift_notes = {}
         if evidence_repos is not None:
             raise InfraFailure(
                 "`evidence_repos` requires manifest-bound scoring — for "
@@ -1625,7 +1627,7 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                             (snap, refetched_root / rel,
                              (Path(snap_root.name) / rel).as_posix())
                         )
-                drifted = False
+                changed_keys = []
                 for snap, refetched, seal_key in pairs:
                     sealed_digest = seal_files.get(seal_key)
                     if sealed_digest is None:
@@ -1640,9 +1642,41 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                         )
                     if hashlib.sha256(
                             refetched.read_bytes()).hexdigest() != sealed_digest:
-                        drifted = True
-                if drifted:
-                    inconclusive_docs.add(doc_name)
+                        changed_keys.append(seal_key)
+                if changed_keys:
+                    # The registered gate is about MATERIAL drift in a
+                    # relevant section, not cosmetic churn: every changed
+                    # file needs a recorded materiality adjudication
+                    # (verdict + rationale). Material change -> task
+                    # inconclusive; adjudicated-cosmetic change -> still
+                    # scoreable, adjudication kept in the record.
+                    adjudications = drift_entry.get("changed", {})
+                    material = False
+                    for key in changed_keys:
+                        adj = adjudications.get(key)
+                        if (not isinstance(adj, dict)
+                                or not isinstance(adj.get("material"), bool)
+                                or not adj.get("rationale")):
+                            raise InfraFailure(
+                                f"{task_name}: re-fetched source `{key}` "
+                                f"changed but carries no recorded "
+                                f"materiality adjudication (material: "
+                                f"true/false + rationale) — a byte change "
+                                f"alone is not conclusive drift"
+                            )
+                        if adj["material"]:
+                            material = True
+                    if material:
+                        inconclusive_docs.add(doc_name)
+                    else:
+                        drift_notes[doc_name] = {
+                            "changed": changed_keys,
+                            "material": False,
+                            "adjudications": {
+                                key: adjudications[key]
+                                for key in changed_keys
+                            },
+                        }
     else:
         judge_prompt = Path(judge_prompt_path).read_text(encoding="utf-8")
         sealed_context_texts = None
@@ -1676,7 +1710,10 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
         "role": role,
         "docs": sorted(Path(d).name for d in doc_paths),
     }
-    scoring_manifest_path = out / "scoring-manifest.json"
+    # Batch state is namespaced by role: the scorer pass and the
+    # verifier pass over the same documents may share one output
+    # directory without colliding.
+    scoring_manifest_path = out / f"scoring-{role}-manifest.json"
     if scoring_manifest_path.exists():
         prior_batch = json.loads(
             scoring_manifest_path.read_text(encoding="utf-8"))
@@ -1823,6 +1860,7 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             "seal_manifest": (str(seal_manifest_path)
                               if seal_manifest_path is not None else None),
             "snapshots": snapshot_by_doc.get(Path(doc).name),
+            "source_drift": drift_notes.get(Path(doc).name),
             "effort_capture": effort_capture,
             "response": response,
             "accounting": account(nodes),

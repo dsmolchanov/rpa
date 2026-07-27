@@ -933,7 +933,7 @@ def run_preflight():
         resume_out = ws / "judge-batch-resume"
         r1 = runner.score(config, docs, judge, resume_out, scoring_seed=5,
                           allow_unscheduled=True)
-        sm_path = resume_out / "scoring-manifest.json"
+        sm_path = resume_out / "scoring-scorer-manifest.json"
         sm = json.loads(sm_path.read_text(encoding="utf-8"))
         sm["complete"] = False
         sm["results"] = sm["results"][:1]
@@ -1183,6 +1183,21 @@ def run_preflight():
             encoding="utf-8")
         drift_bad_file = ws / "drift-drifted.json"
         drift_bad_file.write_text(json.dumps(
+            {task_snap.name: {"refetched": str(refetch_bad), "changed": {
+                "external-snapshots/b/index.html": {
+                    "material": True,
+                    "rationale": "ground-truth section replaced"}}}}),
+            encoding="utf-8")
+        drift_cosmetic_file = ws / "drift-cosmetic.json"
+        drift_cosmetic_file.write_text(json.dumps(
+            {task_snap.name: {"refetched": str(refetch_bad), "changed": {
+                "external-snapshots/b/index.html": {
+                    "material": False,
+                    "rationale": "footer timestamp only; ground-truth "
+                                 "sections untouched"}}}}),
+            encoding="utf-8")
+        drift_noadj_file = ws / "drift-noadj.json"
+        drift_noadj_file.write_text(json.dumps(
             {task_snap.name: {"refetched": str(refetch_bad)}}),
             encoding="utf-8")
         drift_claim_file = ws / "drift-claim.json"
@@ -1273,6 +1288,43 @@ def run_preflight():
             "blind scorer excludes drifted external tasks too",
             len(scorer_drift) == 1
             and scorer_drift[0].get("inconclusive") is True,
+            notes)
+        try:
+            runner.score(snap_cfg, snap_docs, judge, ws / "judge-noadj",
+                         scoring_seed=5, manifest_path=snap_manifest_path,
+                         score_task_paths=[str(task_snap)],
+                         task_contexts=snap_ctx, seal_manifest_path=seal_file,
+                         task_snapshots={task_snap.name: str(snap_dir)},
+                         drift_report_path=drift_noadj_file)
+            noadj_ok = False
+        except runner.InfraFailure as exc:
+            noadj_ok = "materiality adjudication" in str(exc)
+        ok &= check(
+            "changed source without materiality adjudication refused",
+            noadj_ok, notes)
+        cosmetic_res = runner.score(
+            snap_cfg, snap_docs, judge, ws / "judge-cosmetic",
+            scoring_seed=5, manifest_path=snap_manifest_path,
+            score_task_paths=[str(task_snap)],
+            task_contexts=snap_ctx, seal_manifest_path=seal_file,
+            evidence_repos={"mock-repo": str(repo_snap)},
+            task_snapshots={task_snap.name: str(snap_dir)},
+            drift_report_path=drift_cosmetic_file)
+        ok &= check(
+            "adjudicated-cosmetic drift stays scoreable (recorded, not fatal)",
+            len(cosmetic_res) == 1
+            and not cosmetic_res[0].get("inconclusive")
+            and cosmetic_res[0].get("source_drift", {}).get("material") is False,
+            notes)
+        vres3 = runner.score(config, sched_docs, judge, ws / "judge-sched",
+                             scoring_seed=5, manifest_path=manifest_path,
+                             score_task_paths=[str(task_s)],
+                             evidence_repos={"mock-repo": str(repo_s)},
+                             task_contexts=sched_ctx,
+                             seal_manifest_path=seal_file)
+        ok &= check(
+            "scorer and verifier batches coexist in one output directory",
+            len(vres3) == 2 and all(r.get("role") == "verifier" for r in vres3),
             notes)
         try:
             runner.score(config, sched_docs[:1], judge, ws / "judge-subset",
