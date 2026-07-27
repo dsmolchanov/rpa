@@ -213,6 +213,14 @@ def validate(path, expected_git_commit=None, expected_repository=None,
                 f"scalar value")
             continue
         sval = str(value).strip()
+        if not allow_anonymized and _anonymized(sval):
+            # Raw artifacts record REAL values: a pre-anonymized field
+            # would dodge format and run-binding checks entirely.
+            errors.append(
+                f"frontmatter field `{field}` carries an anonymization "
+                f"marker in a raw artifact — raw documents must record "
+                f"real values")
+            continue
         if field == "status" and sval != "complete":
             errors.append(f"`status` must be `complete`, got `{sval}`")
         exempt = allow_anonymized and _anonymized(sval)
@@ -233,7 +241,9 @@ def validate(path, expected_git_commit=None, expected_repository=None,
             elif expected_git_commit is not None and not (
                     sval == expected_git_commit
                     or (len(sval) >= 7
-                        and expected_git_commit.startswith(sval))):
+                        and expected_git_commit.startswith(sval))
+                    or (len(expected_git_commit) >= 7
+                        and sval.startswith(expected_git_commit))):
                 errors.append(
                     f"`git_commit` `{sval}` does not match the run's "
                     f"pinned target-sha `{expected_git_commit}`")

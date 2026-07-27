@@ -1215,12 +1215,22 @@ def run_preflight():
             anon_marker_doc, enforce_filename=True)
         marker_lenient = runner.artifact_validator.validate(
             anon_marker_doc, allow_anonymized=True)
+        free_marker_doc = ws / "2026-07-26-marker-free.md"
+        free_marker_doc.write_text(
+            fn_doc.read_text(encoding="utf-8").replace(
+                "researcher: Fixture Researcher",
+                "researcher: '[anonymized:evil]'", 1),
+            encoding="utf-8")
+        free_strict = runner.artifact_validator.validate(
+            free_marker_doc, enforce_filename=True)
         ok &= check(
             "filename contract enforced; raw anonymization markers rejected",
             any("basename" in e for e in fn_bad)
             and not fn_good
             and any("git_commit" in e for e in marker_strict)
-            and not marker_lenient,
+            and not marker_lenient
+            and any("researcher" in e and "anonymization marker" in e
+                    for e in free_strict),
             notes)
 
         record, _, _, _ = run_case(ws, "stale-artifact")
