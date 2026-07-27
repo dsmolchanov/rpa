@@ -302,6 +302,7 @@ def validate(path, expected_git_commit=None, expected_repository=None,
     # values (outside code fences).
     fence = None
     seen_meta = set()
+    body_meta = {}
     for line in lines:
         open_match = FENCE_OPEN_RE.match(line)
         if fence is None and open_match:
@@ -316,11 +317,57 @@ def validate(path, expected_git_commit=None, expected_repository=None,
         meta_match = META_LINE_RE.match(line.strip())
         if meta_match and meta_match.group(2).strip():
             seen_meta.add(meta_match.group(1))
+            body_meta.setdefault(meta_match.group(1),
+                                 meta_match.group(2).strip())
     for label in REQUIRED_META_LINES:
         if label not in seen_meta:
             errors.append(
                 f"missing body metadata line `**{label}**: ...` (the "
                 f"contract's block after the title)")
+    # The visible block is DATA, not decoration: its checkout-bound
+    # values must agree with the frontmatter and, when the caller
+    # supplies run expectations, with the run itself.
+    def _sha_consistent(a, b):
+        return (a == b
+                or (len(a) >= 7 and b.startswith(a))
+                or (len(b) >= 7 and a.startswith(b)))
+
+    body_commit = body_meta.get("Git Commit", "")
+    if body_commit:
+        if _anonymized(body_commit):
+            if not allow_anonymized:
+                errors.append(
+                    "body `**Git Commit**` carries an anonymization "
+                    "marker in a raw artifact")
+        else:
+            if (expected_git_commit is not None
+                    and not (body_commit == expected_git_commit
+                             or (len(body_commit) >= 7
+                                 and expected_git_commit.startswith(
+                                     body_commit)))):
+                errors.append(
+                    f"body `**Git Commit**` `{body_commit}` does not "
+                    f"match the run's pinned target-sha")
+            fm_commit = str(meta.get("git_commit", "") or "").strip()
+            if (fm_commit and not _anonymized(fm_commit)
+                    and not _sha_consistent(body_commit, fm_commit)):
+                errors.append(
+                    "body `**Git Commit**` disagrees with the "
+                    "frontmatter `git_commit`")
+    body_repo = body_meta.get("Repository", "")
+    if body_repo and not (allow_anonymized and _anonymized(body_repo)):
+        if expected_repository is not None and (
+                _canonical_repo(body_repo)
+                != _canonical_repo(expected_repository)):
+            errors.append(
+                f"body `**Repository**` `{body_repo}` does not match the "
+                f"run's target-repo")
+        fm_repo = str(meta.get("repository", "") or "").strip()
+        if (fm_repo and not _anonymized(fm_repo)
+                and _canonical_repo(body_repo) != _canonical_repo(fm_repo)):
+            errors.append(
+                "body `**Repository**` disagrees with the frontmatter "
+                "`repository`")
     for section in CONTENT_REQUIRED_SECTIONS:
         if section not in matched:
             continue
@@ -332,10 +379,29 @@ def validate(path, expected_git_commit=None, expected_repository=None,
                 end_line = later[2]
                 break
         body_lines = lines[start_line:end_line]
-        if not any(l.strip() for l in body_lines):
+        has_content = False
+        sec_fence = None
+        for body_line in body_lines:
+            open_match = FENCE_OPEN_RE.match(body_line)
+            if sec_fence is None and open_match:
+                sec_fence = open_match.group(1)
+                continue
+            if sec_fence is not None:
+                close_match = FENCE_CLOSE_RE.match(body_line)
+                if (close_match
+                        and close_match.group(1)[0] == sec_fence[0]
+                        and len(close_match.group(1)) >= len(sec_fence)):
+                    sec_fence = None
+                elif body_line.strip():
+                    has_content = True
+                continue
+            if body_line.strip() and not HEADING_RE.match(body_line):
+                has_content = True
+        if not has_content:
             errors.append(
-                f"section `## {section}` is empty — headings alone do not "
-                f"answer the research task")
+                f"section `## {section}` carries no substantive content — "
+                f"headings and structural lines alone do not answer the "
+                f"research task")
     return errors
 
 

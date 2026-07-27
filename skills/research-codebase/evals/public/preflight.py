@@ -1239,6 +1239,14 @@ def run_preflight():
             encoding="utf-8")
         fab_bad = runner.artifact_validator.validate(
             fab_doc, expected_git_commit="0" * 40)
+        bodymeta_doc = ws / "2026-07-26-bodymeta.md"
+        bodymeta_doc.write_text(
+            fn_doc.read_text(encoding="utf-8").replace(
+                "**Git Commit**: 0000000000000000000000000000000000000000",
+                "**Git Commit**: deadbeef", 1),
+            encoding="utf-8")
+        bodymeta_bad = runner.artifact_validator.validate(
+            bodymeta_doc, expected_git_commit="0" * 40)
         ok &= check(
             "filename contract enforced; raw anonymization markers rejected",
             any("basename" in e for e in fn_bad)
@@ -1248,7 +1256,8 @@ def run_preflight():
             and any("researcher" in e and "anonymization marker" in e
                     for e in free_strict)
             and script_date_ok
-            and any("target-sha" in e for e in fab_bad),
+            and any("target-sha" in e for e in fab_bad)
+            and any("**Git Commit**" in e for e in bodymeta_bad),
             notes)
 
         record, _, _, _ = run_case(ws, "stale-artifact")

@@ -15,6 +15,8 @@ last_updated_by: Fixture Researcher
 
 ## Research Question
 
+### Placeholder
+
 ## Summary
 
 ## Detailed Findings
