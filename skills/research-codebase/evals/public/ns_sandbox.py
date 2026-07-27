@@ -94,6 +94,59 @@ def git_common_dir(workdir):
     return gitdir
 
 
+# Mounted INSIDE the worktree: the backend CLI restricts file access to
+# the session's allowed working directories, so a git directory outside
+# them (e.g. /sealed-git) gets its git calls blocked by the permission
+# layer. The mountpoint directory is created through the worktree bind
+# (worktrees are disposable; the empty dir vanishes with the worktree).
+PINNED_GIT_NAME = ".pinned-git"
+
+
+def build_pinned_gitdir(workdir, common):
+    """A PRIVATE git directory restricted to the pinned commit's
+    closure. Binding the operator clone's common directory would expose
+    every ref, reflog, and object in it (`git log --all`,
+    `git cat-file --batch-all-objects`) — including history newer or
+    more private than the sealed target-sha. Instead: fetch exactly the
+    worktree's HEAD commit from the clone into a fresh bare repository
+    (objects = the pinned closure, no refs beyond the fetched one,
+    empty reflogs), detach its HEAD at the pin, and mark it non-bare so
+    a `gitdir:` file in the worktree turns it into that worktree's
+    repository."""
+    head = subprocess.run(
+        ["git", "-C", workdir, "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True).stdout.strip()
+    private = tempfile.mkdtemp(prefix="pinned-git-", dir="/dev/shm")
+    run_quiet = dict(check=True, capture_output=True)
+    subprocess.run(["git", "init", "--bare", "--quiet", private],
+                   **run_quiet)
+    subprocess.run(["git", "-C", private,
+                    "-c", "uploadpack.allowAnySHA1InWant=true",
+                    "fetch", "--quiet", "--no-tags", common, head],
+                   **run_quiet)
+    for ref in ("FETCH_HEAD", "ORIG_HEAD"):
+        path = os.path.join(private, ref)
+        if os.path.exists(path):
+            os.unlink(path)
+    with open(os.path.join(private, "HEAD"), "w",
+              encoding="utf-8") as fh:
+        fh.write(head + "\n")
+    subprocess.run(["git", "-C", private, "config", "core.bare",
+                    "false"], **run_quiet)
+    # Populate the index from the pinned tree so `git status` inside the
+    # session reads clean instead of showing every checked-out file as a
+    # pending change against an empty index; exclude the in-worktree
+    # mountpoint of this directory from status output.
+    subprocess.run(["git", "-C", private, "read-tree", head],
+                   **run_quiet)
+    info_dir = os.path.join(private, "info")
+    os.makedirs(info_dir, exist_ok=True)
+    with open(os.path.join(info_dir, "exclude"), "a",
+              encoding="utf-8") as fh:
+        fh.write("/" + PINNED_GIT_NAME + "/\n")
+    return private, head
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--confine-to", required=True, dest="workdir")
@@ -174,23 +227,55 @@ def main():
     if os.path.isdir(ccr):
         bind_ro(ccr, newroot)
 
-    # The backend CLI's own credential directory (pointed to by
-    # CLAUDE_SESSION_INGRESS_TOKEN_FILE in managed environments) is part
-    # of the minimal runtime surface: the wrapped process cannot
-    # authenticate without it. Hosts that authenticate via environment
-    # variables alone have nothing to bind here.
+    # The backend CLI's credential files (the token file named by
+    # CLAUDE_SESSION_INGRESS_TOKEN_FILE plus its .oauth_token sibling)
+    # are part of the minimal runtime surface: the wrapped process
+    # cannot authenticate without them. They are bound FILE by FILE —
+    # a directory bind would re-expose arbitrary siblings (and could
+    # even shadow the private /tmp when the token lives there). Hosts
+    # that authenticate via environment variables alone have nothing to
+    # bind here.
     ingress = os.environ.get("CLAUDE_SESSION_INGRESS_TOKEN_FILE")
     if ingress and os.path.isfile(ingress):
-        bind_ro(os.path.dirname(os.path.realpath(ingress)), newroot)
+        ingress = os.path.realpath(ingress)
+        cred_files = [ingress,
+                      os.path.join(os.path.dirname(ingress),
+                                   ".oauth_token")]
+        for cred in cred_files:
+            if not os.path.isfile(cred):
+                continue
+            dest = newroot + cred
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            open(dest, "w").close()
+            mount("--bind", cred, dest)
+            mount("--bind", "-o", "remount,ro", dest)
 
     common = git_common_dir(workdir)
+    pinned_git = None
     if common and os.path.isdir(common):
-        bind_ro(common, newroot)
+        pinned_git, _ = build_pinned_gitdir(workdir, common)
 
     for rw_path in (workdir, profile):
         dest = newroot + rw_path
         os.makedirs(dest, exist_ok=True)
         mount("--rbind", rw_path, dest)
+
+    if pinned_git is not None:
+        # Mount the pinned-closure git directory read-only INSIDE the
+        # worktree and rewire the worktree's `.git` file to it — a FILE
+        # bind inside this mount namespace only, so the operator's
+        # worktree wiring outside the sandbox is untouched.
+        pinned_mount = workdir + "/" + PINNED_GIT_NAME
+        bind_ro_dest = newroot + pinned_mount
+        os.makedirs(bind_ro_dest, exist_ok=True)
+        mount("--rbind", pinned_git, bind_ro_dest)
+        mount("--bind", "-o", "remount,ro", bind_ro_dest)
+        gitfile = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".gitfile", delete=False,
+            dir="/dev/shm", encoding="utf-8")
+        gitfile.write(f"gitdir: {pinned_mount}\n")
+        gitfile.close()
+        mount("--bind", gitfile.name, newroot + workdir + "/.git")
 
     cwd = os.getcwd()
     os.chroot(newroot)

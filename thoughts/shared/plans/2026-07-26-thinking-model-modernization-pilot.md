@@ -550,23 +550,38 @@ parity `claude-opus-5` on every transcript node, effort pinned on the
 command line with `command_pin` capture (the real stream schema carries
 no per-node effort field — the registered two-mode policy), both stream
 schemas parsed with full tree-wide token accounting, and the artifact
-gate enforced uniformly. The wrapper's confinement was hardened three
+gate enforced uniformly. The wrapper's confinement was hardened five
 times in review (host paths absent rather than read-only; recursive
 read-only covering child mounts such as container /etc file mounts
 plus a fresh private /dev/shm hiding the host's shared tmpfs; a
 private PID namespace — `unshare -rmpf --kill-child` — with a fresh
 `/proc` that FAILS CLOSED rather than falling back to a host bind
-that would re-expose sibling process cmdlines), and the per-arm runs
-were re-executed after each revision. Final-wrapper outcomes (series
-4): all three arms **completed** through the artifact gate —
-candidate (176 s), baseline (137 s), ablation (269 s, **zero
-subagents**: the pre-registered no-subagent policy held). **Recorded
-observation (four baseline replicates across the preflight series):**
-legacy formatting discipline is VARIABLE — rejected (backticked body
-metadata values, improvised detached-HEAD branch prose), passed,
-rejected (frontmatter `date` without a time component, backticked
-values), passed — so gate-failed baseline replicates are a realistic
-holdout outcome (2 of 4 here). The gate is pre-registered and uniform across arms and is NOT
+that would re-expose sibling process cmdlines; credential FILES bound
+individually instead of their parent directory; the operator clone's
+git directory replaced by a PRIVATE pinned-closure repository —
+exactly the sealed commit fetched into a fresh bare store, no refs or
+reflogs beyond it, so `git log --all` / `git cat-file
+--batch-all-objects` cannot reach history newer or more private than
+the pin; commits newer than the pin resolve to `bad object`). The
+pinned git directory is mounted read-only INSIDE the worktree
+(`.pinned-git`, excluded from `git status`) because the backend CLI's
+permission layer blocks git metadata outside the session's allowed
+directories — the series-5 runs surfaced exactly that (sessions
+reported git unavailable) and were re-executed after the fix. The
+pinned closure is bounded by the operator clone's completeness: a
+partial/shallow operator clone yields a correspondingly partial
+closure (never more). Per-arm runs were re-executed after every
+revision. Final-wrapper outcomes (series 6): candidate **completed**
+(237 s) and ablation **completed** (216 s, **zero subagents**: the
+pre-registered no-subagent policy held); baseline mechanics green
+(git metadata correct through the pinned store), artifact
+gate-rejected on legacy formatting in this replicate. **Recorded
+observation (five formatting-relevant baseline replicates across the
+preflight series):** legacy formatting discipline is VARIABLE —
+rejected / passed / rejected / passed / rejected (backticked body
+metadata values, improvised branch prose, dates without a time
+component) — so gate-failed baseline replicates are a realistic
+holdout outcome (3 of 5 here). The gate is pre-registered and uniform across arms and is NOT
 adjusted post-freeze; any protocol amendment (e.g. separate judging of
 gate-failed artifacts' content) is an owner decision and would have to
 be registered before Sequence step 5 unseals the holdout. No real
