@@ -747,6 +747,18 @@ def require_installation_mount(cmd):
         )
 
 
+def validate_timeout(config):
+    """A nonpositive or non-numeric timeout would make _spawn record a
+    counted workflow failure without ever launching the backend — a
+    config fault, classified as infrastructure."""
+    raw = config.get("timeout_seconds")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or raw <= 0:
+        raise InfraFailure(
+            f"`timeout_seconds` must be a positive number, got {raw!r}"
+        )
+    return raw
+
+
 def validate_arm_parity(config):
     """The registered protocol pins ONE runtime configuration: every arm
     must share the same model, effort, and workflow entrypoint, so
@@ -826,7 +838,8 @@ def anonymize(text, run_id):
     return body + ("\n" if not body.endswith("\n") else "")
 
 
-def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1):
+def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
+             scheduled=False):
     arms = config.get("arms", {})
     if arm_name not in arms:
         # No record can be attributed to an unknown arm; fail with a
@@ -861,6 +874,17 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1):
     try:
         validate_arm_parity(config)
         record["standard_topology"] = validate_arm_topology(config)
+        if record["standard_topology"] and not scheduled \
+                and not config.get("nonstandard_config"):
+            # Holdout runs exist ONLY inside the pre-registered schedule:
+            # a direct --arm/--task run on a production config could add
+            # observed runs or hit undesignated ablation tasks.
+            raise InfraFailure(
+                "production (holdout) configs execute only through "
+                "--run-schedule — direct runs are limited to dev configs "
+                "(`nonstandard_config: true`)"
+            )
+        validate_timeout(config)
         record["backend_version"] = verify_backend_version(config)
         # Every registered installation is verified before EVERY run, so
         # drift in any arm halts the experiment before more data is
@@ -1018,7 +1042,8 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1):
     return record
 
 
-def run_task_with_retries(config, arm_name, task_path, repo_dir, output_dir):
+def run_task_with_retries(config, arm_name, task_path, repo_dir, output_dir,
+                          scheduled=False):
     """Registered protocol: an infrastructure failure invalidates the run and
     the run is re-executed, automatically and bounded — workflow failures are
     counted, never replaced. Every attempt's record is written to disk."""
@@ -1036,7 +1061,7 @@ def run_task_with_retries(config, arm_name, task_path, repo_dir, output_dir):
     attempts = []
     for attempt in range(1, max_retries + 2):
         record = run_task(config, arm_name, task_path, repo_dir, output_dir,
-                          attempt=attempt)
+                          attempt=attempt, scheduled=scheduled)
         attempts.append(record)
         if record["status"] != "infra_failure":
             break
@@ -1292,7 +1317,8 @@ def run_schedule(config, schedule_path, repos, output_dir, task_paths):
         # routed to the clone registered for its own `target-repo`.
         entry_repo = resolve_repo(entry["task"], repos)
         attempts = run_task_with_retries(
-            config, entry["arm"], entry["task"], entry_repo, output_dir
+            config, entry["arm"], entry["task"], entry_repo, output_dir,
+            scheduled=True
         )
         final = attempts[-1]
         if final["status"] == "infra_failure":
@@ -1735,6 +1761,7 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
     if not judge_model:
         raise InfraFailure("`judge_model` must be configured for score mode")
     judge_effort = config.get("judge_effort", "default")
+    validate_timeout(config)
     require_effort_pin(judge_cmd, "judge command")
     judge_cmd = expand_backend_cmd(judge_cmd, None, judge_effort)
     doc_texts = [assert_blind_scorable(doc) for doc in doc_paths]
@@ -1801,6 +1828,22 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                     "resumed batch presentation order mismatch — batch "
                     "state corrupted or documents reordered"
                 )
+            continue
+        orphan_path = out / f"judge-{scoring_id}-{i}.json"
+        if orphan_path.exists():
+            # Crash window: the judge record was written but the batch
+            # manifest was not. Adopt the existing record instead of
+            # launching a second nondeterministic session for the same
+            # replicate.
+            orphan = json.loads(orphan_path.read_text(encoding="utf-8"))
+            if (Path(orphan.get("doc", "")).name
+                    != Path(doc_paths[doc_index]).name):
+                raise InfraFailure(
+                    "orphaned judge record does not match its presentation "
+                    "slot — batch state corrupted"
+                )
+            results.append(orphan)
+            write_scoring_manifest(False)
             continue
         doc, doc_text = doc_paths[doc_index], doc_texts[doc_index]
         if Path(doc).name in inconclusive_docs:

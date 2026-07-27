@@ -406,7 +406,14 @@ def run_preflight():
         config.pop("sandbox_cmd")
         task_sbx = write_task(ws, "sandbox-req", par_sha)
         record = runner.run_task(config, "baseline", task_sbx, repo,
-                                 ws / "out-sandbox-req")
+                                 ws / "out-direct-run")
+        ok &= check(
+            "production config direct run refused (schedule-only execution)",
+            record["status"] == "infra_failure"
+            and "--run-schedule" in record.get("failure", ""),
+            notes)
+        record = runner.run_task(config, "baseline", task_sbx, repo,
+                                 ws / "out-sandbox-req", scheduled=True)
         ok &= check(
             "production config requires a registered sandbox_cmd",
             record["status"] == "infra_failure"
@@ -414,7 +421,7 @@ def run_preflight():
             notes)
         config["sandbox_cmd"] = ["/usr/bin/env"]
         record = runner.run_task(config, "baseline", task_sbx, repo,
-                                 ws / "out-sandbox-noconfine")
+                                 ws / "out-sandbox-noconfine", scheduled=True)
         ok &= check(
             "sandbox command without confinement placeholders refused",
             record["status"] == "infra_failure"
@@ -710,6 +717,16 @@ def run_preflight():
             retries_ok, notes)
 
         config, _ = build_config(ws, "normal")
+        config["timeout_seconds"] = 0
+        record = runner.run_task(config, "mock", task_ret, repo,
+                                 ws / "out-zero-timeout")
+        ok &= check(
+            "nonpositive timeout rejected as classified infra failure",
+            record["status"] == "infra_failure"
+            and "positive number" in record.get("failure", ""),
+            notes)
+
+        config, _ = build_config(ws, "normal")
         config["backend_version"] = "other-version 9.9"
         task_v = write_task(ws, "ver-mismatch", par_sha)
         record = runner.run_task(config, "mock", task_v, repo, ws / "out-ver")
@@ -971,6 +988,20 @@ def run_preflight():
         ok &= check(
             "reordered documents on resume refused (ordered identity)",
             reorder_ok, notes)
+        rec_out = ws / "judge-batch-reconcile"
+        q1 = runner.score(config, docs, judge, rec_out, scoring_seed=5,
+                          allow_unscheduled=True)
+        smp = rec_out / "scoring-scorer-manifest.json"
+        smj = json.loads(smp.read_text(encoding="utf-8"))
+        smj["complete"] = False
+        smj["results"] = []
+        smp.write_text(json.dumps(smj), encoding="utf-8")
+        q2 = runner.score(config, docs, judge, rec_out, scoring_seed=5,
+                          allow_unscheduled=True)
+        ok &= check(
+            "orphaned judge records adopted on resume (no second session)",
+            [r["session_id"] for r in q2] == [r["session_id"] for r in q1],
+            notes)
         atomic_target = ws / "atomic-test.json"
         atomic_target.write_text("old", encoding="utf-8")
         runner.atomic_write_text(atomic_target, "new-content")
