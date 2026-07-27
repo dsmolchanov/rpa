@@ -2,18 +2,26 @@
 """Real filesystem sandbox for evaluated and judge sessions.
 
 Confinement contract (pilot plan, candidate-freeze record): the wrapped
-session sees the host filesystem READ-ONLY except (1) the run's working
-directory, (2) its clean profile, and (3) a fresh private /tmp (tmpfs)
-that hides the host's /tmp — the two writable surfaces are re-mounted
-read-write at their real paths. /proc, /sys and /dev are inherited from
-the host. Network is untouched (only user + mount namespaces are
-unshared).
+session runs in a chroot built from an ALLOWLIST — nothing of the host
+is visible except what the session needs:
 
-Implemented with plain util-linux `unshare` plus a chroot into a
-read-only rbind of `/` — no dependencies beyond util-linux, so the same
-registered wrapper runs on any Linux with unprivileged user namespaces
-(validated once at the formal real-backend preflight, then verified
-implicitly by every sandboxed run).
+  read-write: the run's working directory and its clean profile
+              (re-created at their real paths), a fresh private /tmp
+              (tmpfs), a fresh private HOME (tmpfs)
+  read-only:  the OS/toolchain surface (/usr /bin /sbin /lib* /etc
+              /opt), the git common directory backing the working
+              directory's worktree (derived from `workdir/.git`, needed
+              for the metadata script's git calls), and, when present,
+              HOME/.ccr (the environment's TLS proxy CA bundle)
+  inherited:  /dev (device nodes), /proc (fresh mount when the kernel
+              allows, host bind otherwise); network is untouched
+
+Everything else — other checkouts, sealed packages, ground truth,
+manifests, prior run outputs — is simply ABSENT from the mount tree,
+not merely unwritable. Implemented with util-linux `unshare` (user +
+mount namespaces) and a chroot assembled on a private tmpfs; no
+dependencies beyond util-linux, so the registered wrapper runs on any
+Linux with unprivileged user namespaces.
 
 Usage (the shape registered as `sandbox_cmd`; the runner appends the
 backend command after `--`):
@@ -29,10 +37,40 @@ import sys
 import tempfile
 
 STAGE2_MARK = "NS_SANDBOX_STAGE2"
+RO_PATHS = ("/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64",
+            "/libx32", "/etc", "/opt")
 
 
 def mount(*args):
     subprocess.run(["mount", *args], check=True)
+
+
+def bind_ro(src, newroot):
+    dest = newroot + src
+    os.makedirs(dest, exist_ok=True)
+    mount("--rbind", src, dest)
+    mount("--bind", "-o", "remount,ro", dest)
+
+
+def git_common_dir(workdir):
+    """The git directory backing a linked worktree: `workdir/.git` is a
+    file `gitdir: <repo>/.git/worktrees/<name>`; the common directory
+    two levels up carries the objects and refs the session's git calls
+    read. A full clone (`.git` directory) needs nothing extra."""
+    dotgit = os.path.join(workdir, ".git")
+    if not os.path.isfile(dotgit):
+        return None
+    with open(dotgit, encoding="utf-8") as fh:
+        line = fh.read().strip()
+    if not line.startswith("gitdir:"):
+        return None
+    gitdir = os.path.realpath(line.split(":", 1)[1].strip())
+    commondir_file = os.path.join(gitdir, "commondir")
+    if os.path.isfile(commondir_file):
+        with open(commondir_file, encoding="utf-8") as fh:
+            rel = fh.read().strip()
+        return os.path.realpath(os.path.join(gitdir, rel))
+    return gitdir
 
 
 def main():
@@ -64,19 +102,56 @@ def main():
                     "--"] + cmd,
                    env)
 
-    # Stage 2, inside the namespaces.
+    # Stage 2, inside the namespaces: assemble the allowlist chroot on
+    # a private tmpfs — host paths outside the allowlist do not exist
+    # in the session's mount tree at all.
     os.environ.pop(STAGE2_MARK, None)
     mount("--make-rprivate", "/")
     newroot = tempfile.mkdtemp(prefix="nsroot-", dir="/dev/shm")
-    mount("--rbind", "/", newroot)
-    # Top-level read-only remount: the container root is a single
-    # filesystem, so this covers every regular path; kernel-owned
-    # pseudo-filesystems (/proc, /sys, /dev) keep their own semantics.
-    mount("--bind", "-o", "remount,ro", newroot)
-    # Fresh private /tmp: hides the host's; the writable surfaces are
-    # re-created inside it when they live under /tmp, or bound over
-    # their (read-only) mirror otherwise.
+    mount("-t", "tmpfs", "tmpfs", newroot)
+
+    for ro_path in RO_PATHS:
+        if os.path.isdir(ro_path) and not os.path.islink(ro_path):
+            bind_ro(ro_path, newroot)
+        elif os.path.islink(ro_path):
+            os.symlink(os.readlink(ro_path), newroot + ro_path)
+
+    os.makedirs(newroot + "/dev", exist_ok=True)
+    mount("--rbind", "/dev", newroot + "/dev")
+    os.makedirs(newroot + "/proc", exist_ok=True)
+    fresh_proc = subprocess.run(
+        ["mount", "-t", "proc", "proc", newroot + "/proc"],
+        capture_output=True)
+    if fresh_proc.returncode != 0:
+        # Container kernels commonly refuse a fresh proc mount inside
+        # an unprivileged userns (masked /proc paths); the host bind
+        # carries the same view the session already had.
+        mount("--rbind", "/proc", newroot + "/proc")
+
+    os.makedirs(newroot + "/tmp", exist_ok=True)
     mount("-t", "tmpfs", "tmpfs", newroot + "/tmp")
+
+    home = os.environ.get("HOME") or "/root"
+    home = os.path.realpath(home)
+    os.makedirs(newroot + home, exist_ok=True)
+    mount("-t", "tmpfs", "tmpfs", newroot + home)
+    ccr = os.path.join(home, ".ccr")
+    if os.path.isdir(ccr):
+        bind_ro(ccr, newroot)
+
+    # The backend CLI's own credential directory (pointed to by
+    # CLAUDE_SESSION_INGRESS_TOKEN_FILE in managed environments) is part
+    # of the minimal runtime surface: the wrapped process cannot
+    # authenticate without it. Hosts that authenticate via environment
+    # variables alone have nothing to bind here.
+    ingress = os.environ.get("CLAUDE_SESSION_INGRESS_TOKEN_FILE")
+    if ingress and os.path.isfile(ingress):
+        bind_ro(os.path.dirname(os.path.realpath(ingress)), newroot)
+
+    common = git_common_dir(workdir)
+    if common and os.path.isdir(common):
+        bind_ro(common, newroot)
+
     for rw_path in (workdir, profile):
         dest = newroot + rw_path
         os.makedirs(dest, exist_ok=True)

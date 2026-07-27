@@ -517,33 +517,51 @@ instruction «давай, шаг 4»):**
   "--confine-to", "{workdir}", "--profile", "{profile}", "--"]` —
   `ns_sandbox.py` (committed alongside this record) confines every
   evaluated and judge session via util-linux `unshare` (user + mount
-  namespaces) and a chroot into a read-only rbind of `/` with a fresh
-  private `/tmp`: only the run's worktree and its clean profile are
-  writable. The wrapper was validated at the formal real-backend
-  preflight below; the sandbox script lives harness-side (the
-  orchestrating checkout, like `runner.py`), not inside the frozen
-  installation trees, so the registered hashes are unaffected.
+  namespaces) and a chroot assembled on a private tmpfs from an
+  ALLOWLIST: read-write only the run's worktree and its clean profile
+  (plus fresh private `/tmp` and `HOME` tmpfs); read-only only the
+  OS/toolchain surface (`/usr /bin /sbin /lib* /etc /opt`), the git
+  common directory backing the worktree (derived inside the wrapper
+  from `workdir/.git`; needed by the metadata script's git calls), the
+  environment's TLS-proxy CA bundle (`HOME/.ccr`), and the backend
+  CLI's own credential directory (from
+  `CLAUDE_SESSION_INGRESS_TOKEN_FILE`, when the host authenticates by
+  file). Everything else on the host — other checkouts, sealed
+  packages, ground truth, manifests, prior run outputs — is ABSENT
+  from the session's mount tree, not merely read-only (revised in
+  review: an earlier read-only rbind of `/` left host paths readable).
+  The wrapper was validated at the formal real-backend preflight
+  below; the sandbox script lives harness-side (the orchestrating
+  checkout, like `runner.py`), not inside the frozen installation
+  trees, so the registered hashes are unaffected.
 
-**Formal real-backend preflight (recorded 2026-07-27; the last gate
-before scored runs — now passed):** one sandboxed real run per arm on
-the throwaway task (retargeted to the frozen `b731f06`; never a dev or
-holdout task), under the full pre-registered configuration above.
+**Formal real-backend preflight (recorded 2026-07-27, re-run after the
+sandbox revision; the last gate before scored runs — now passed):** one
+sandboxed real run per arm on the throwaway task (retargeted to the
+frozen `b731f06`; never a dev or holdout task), under the full
+pre-registered configuration above with the final allowlist wrapper.
 Mechanics proven on all three arms: registered installation hashes
 verified before each run, `ns_sandbox.py` wired around every session
-(write-outside probes fail with EROFS; host untouched), model parity
-`claude-opus-5` on every transcript node, effort pinned on the command
-line with `command_pin` capture (the real stream schema carries no
-per-node effort field — the registered two-mode policy), both stream
+(probes: writes outside the two rw surfaces fail; a sealed-package
+stand-in next to the worktree, `/workspace`, and `/home/user` are
+INVISIBLE from inside; git and `spec_metadata.sh` work in the confined
+worktree; CLI auth works through the bound credential directory), model
+parity `claude-opus-5` on every transcript node, effort pinned on the
+command line with `command_pin` capture (the real stream schema carries
+no per-node effort field — the registered two-mode policy), both stream
 schemas parsed with full tree-wide token accounting, and the artifact
-gate enforced uniformly. Outcomes: candidate **completed** (gate
-passed); ablation **completed** with **zero subagents** (the
-pre-registered no-subagent policy held); baseline mechanics green but
-its artifact was rejected by the gate — the legacy workflow wrapped
-body metadata values in backticks and improvised prose for the
-detached-HEAD branch — a counted workflow failure. **Recorded
-observation:** this is a real possibility for baseline holdout runs;
-the gate is pre-registered and uniform across arms and is NOT adjusted
-post-freeze. Any protocol amendment (e.g. separate judging of
+gate enforced uniformly. Final-wrapper outcomes: all three arms
+**completed** through the artifact gate — candidate (230 s), ablation
+(216 s, **zero subagents**: the pre-registered no-subagent policy
+held), baseline (318 s). **Recorded observation (from an earlier
+preflight run under the since-revised wrapper):** one baseline
+replicate produced an artifact the gate rejected — the legacy workflow
+wrapped body metadata values in backticks and improvised prose for the
+detached-HEAD branch value — while the final-wrapper baseline replicate
+passed; legacy formatting discipline is VARIABLE across replicates, so
+gate-failed baseline replicates remain a real possibility in holdout
+runs. The gate is pre-registered and uniform across arms and is NOT
+adjusted post-freeze; any protocol amendment (e.g. separate judging of
 gate-failed artifacts' content) is an owner decision and would have to
 be registered before Sequence step 5 unseals the holdout. No real
 workflow-abort exit codes were observed; `workflow_abort_exit_codes`
