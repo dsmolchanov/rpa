@@ -925,7 +925,7 @@ def run_preflight():
         child_pid = int((echo_tc / "child-pid.txt").read_text(
             encoding="utf-8").strip())
         child_dead = False
-        for _ in range(20):
+        for _ in range(100):
             try:
                 os.kill(child_pid, 0)
             except ProcessLookupError:
