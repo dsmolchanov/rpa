@@ -344,8 +344,10 @@ def run_preflight():
         config, _ = build_config(ws, "normal")
         config["arms"]["second"] = dict(config["arms"]["mock"],
                                         schedule_tasks=["t-a.md"])
-        s1 = runner.make_schedule(config, ["t-a.md", "t-b.md"], 3, seed=42)
-        s2 = runner.make_schedule(config, ["t-a.md", "t-b.md"], 3, seed=42)
+        s1 = runner.make_schedule(config, ["t-a.md", "t-b.md"], 3, seed=42,
+                                  allow_nonstandard=True)
+        s2 = runner.make_schedule(config, ["t-a.md", "t-b.md"], 3, seed=42,
+                                  allow_nonstandard=True)
         cell_counts = {}
         for entry in s1["entries"]:
             key = (entry["arm"], entry["task"])
@@ -369,6 +371,17 @@ def run_preflight():
             rep_ok, notes)
 
         config, _ = build_config(ws, "normal")
+        try:
+            runner.make_schedule(config, ["t-a.md"], 3, seed=1)
+            topo_ok = False
+        except runner.InfraFailure as exc:
+            topo_ok = "three-arm topology" in str(exc)
+        ok &= check(
+            "standard schedule requires the registered three-arm topology",
+            topo_ok, notes)
+
+        config, _ = build_config(ws, "normal")
+        config["arms"]["second"] = dict(config["arms"]["mock"])
         config["arms"]["ablation"] = dict(config["arms"]["mock"],
                                           forbid_subagents=True)
         try:
@@ -379,9 +392,10 @@ def run_preflight():
         config["arms"]["ablation"]["schedule_tasks"] = ["t-a.md", "t-b.md"]
         s_abl = runner.make_schedule(config, ["t-a.md", "t-b.md"], 3, seed=1)
         ok &= check(
-            "ablation arm requires explicit two-task scoping",
-            abl_ok and sum(
-                1 for e in s_abl["entries"] if e["arm"] == "ablation") == 6,
+            "ablation arm requires explicit two-task scoping (standard 3-arm ok)",
+            abl_ok
+            and s_abl["nonstandard"] is False
+            and sum(1 for e in s_abl["entries"] if e["arm"] == "ablation") == 6,
             notes)
 
         config, _ = build_config(ws, "normal")
@@ -446,19 +460,19 @@ def run_preflight():
 
         config, _ = build_config(ws, "normal")
         m2 = json.loads(manifest_path.read_text(encoding="utf-8"))
-        m2["config_digest"] = "0" * 64
+        orig_sdig = m2["schedule_digest"]
+        m2["schedule_digest"] = "0" * 64
         manifest_path.write_text(json.dumps(m2), encoding="utf-8")
         try:
             runner.run_schedule(config, sched_path, repo_s,
                                 ws / "out-sched", [str(task_s)])
             resume_ok = False
         except runner.InfraFailure as exc:
-            resume_ok = "config digest mismatch" in str(exc)
-        manifest_path.write_text(json.dumps(m2 | {"config_digest":
-                                                  sched["config_digest"]}),
-                                 encoding="utf-8")
+            resume_ok = "schedule digest mismatch" in str(exc)
+        manifest_path.write_text(
+            json.dumps(m2 | {"schedule_digest": orig_sdig}), encoding="utf-8")
         ok &= check(
-            "resumed manifest bound to schedule identity (digest checked)",
+            "resumed manifest bound to the full schedule digest",
             resume_ok, notes)
 
         config, _ = build_config(ws, "normal")
@@ -474,6 +488,13 @@ def run_preflight():
         try:
             runner.run_task_with_retries(config, "mock", task_ret, repo,
                                          ws / "out-bad-retries")
+            retries_ok = False
+        except runner.InfraFailure as exc:
+            retries_ok = retries_ok and "nonnegative integer" in str(exc)
+        config["max_infra_retries"] = 0.5
+        try:
+            runner.run_task_with_retries(config, "mock", task_ret, repo,
+                                         ws / "out-float-retries")
             retries_ok = False
         except runner.InfraFailure as exc:
             retries_ok = retries_ok and "nonnegative integer" in str(exc)
@@ -630,7 +651,7 @@ def run_preflight():
         placeholder_cfg.pop("judge_backend_cmd")
         try:
             runner.score(placeholder_cfg, docs, judge, ws / "judge-bad",
-                         scoring_seed=5)
+                         scoring_seed=5, allow_unscheduled=True)
             guard_ok = False
         except runner.InfraFailure as exc:
             guard_ok = "mount-free" in str(exc)
@@ -643,7 +664,7 @@ def run_preflight():
             "--mode", "wrong-model", "--effort", "{effort}"]
         try:
             runner.score(wrongjudge_cfg, docs, judge, ws / "judge-wrong",
-                         scoring_seed=5)
+                         scoring_seed=5, allow_unscheduled=True)
             judge_parity_ok = False
         except runner.InfraFailure as exc:
             judge_parity_ok = "differ from registered" in str(exc)
@@ -662,14 +683,15 @@ def run_preflight():
         for bad_doc in (raw_doc, leaky_doc):
             try:
                 runner.score(config, [bad_doc], judge, ws / "judge-blind",
-                             scoring_seed=5)
+                             scoring_seed=5, allow_unscheduled=True)
                 blind_ok = False
             except runner.InfraFailure as exc:
                 blind_ok &= "blind scoring" in str(exc) or "anonymized copy" in str(exc)
         ok &= check(
             "raw/fingerprint-bearing documents refused in score mode",
             blind_ok, notes)
-        results = runner.score(config, docs, judge, judge_out, scoring_seed=5)
+        results = runner.score(config, docs, judge, judge_out, scoring_seed=5,
+                               allow_unscheduled=True)
         judge_files = sorted(judge_out.glob("judge-*.json"))
         ok &= check(
             "fresh pinned judge sessions (distinct session + profile per call)",
@@ -694,7 +716,8 @@ def run_preflight():
         ok &= check(
             "blind judge isolated (empty cwd outside run tree, fs tools denied)",
             iso_ok, notes)
-        runner.score(config, docs, judge, judge_out, scoring_seed=5)
+        runner.score(config, docs, judge, judge_out, scoring_seed=5,
+                     allow_unscheduled=True)
         ok &= check(
             "judge outputs never overwritten (unique id per score invocation)",
             len(sorted(judge_out.glob("judge-*.json"))) == 4,
@@ -712,7 +735,7 @@ def run_preflight():
         expected_order = list(range(len(docs)))
         _random.Random(5).shuffle(expected_order)
         results2 = runner.score(config, docs, judge, ws / "judge-order",
-                                scoring_seed=5)
+                                scoring_seed=5, allow_unscheduled=True)
         ok &= check(
             "scoring order randomized from recorded seed (reproducible)",
             [r["doc"] for r in results]
@@ -724,20 +747,48 @@ def run_preflight():
             notes)
         try:
             runner.score(config, docs, judge, ws / "judge-halfpair",
-                         evidence_sha="deadbeef", scoring_seed=5)
+                         evidence_sha="deadbeef", scoring_seed=5,
+                         allow_unscheduled=True)
             pair_ok = False
         except runner.InfraFailure as exc:
             pair_ok = "all-or-nothing" in str(exc)
         ok &= check(
             "evidence repo/sha accepted only as a pair",
             pair_ok, notes)
+        try:
+            runner.score(config, docs, judge, ws / "judge-unsched",
+                         scoring_seed=5)
+            unsched_ok = False
+        except runner.InfraFailure as exc:
+            unsched_ok = "unscheduled" in str(exc)
+        ok &= check(
+            "scoring without a manifest requires explicit unscheduled opt-out",
+            unsched_ok, notes)
+        sched_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        sched_docs = [ws / "out-sched" / f"run-{r['run_id']}-anon.md"
+                      for r in sched_manifest["results"]]
+        mres = runner.score(config, sched_docs, judge, ws / "judge-sched",
+                            scoring_seed=5, manifest_path=manifest_path)
+        ok &= check(
+            "manifest-bound scoring covers every completed replicate once",
+            len(mres) == 2 and all(r.get("scheduled") for r in mres),
+            notes)
+        try:
+            runner.score(config, sched_docs[:1], judge, ws / "judge-subset",
+                         scoring_seed=5, manifest_path=manifest_path)
+            subset_ok = False
+        except runner.InfraFailure as exc:
+            subset_ok = "exactly once" in str(exc)
+        ok &= check(
+            "subset or duplicated scoring inputs refused against the manifest",
+            subset_ok, notes)
         ev_repo, ev_sha = make_git_repo(ws, "evidence")
         echo_dir = ws / "echo-verifier"
         os.environ["MOCK_ECHO_DIR"] = str(echo_dir)
         try:
             vres = runner.score(config, [docs[0]], judge, ws / "judge-verify",
                                 evidence_repo=ev_repo, evidence_sha=ev_sha,
-                                scoring_seed=5)
+                                scoring_seed=5, allow_unscheduled=True)
         finally:
             os.environ.pop("MOCK_ECHO_DIR", None)
         listing = (echo_dir / "cwd-listing.txt").read_text(encoding="utf-8")

@@ -398,6 +398,16 @@ private tasks dev-1/dev-5 (livekit-voice-agent @ `9d65fff`) and dev-2
 (neomenu @ `aa8b8d1`) were delivered to the owner for the private eval
 workspace per the privacy rule and are not committed here.
 
+**Ordering note (explicit owner decision, 2026-07-26):** dev-set authoring
+was executed together with prerequisite 5 on the owner's explicit
+instruction ("продолжай с eval-runner и dev-set"), ahead of the atomic
+seal (prerequisite 3) and the real-backend preflight. This revises the
+nominal prerequisite→dev-set ordering for AUTHORING only: dev-set tasks
+never count toward the pass bar, no baseline/candidate/holdout run has
+been executed, and the atomic seal plus the real-backend preflight remain
+hard blockers before any scored run. The sealed holdout is untouched by
+this change and is still authored in a separate session.
+
 ## Sequence
 
 1. Prerequisites 1–5.

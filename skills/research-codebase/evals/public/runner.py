@@ -73,15 +73,20 @@ Capability map (each proven by `--preflight` before any scored run):
      never overwrite each other.
  11. pre-registered run schedule    — `--make-schedule` emits a balanced,
      seed-recorded, randomized interleaving of every arm x task x
-     replicate; the protocol fixes REGISTERED_REPLICATES per cell (other
-     counts must be explicitly marked nonstandard, dev-set tuning only)
-     and a no-subagent ablation arm must be explicitly scoped to exactly
-     its two designated tasks. `--run-schedule` RECONSTRUCTS the expected
-     schedule from the registered config, the operator-supplied task set,
-     and the recorded seed — the file's own arms/tasks/entries are never
-     trusted — executes in recorded order, persists progress to the
-     manifest after every entry, and resumes an interrupted schedule at
-     the first unfinished entry.
+     replicate; a standard (holdout) schedule requires the registered
+     three-arm topology (baseline, candidate, exactly one no-subagent
+     ablation arm) and REGISTERED_REPLICATES per cell — anything else must
+     be explicitly marked nonstandard (dev-set tuning only) — and the
+     ablation arm must be explicitly scoped to exactly its two designated
+     tasks. `--run-schedule` RECONSTRUCTS the expected schedule from the
+     registered config, the operator-supplied task set, and the recorded
+     seed — the file's own arms/tasks/entries are never trusted — executes
+     in recorded order, persists progress to the manifest after every
+     entry, and resumes an interrupted schedule at the first unfinished
+     entry; the resume identity is a digest of the ENTIRE schedule.
+     Scoring is bound to the completion manifest: every completed
+     scheduled replicate is scored exactly once (ad-hoc scoring must be
+     explicitly marked unscheduled).
  12. pinned backend version         — the exact Claude Code version is
      registered (`backend_version` + `backend_version_cmd`) and probed
      before every run and judge pass; drift between interleaved entries
@@ -837,18 +842,16 @@ def run_task_with_retries(config, arm_name, task_path, repo_dir, output_dir):
     the run is re-executed, automatically and bounded — workflow failures are
     counted, never replaced. Every attempt's record is written to disk."""
     raw_retries = config.get("max_infra_retries", DEFAULT_MAX_INFRA_RETRIES)
-    try:
-        max_retries = int(raw_retries)
-    except (TypeError, ValueError) as exc:
-        raise InfraFailure(
-            f"`max_infra_retries` must be a nonnegative integer, "
-            f"got {raw_retries!r}"
-        ) from exc
-    if max_retries < 0:
+    # A real integer, not a coercible value: int() would turn 0.5 into 0
+    # (silently deleting all retries) and True into 1.
+    if (isinstance(raw_retries, bool)
+            or not isinstance(raw_retries, int)
+            or raw_retries < 0):
         raise InfraFailure(
             f"`max_infra_retries` must be a nonnegative integer, "
             f"got {raw_retries!r}"
         )
+    max_retries = raw_retries
     attempts = []
     for attempt in range(1, max_retries + 2):
         record = run_task(config, arm_name, task_path, repo_dir, output_dir,
@@ -868,13 +871,26 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
     mark. A no-subagent (ablation) arm must be EXPLICITLY scoped to its two
     designated tasks via `schedule_tasks` — defaulting it to the full task
     list would silently widen the pre-registered third-arm comparison."""
-    if replicates != REGISTERED_REPLICATES and not allow_nonstandard:
-        raise InfraFailure(
-            f"the registered protocol fixes {REGISTERED_REPLICATES} "
-            f"replicates per arm/task cell (got {replicates}); nonstandard "
-            f"counts are for dev-set tuning only and must be explicitly "
-            f"allowed"
-        )
+    ablation_arms = [name for name, arm in config.get("arms", {}).items()
+                     if arm.get("forbid_subagents")]
+    standard_topology = (len(config.get("arms", {})) == 3
+                         and len(ablation_arms) == 1)
+    if not allow_nonstandard:
+        if replicates != REGISTERED_REPLICATES:
+            raise InfraFailure(
+                f"the registered protocol fixes {REGISTERED_REPLICATES} "
+                f"replicates per arm/task cell (got {replicates}); "
+                f"nonstandard counts are for dev-set tuning only and must "
+                f"be explicitly allowed"
+            )
+        if not standard_topology:
+            raise InfraFailure(
+                f"a standard (holdout) schedule requires the registered "
+                f"three-arm topology — baseline, candidate, and exactly one "
+                f"no-subagent ablation arm; got {len(config.get('arms', {}))} "
+                f"arm(s) with {len(ablation_arms)} ablation arm(s); dev-set "
+                f"tuning schedules must be explicitly marked nonstandard"
+            )
     validate_arm_parity(config)
     tasks = [str(Path(t)) for t in task_paths]
     entries = []
@@ -910,12 +926,23 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
     return {
         "seed": seed,
         "replicates": replicates,
-        "nonstandard_replicates": replicates != REGISTERED_REPLICATES,
+        "nonstandard": (replicates != REGISTERED_REPLICATES
+                        or not standard_topology),
         "tasks": tasks,
         "arms": sorted(config["arms"]),
         "config_digest": config_digest(config),
         "entries": entries,
     }
+
+
+def schedule_digest(schedule):
+    """Digest of the ENTIRE schedule object (entries, tasks, seed, config
+    digest). This is the resume identity: seed + config alone cannot
+    distinguish schedules over different task sets whose randomized entries
+    happen to share a prefix."""
+    return hashlib.sha256(
+        json.dumps(schedule, sort_keys=True).encode("utf-8")
+    ).hexdigest()
 
 
 def run_schedule(config, schedule_path, repo_dir, output_dir, task_paths):
@@ -938,7 +965,7 @@ def run_schedule(config, schedule_path, repo_dir, output_dir, task_paths):
         )
     rebuilt = make_schedule(
         config, task_paths, schedule.get("replicates"), schedule.get("seed"),
-        allow_nonstandard=schedule.get("nonstandard_replicates", False),
+        allow_nonstandard=schedule.get("nonstandard", False),
     )
     if rebuilt != schedule:
         raise InfraFailure(
@@ -948,22 +975,22 @@ def run_schedule(config, schedule_path, repo_dir, output_dir, task_paths):
             "--make-schedule"
         )
     entries = schedule["entries"]
+    sched_digest = schedule_digest(schedule)
     out = Path(output_dir).resolve()
     out.mkdir(parents=True, exist_ok=True)
     manifest_path = out / "schedule-manifest.json"
     results = []
     if manifest_path.exists():
         prior = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if (prior.get("seed") != schedule["seed"]
-                or prior.get("config_digest") != schedule["config_digest"]):
-            # Same seed + task set under a changed config reproduces the
-            # same entries — only the digest distinguishes them, so it is
-            # part of the resume identity.
+        if prior.get("schedule_digest") != sched_digest:
+            # The FULL schedule digest is the resume identity: seed +
+            # config alone cannot distinguish schedules over different
+            # task sets whose randomized entries share a prefix.
             raise InfraFailure(
                 "existing manifest in the output directory belongs to a "
-                "different schedule (seed or config digest mismatch) — "
-                "results from different registered configurations must not "
-                "be mixed"
+                "different schedule (schedule digest mismatch) — results "
+                "from different schedules or configurations must not be "
+                "mixed"
             )
         results = list(prior.get("results", []))
         if len(results) > len(entries):
@@ -979,10 +1006,10 @@ def run_schedule(config, schedule_path, repo_dir, output_dir, task_paths):
         manifest = {
             "schedule": str(schedule_path),
             "seed": schedule["seed"],
+            "schedule_digest": sched_digest,
             "config_digest": schedule["config_digest"],
             "replicates": schedule["replicates"],
-            "nonstandard_replicates": schedule.get("nonstandard_replicates",
-                                                   False),
+            "nonstandard": schedule.get("nonstandard", False),
             "results": results,
             "complete": complete,
         }
@@ -1051,7 +1078,8 @@ def assert_blind_scorable(doc_path):
 
 
 def score(config, doc_paths, judge_prompt_path, output_dir,
-          evidence_repo=None, evidence_sha=None, scoring_seed=None):
+          evidence_repo=None, evidence_sha=None, scoring_seed=None,
+          manifest_path=None, allow_unscheduled=False):
     """One fresh pinned backend session per document. The judge's full
     response text is preserved on disk — it IS the scoring artifact. Judge
     prompts live in the sealed package and are passed in at runtime.
@@ -1077,6 +1105,34 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             "`scoring_seed` is required — the presentation order must be "
             "randomized from a recorded seed"
         )
+    if manifest_path is None and not allow_unscheduled:
+        raise InfraFailure(
+            "score mode requires the schedule manifest so every scheduled "
+            "replicate is scored exactly once — ad-hoc/dev scoring must be "
+            "explicitly marked unscheduled"
+        )
+    if manifest_path is not None:
+        # No post-hoc selection: the supplied documents must cover every
+        # completed scheduled replicate exactly once — no subsets, no
+        # duplicates, no extras.
+        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        if not manifest.get("complete"):
+            raise InfraFailure(
+                "schedule manifest is incomplete — score only after the "
+                "whole schedule has run"
+            )
+        expected_names = sorted(
+            f"run-{r['run_id']}-anon.md"
+            for r in manifest.get("results", [])
+            if r.get("status") == "completed"
+        )
+        supplied_names = sorted(Path(d).name for d in doc_paths)
+        if supplied_names != expected_names:
+            raise InfraFailure(
+                f"scoring inputs must cover every completed scheduled "
+                f"replicate exactly once — expected {expected_names}, "
+                f"got {supplied_names}"
+            )
     judge_prompt = Path(judge_prompt_path).read_text(encoding="utf-8")
     judge_cmd = config.get("judge_backend_cmd", config["backend_cmd"])
     if any("{installation}" in part for part in judge_cmd):
@@ -1144,6 +1200,7 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             "backend_version": backend_version,
             "scoring_seed": scoring_seed,
             "presentation_index": i,
+            "scheduled": manifest_path is not None,
             "judge_model": judge_model,
             "effort_capture": effort_capture,
             "response": response,
@@ -1182,6 +1239,13 @@ def main():
     parser.add_argument("--scoring-seed", type=int,
                         help="score mode: recorded seed randomizing the "
                              "document presentation order")
+    parser.add_argument("--manifest",
+                        help="score mode: schedule manifest binding --docs "
+                             "to completed scheduled replicates (exactly "
+                             "one anonymized artifact per replicate)")
+    parser.add_argument("--unscheduled-docs", action="store_true",
+                        help="score mode: explicitly allow ad-hoc/dev "
+                             "scoring without a schedule manifest")
     parser.add_argument("--output", default="runs", help="output directory")
     parser.add_argument("--make-schedule", action="store_true",
                         help="write a pre-registered randomized schedule "
@@ -1191,11 +1255,12 @@ def main():
     parser.add_argument("--replicates", type=int, default=3,
                         help="replicates per arm/task cell (the protocol "
                              "fixes 3; other values need "
-                             "--allow-nonstandard-replicates)")
-    parser.add_argument("--allow-nonstandard-replicates", action="store_true",
+                             "--allow-nonstandard)")
+    parser.add_argument("--allow-nonstandard", action="store_true",
                         help="dev-set tuning only: permit a replicate count "
-                             "other than 3; the schedule is marked "
-                             "nonstandard and cannot pass as holdout")
+                             "other than 3 and/or a non-three-arm topology; "
+                             "the schedule is marked nonstandard and cannot "
+                             "pass as holdout")
     parser.add_argument("--seed", type=int,
                         help="recorded randomization seed for --make-schedule")
     parser.add_argument("--schedule-out", default="schedule.json",
@@ -1217,7 +1282,7 @@ def main():
             schedule = make_schedule(
                 load_config(args.config), args.tasks, args.replicates,
                 args.seed,
-                allow_nonstandard=args.allow_nonstandard_replicates,
+                allow_nonstandard=args.allow_nonstandard,
             )
         except InfraFailure as exc:
             print(json.dumps({"status": "infra_failure", "failure": str(exc)}))
@@ -1259,7 +1324,9 @@ def main():
         results = score(config, args.docs, args.judge_prompt, args.output,
                         evidence_repo=args.evidence_repo,
                         evidence_sha=args.evidence_sha,
-                        scoring_seed=args.scoring_seed)
+                        scoring_seed=args.scoring_seed,
+                        manifest_path=args.manifest,
+                        allow_unscheduled=args.unscheduled_docs)
         print(json.dumps([{k: r[k] for k in ("doc", "session_id")} for r in results]))
         sys.exit(0)
 
