@@ -465,11 +465,28 @@ def expand_backend_cmd(backend_cmd, mount, effort=None):
     return expanded
 
 
+def read_task_text(task_path):
+    """Task files are user-supplied CLI input: a missing, unreadable, or
+    non-UTF-8 file is an infrastructure fault reported through the
+    structured infra_failure contract, never a raw traceback."""
+    try:
+        return Path(task_path).read_text(encoding="utf-8")
+    except (OSError, ValueError) as exc:
+        raise InfraFailure(f"cannot read task file {task_path}: {exc}") from exc
+
+
+def read_task_bytes(task_path):
+    try:
+        return Path(task_path).read_bytes()
+    except OSError as exc:
+        raise InfraFailure(f"cannot read task file {task_path}: {exc}") from exc
+
+
 def extract_task_prompt(task_path):
     """Only the `## Task prompt` section may reach an evaluated session.
     The marker is required unconditionally: a malformed task must fail the
     run, never silently alter the experiment by sending the whole file."""
-    text = Path(task_path).read_text(encoding="utf-8")
+    text = read_task_text(task_path)
     match = re.search(
         r"^## Task prompt\s*\n(.*?)(?=^## |\Z)", text, re.MULTILINE | re.DOTALL
     )
@@ -502,7 +519,7 @@ def resolve_repo(task_path, repos):
     """The registered holdout spans several repositories: each task names
     its `target-repo` and the operator supplies a NAME=PATH clone mapping;
     one clone can never serve a multi-repo schedule."""
-    text = Path(task_path).read_text(encoding="utf-8")
+    text = read_task_text(task_path)
     name = task_target_repo(text, task_path)
     if name not in repos:
         raise InfraFailure(
@@ -1191,12 +1208,7 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
     # never silently mix revisions inside one experimental cell.
     task_digests = {}
     for task in tasks:
-        try:
-            task_digests[task] = hashlib.sha256(
-                Path(task).read_bytes()
-            ).hexdigest()
-        except OSError as exc:
-            raise InfraFailure(f"cannot read task file {task}: {exc}") from exc
+        task_digests[task] = hashlib.sha256(read_task_bytes(task)).hexdigest()
     standard_topology = _standard_topology(config)
     if not allow_nonstandard:
         if config.get("nonstandard_config"):
@@ -1234,7 +1246,7 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
         seen_numbers = {}
         seen_repos = set()
         for task in tasks:
-            cov_text = Path(task).read_text(encoding="utf-8")
+            cov_text = read_task_text(task)
             cov_match = re.search(
                 r"^archetype:\s*\"?([^\"\n]+?)\"?\s*$",
                 cov_text, re.MULTILINE)
@@ -1340,7 +1352,7 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
                 # `archetype` frontmatter.
                 found = []
                 for scoped in arm["schedule_tasks"]:
-                    scoped_text = Path(scoped).read_text(encoding="utf-8")
+                    scoped_text = read_task_text(scoped)
                     match = re.search(
                         r"^archetype:\s*\"?([^\"\n]+?)\"?\s*$",
                         scoped_text, re.MULTILINE)
@@ -1712,7 +1724,7 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             recorded_task = r.get("task_sha256")
             if recorded_task is not None:
                 actual_task = hashlib.sha256(
-                    Path(r["task"]).read_bytes()
+                    read_task_bytes(r["task"])
                 ).hexdigest()
                 if actual_task != recorded_task:
                     raise InfraFailure(
@@ -1798,7 +1810,7 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                                             "drift report")
         doc_evidence = {} if evidence_repos is not None else None
         for r in completed:
-            task_text = Path(r["task"]).read_text(encoding="utf-8")
+            task_text = read_task_text(r["task"])
             doc_name = f"run-{r['run_id']}-anon.md"
             if evidence_repos is not None:
                 # A holdout batch spans several target repositories: every
@@ -2063,10 +2075,31 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
 
     for i, doc_index in enumerate(order):
         if i < len(results):
-            # Judged before the interruption — never re-judged; the slot
-            # must still match the expected presentation document.
-            prior_doc = Path(results[i].get("doc", "")).name
-            if prior_doc != Path(doc_paths[doc_index]).name:
+            # Judged before the interruption — never re-judged; but the
+            # manifest entry is only trusted after it matches its atomic
+            # judge record exactly: a corrupted or edited scoring manifest
+            # must not smuggle an invented score, session, or accounting
+            # past the judge loop.
+            record_path = out / f"judge-{scoring_id}-{i}.json"
+            try:
+                record = json.loads(record_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise InfraFailure(
+                    f"resumed batch slot {i} has no readable judge record "
+                    f"({record_path.name}) — batch state corrupted"
+                ) from exc
+            if record != results[i]:
+                raise InfraFailure(
+                    f"resumed batch slot {i} does not match its judge "
+                    f"record — scoring manifest corrupted or edited"
+                )
+            if record.get("presentation_index") != i:
+                raise InfraFailure(
+                    f"judge record for slot {i} carries presentation index "
+                    f"{record.get('presentation_index')} — batch state "
+                    f"corrupted"
+                )
+            if Path(record.get("doc", "")).name != Path(doc_paths[doc_index]).name:
                 raise InfraFailure(
                     "resumed batch presentation order mismatch — batch "
                     "state corrupted or documents reordered"
