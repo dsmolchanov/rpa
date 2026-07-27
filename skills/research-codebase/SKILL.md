@@ -76,14 +76,21 @@ What the model cannot derive on its own:
 
 ## Delegation
 
-Delegate only genuinely independent, sizeable investigation tracks; do not
-delegate what you can finish yourself in a handful of tool calls, and do
-not spawn a subagent to re-verify your own reading. When the question
-decomposes into parallel tracks (separate subsystems, code vs history vs
-external docs), the research agent fleet and its routing live in
-[`references/fleet-routing.md`](references/fleet-routing.md); each fleet
-agent's contract is under
-[`references/agent-contracts/`](references/agent-contracts/).
+Delegation is conditional on the research agent fleet being installed —
+the presence of [`references/fleet-routing.md`](references/fleet-routing.md)
+in this package is the signal:
+
+- **With the fleet installed**: delegate only genuinely independent,
+  sizeable investigation tracks; do not delegate what you can finish
+  yourself in a handful of tool calls, and do not spawn a subagent to
+  re-verify your own reading. Routing and the delegation cap live in
+  the routing file; each fleet agent's contract is under
+  [`references/agent-contracts/`](references/agent-contracts/).
+- **Without the fleet** — including the pilot's fleet-ablation build,
+  which removes the routing file and the `research-v2-*` agents — do
+  every investigation in the main context and spawn **no subagents of
+  any kind** (the pre-registered no-subagent policy: a spawn is a
+  counted policy violation, not a judgment call).
 
 ## Acceptance criteria & evidence
 

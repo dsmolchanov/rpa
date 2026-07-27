@@ -72,6 +72,13 @@ REQUIRED_EXACT_HEADINGS = (
 
 LAST_UPDATED_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
+# Identity/text fields must be real STRINGS: YAML types a bare `false`
+# or `123` and the contract's researcher/branch/etc. are names, not
+# booleans or numbers. (git_commit/date/last_updated keep scalar
+# handling — YAML legitimately types dates and all-digit hashes.)
+STRING_FIELDS = ("researcher", "branch", "repository", "topic",
+                 "status", "last_updated_by")
+
 # Sections that must carry non-whitespace content, not just a heading.
 CONTENT_REQUIRED_SECTIONS = ("Research Question", "Summary",
                              "Detailed Findings")
@@ -177,6 +184,28 @@ def _unquote_scalar(val, errors, key):
     return val
 
 
+def _plain_scalar(val):
+    """Unquoted plain scalars get YAML's typing (never more permissive
+    than real parsing): reserved words become booleans/None, bare
+    numbers become numbers, everything else stays a string."""
+    low = val.lower()
+    if low in ("true", "yes", "on"):
+        return True
+    if low in ("false", "no", "off"):
+        return False
+    if low in ("null", "~", ""):
+        return None
+    try:
+        return int(val)
+    except ValueError:
+        pass
+    try:
+        return float(val)
+    except ValueError:
+        pass
+    return val
+
+
 def _parse_frontmatter_fallback(block, errors):
     """Contract-shape parser for hosts without PyYAML: flat `key: value`
     mapping, values scalars or one bracketed flow list. Anything richer is
@@ -208,11 +237,13 @@ def _parse_frontmatter_fallback(block, errors):
                     return {}
                 items.append(unquoted)
             meta[key.strip()] = items
-        else:
+        elif val[:1] in ("'", '"'):
             unquoted = _unquote_scalar(val, errors, key.strip())
             if unquoted is None:
                 return {}
             meta[key.strip()] = unquoted
+        else:
+            meta[key.strip()] = _plain_scalar(val)
     return meta
 
 
@@ -299,6 +330,12 @@ def validate(path, expected_git_commit=None, expected_repository=None,
                                for t in value)):
                 errors.append(
                     "`tags` must be a non-empty list of non-empty strings")
+            continue
+        if field in STRING_FIELDS and not isinstance(value, str):
+            errors.append(
+                f"frontmatter `{field}` must be a string, got "
+                f"{type(value).__name__} — quote reserved words and "
+                f"numbers")
             continue
         # YAML types scalars (dates, all-digit hashes): any non-empty
         # scalar is acceptable where the contract shows a string.

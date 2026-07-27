@@ -1309,6 +1309,16 @@ def run_preflight():
             encoding="utf-8")
         unq_bad = va_noyaml.validate(unq_doc)
         fallback_valid_ok = not va_noyaml.validate(fn_doc)
+        boolid_doc = ws / "2026-07-26-boolid.md"
+        boolid_doc.write_text(
+            fn_doc.read_text(encoding="utf-8").replace(
+                "researcher: Fixture Researcher",
+                "researcher: false", 1).replace(
+                "**Researcher**: Fixture Researcher",
+                "**Researcher**: false", 1),
+            encoding="utf-8")
+        boolid_bad = runner.artifact_validator.validate(boolid_doc)
+        boolid_fallback_bad = va_noyaml.validate(boolid_doc)
         try:
             runner.canonical_repo_name("..")
             dotdot_ok = False
@@ -1344,6 +1354,10 @@ def run_preflight():
             and any("## Summary" in e for e in hashhead_bad)
             and any("unmatched quote" in e for e in unq_bad)
             and fallback_valid_ok
+            and any("researcher" in e and "must be a string" in e
+                    for e in boolid_bad)
+            and any("researcher" in e and "must be a string" in e
+                    for e in boolid_fallback_bad)
             and dotdot_ok and dotpath_ok
             and any("calendar" in e for e in baddate_bad),
             notes)
