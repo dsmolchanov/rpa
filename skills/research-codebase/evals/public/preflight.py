@@ -1200,7 +1200,7 @@ def run_preflight():
                 encoding="utf-8"), encoding="utf-8")
         fn_bad = runner.artifact_validator.validate(
             fn_doc, enforce_filename=True)
-        fn_good_doc = ws / "2026-07-26-fixture-copy.md"
+        fn_good_doc = ws / "2026-07-27-fixture-copy.md"
         fn_good_doc.write_text(fn_doc.read_text(encoding="utf-8"),
                                encoding="utf-8")
         fn_good = runner.artifact_validator.validate(
@@ -1335,6 +1335,19 @@ def run_preflight():
             encoding="utf-8")
         flowbool_bad = runner.artifact_validator.validate(flowbool_doc)
         flowbool_fallback_bad = va_noyaml.validate(flowbool_doc)
+        oldname_doc = ws / "2025-01-01-old-topic.md"
+        oldname_doc.write_text(fn_doc.read_text(encoding="utf-8"),
+                               encoding="utf-8")
+        oldname_bad = runner.artifact_validator.validate(
+            oldname_doc, enforce_filename=True)
+        quotejunk_doc = ws / "2026-07-27-quotejunk.md"
+        quotejunk_doc.write_text(
+            fn_doc.read_text(encoding="utf-8").replace(
+                "researcher: Fixture Researcher",
+                'researcher: "Fixture" Researcher"', 1),
+            encoding="utf-8")
+        quotejunk_bad = runner.artifact_validator.validate(quotejunk_doc)
+        quotejunk_fallback_bad = va_noyaml.validate(quotejunk_doc)
         try:
             runner.canonical_repo_name("..")
             dotdot_ok = False
@@ -1378,6 +1391,11 @@ def run_preflight():
             and any("tags" in e for e in flowmap_fallback_bad)
             and any("tags" in e for e in flowbool_bad)
             and any("tags" in e for e in flowbool_fallback_bad)
+            and any("does not match the metadata timestamp" in e
+                    for e in oldname_bad)
+            and quotejunk_bad
+            and any("internal quote" in e
+                    for e in quotejunk_fallback_bad)
             and dotdot_ok and dotpath_ok
             and any("calendar" in e for e in baddate_bad),
             notes)

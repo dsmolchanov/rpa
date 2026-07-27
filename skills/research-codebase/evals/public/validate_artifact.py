@@ -180,7 +180,19 @@ def _unquote_scalar(val, errors, key):
                 f"frontmatter `{key}`: unmatched quote in `{val[:40]}` — "
                 f"malformed YAML scalar")
             return None
-        return val[1:-1]
+        inner = val[1:-1]
+        # A quote character inside the quoted body (`"Fixture" R"`), or an
+        # escape sequence in a double-quoted scalar, means the raw slice
+        # is NOT the value a YAML parser would produce (if it parses at
+        # all) — reject rather than accept frontmatter whose meaning
+        # diverges from real parsing.
+        if val[0] in inner or (val[0] == '"' and "\\" in inner):
+            errors.append(
+                f"frontmatter `{key}`: internal quote or escape in "
+                f"`{val[:40]}` — beyond the contract's plain quoted "
+                f"scalar (install PyYAML 6.0.2 for full parsing)")
+            return None
+        return inner
     return val
 
 
@@ -297,6 +309,7 @@ def validate(path, expected_git_commit=None, expected_repository=None,
         text = Path(path).read_text(encoding="utf-8")
     except (OSError, ValueError) as exc:
         return [f"cannot read document: {exc}"]
+    fname_date = None
     if enforce_filename:
         basename = Path(path).name
         if not ARTIFACT_BASENAME_RE.match(basename):
@@ -307,6 +320,8 @@ def validate(path, expected_git_commit=None, expected_repository=None,
             errors.append(
                 f"artifact basename `{basename}` starts with an "
                 f"impossible calendar date")
+        else:
+            fname_date = basename[:10]
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
         errors.append("frontmatter must open with `---` on line 1")
@@ -376,11 +391,21 @@ def validate(path, expected_git_commit=None, expected_repository=None,
                 and not _valid_date(sval)):
             errors.append(
                 f"`last_updated` must be YYYY-MM-DD, got `{sval}`")
-        if field == "date" and not exempt \
-                and not _valid_timestamp(sval):
-            errors.append(
-                f"`date` must be an ISO date-time (with timezone), "
-                f"got `{sval}`")
+        if field == "date" and not exempt:
+            if not _valid_timestamp(sval):
+                errors.append(
+                    f"`date` must be an ISO date-time (with timezone), "
+                    f"got `{sval}`")
+            # The contract derives the artifact path from the SAME
+            # metadata collection as the frontmatter: the filename's
+            # date prefix must equal the timestamp's local (wall-clock)
+            # calendar date.
+            elif fname_date is not None and sval[:10] != fname_date:
+                errors.append(
+                    f"artifact filename date `{fname_date}` does not "
+                    f"match the metadata timestamp's local date "
+                    f"`{sval[:10]}` — the path must use the date from "
+                    f"the same metadata collection")
         if field == "git_commit" and not exempt:
             if not GIT_COMMIT_RE.match(sval):
                 errors.append(
