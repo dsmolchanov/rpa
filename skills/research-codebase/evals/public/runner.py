@@ -278,8 +278,15 @@ def atomic_write_text(path, text):
 
 
 def load_config(path):
-    with open(path, encoding="utf-8") as fh:
-        return json.load(fh)
+    """User-input faults (missing/unreadable/malformed config) are
+    classified infrastructure failures, never raw tracebacks."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except OSError as exc:
+        raise InfraFailure(f"cannot read config {path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise InfraFailure(f"config {path} is not valid JSON: {exc}") from exc
 
 
 def config_digest(config):
@@ -1090,6 +1097,12 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
     mark. A no-subagent (ablation) arm must be EXPLICITLY scoped to its two
     designated tasks via `schedule_tasks` — defaulting it to the full task
     list would silently widen the pre-registered third-arm comparison."""
+    if (isinstance(replicates, bool) or not isinstance(replicates, int)
+            or replicates < 1):
+        raise InfraFailure(
+            f"`replicates` must be a positive integer, got {replicates!r} — "
+            f"zero entries would let an empty schedule complete"
+        )
     tasks = [str(Path(t)) for t in task_paths]
     if len(set(tasks)) != len(tasks):
         raise InfraFailure("duplicate task paths in the schedule task list")
@@ -1252,7 +1265,12 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
         "seed": seed,
         "replicates": replicates,
         "task_digests": task_digests,
-        "nonstandard": (replicates != REGISTERED_REPLICATES
+        # The explicit override is itself part of the marker: an
+        # allow-nonstandard schedule that happens to be standard-shaped
+        # must not masquerade as holdout (and must reconstruct with the
+        # same override on --run-schedule).
+        "nonstandard": (bool(allow_nonstandard)
+                        or replicates != REGISTERED_REPLICATES
                         or not standard_topology
                         or len(tasks) != REGISTERED_HOLDOUT_TASKS
                         or bool(config.get("nonstandard_config"))),
@@ -1429,6 +1447,42 @@ def _sealed_bytes(path, seal_files, key=None):
 
 def _read_sealed(path, seal_files):
     return _sealed_bytes(path, seal_files).decode("utf-8")
+
+
+def _sealed_snapshot_items(snap_root, seal_files):
+    """Enumerate a sealed snapshot FROM THE SEAL, not from what happens to
+    remain on disk: a sealed file deleted from the supplied copy must be
+    detected, and an extra unsealed file must never ride along. Returns
+    (path, relative_path, seal_key) triples in sealed order."""
+    snap_root = Path(snap_root)
+    if snap_root.is_file():
+        key = snap_root.name
+        if key not in seal_files:
+            raise InfraFailure(
+                f"{snap_root}: snapshot not in the atomic-seal manifest"
+            )
+        return [(snap_root, Path(snap_root.name), key)]
+    prefix = snap_root.name + "/"
+    sealed_keys = sorted(k for k in seal_files if k.startswith(prefix))
+    if not sealed_keys:
+        raise InfraFailure(
+            f"{snap_root}: no sealed snapshot entries under `{prefix}` in "
+            f"the atomic-seal manifest"
+        )
+    local = {}
+    for item in snap_root.rglob("*"):
+        if item.is_file():
+            rel = item.relative_to(snap_root)
+            local[(Path(snap_root.name) / rel).as_posix()] = (item, rel)
+    missing = [k for k in sealed_keys if k not in local]
+    extra = [k for k in sorted(local) if k not in sealed_keys]
+    if missing or extra:
+        raise InfraFailure(
+            f"{snap_root}: snapshot file set differs from the seal "
+            f"(missing {missing}, extra {extra}) — the complete frozen "
+            f"evidence is required"
+        )
+    return [(local[k][0], local[k][1], k) for k in sealed_keys]
 
 
 def assert_blind_scorable(doc_path):
@@ -1766,25 +1820,15 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                     )
                 snap_root = Path(snap_path)
                 refetched_root = Path(drift_entry["refetched"])
-                if snap_root.is_file():
-                    pairs = [(snap_root, refetched_root, snap_root.name)]
-                else:
-                    pairs = []
-                    for snap in sorted(p for p in snap_root.rglob("*")
-                                       if p.is_file()):
-                        rel = snap.relative_to(snap_root)
-                        pairs.append(
-                            (snap, refetched_root / rel,
-                             (Path(snap_root.name) / rel).as_posix())
-                        )
+                snap_items = _sealed_snapshot_items(snap_root, seal_files)
+                pairs = [
+                    (item, refetched_root if snap_root.is_file()
+                     else refetched_root / rel, seal_key)
+                    for item, rel, seal_key in snap_items
+                ]
                 changed_keys = []
                 for snap, refetched, seal_key in pairs:
-                    sealed_digest = seal_files.get(seal_key)
-                    if sealed_digest is None:
-                        raise InfraFailure(
-                            f"{snap}: snapshot not in the atomic-seal "
-                            f"manifest"
-                        )
+                    sealed_digest = seal_files[seal_key]
                     if not refetched.exists():
                         raise InfraFailure(
                             f"{refetched}: re-fetched copy missing — "
@@ -1970,19 +2014,8 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                 snap_src = Path(snapshot_by_doc[Path(doc).name])
                 snap_dest = workdir / "_sealed-snapshots"
                 snap_dest.mkdir()
-                if snap_src.is_file():
-                    snap_items = [(snap_src, Path(snap_src.name),
-                                   snap_src.name)]
-                else:
-                    snap_items = []
-                    for snap in sorted(p for p in snap_src.rglob("*")
-                                       if p.is_file()):
-                        rel = snap.relative_to(snap_src)
-                        snap_items.append(
-                            (snap, rel,
-                             (Path(snap_src.name) / rel).as_posix())
-                        )
-                for snap, rel, seal_key in snap_items:
+                for snap, rel, seal_key in _sealed_snapshot_items(
+                        snap_src, seal_files):
                     dest = snap_dest / rel
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     dest.write_bytes(
@@ -2175,8 +2208,8 @@ def main():
                          "(NAME=PATH clone mapping), and --tasks (the "
                          "registered task set, compared against the "
                          "schedule)")
-        config = load_config(args.config)
         try:
+            config = load_config(args.config)
             repos = parse_repo_mapping(args.repos, "--repos")
             manifest = run_schedule(config, args.run_schedule, repos,
                                     args.output, args.tasks)
@@ -2200,8 +2233,8 @@ def main():
             parser.error("--manifest scoring requires --tasks (the "
                          "registered task set, used to reconstruct and "
                          "verify the schedule)")
-        config = load_config(args.config)
         try:
+            config = load_config(args.config)
             evidence_repos = (parse_repo_mapping(args.evidence_repos,
                                                  "--evidence-repos")
                               if args.evidence_repos else None)
@@ -2242,8 +2275,8 @@ def main():
 
     if not (args.config and args.arm and args.task and args.repo):
         parser.error("run mode requires --config, --arm, --task, --repo")
-    config = load_config(args.config)
     try:
+        config = load_config(args.config)
         attempts = run_task_with_retries(
             config, args.arm, args.task, args.repo, args.output
         )

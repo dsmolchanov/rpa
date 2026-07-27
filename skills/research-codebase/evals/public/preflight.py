@@ -653,6 +653,39 @@ def run_preflight():
             "standard schedule validates the full coverage matrix",
             cov_ok and cov_ok2 and cov_ok3, notes)
 
+        s_dev = runner.make_schedule(cov_cfg, six_tasks, 3, seed=2,
+                                     allow_nonstandard=True)
+        ok &= check(
+            "explicit nonstandard override retained in the schedule marker",
+            s_dev["nonstandard"] is True, notes)
+
+        devrep_cfg, _ = build_config(ws, "normal")
+        try:
+            runner.make_schedule(devrep_cfg, [d_a], 0, seed=1,
+                                 allow_nonstandard=True)
+            rep0_ok = False
+        except runner.InfraFailure as exc:
+            rep0_ok = "positive integer" in str(exc)
+        ok &= check(
+            "nonpositive replicate count refused",
+            rep0_ok, notes)
+
+        try:
+            runner.load_config(ws / "no-such-config.json")
+            cfg_ok = False
+        except runner.InfraFailure as exc:
+            cfg_ok = "cannot read config" in str(exc)
+        bad_cfg = ws / "bad-config.json"
+        bad_cfg.write_text("{not json", encoding="utf-8")
+        try:
+            runner.load_config(bad_cfg)
+            cfg_ok = False
+        except runner.InfraFailure as exc:
+            cfg_ok = cfg_ok and "not valid JSON" in str(exc)
+        ok &= check(
+            "config read errors classified as infrastructure failures",
+            cfg_ok, notes)
+
         config, _ = build_config(ws, "normal")
         repo_s, sha_s = make_git_repo(ws, "sched")
         task_s = write_task(ws, "sched", sha_s)
@@ -1390,6 +1423,25 @@ def run_preflight():
             "_sealed-snapshots" in snap_listing
             and snap_res[0].get("snapshots") == str(snap_dir),
             notes)
+        partial_root = ws / "partial-set"
+        partial_snap = partial_root / "external-snapshots"
+        (partial_snap / "a").mkdir(parents=True)
+        (partial_snap / "a" / "index.html").write_bytes(
+            (snap_dir / "a" / "index.html").read_bytes())
+        try:
+            runner.score(snap_cfg, snap_docs, judge, ws / "judge-partialsnap",
+                         scoring_seed=5, manifest_path=snap_manifest_path,
+                         score_task_paths=[str(task_snap)],
+                         task_contexts=snap_ctx, seal_manifest_path=seal_file,
+                         evidence_repos={"mock-repo": str(repo_snap)},
+                         task_snapshots={task_snap.name: str(partial_snap)},
+                         drift_report_path=drift_ok_file)
+            snapset_ok = False
+        except runner.InfraFailure as exc:
+            snapset_ok = "differs from the seal" in str(exc)
+        ok &= check(
+            "incomplete sealed snapshot set refused (enumerated from seal)",
+            snapset_ok, notes)
         try:
             runner.score(snap_cfg, snap_docs, judge, ws / "judge-nodrift",
                          scoring_seed=5, manifest_path=snap_manifest_path,
