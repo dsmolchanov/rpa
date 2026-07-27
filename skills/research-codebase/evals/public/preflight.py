@@ -152,7 +152,10 @@ def run_preflight():
         (snap_dir / "b" / "index.html").write_text(
             "<html>SEALED-SNAPSHOT B</html>\n", encoding="utf-8")
         seal_file = ws / "seal-manifest.json"
-        seal_file.write_text(json.dumps({"files": {
+        seal_file.write_text(json.dumps({"task_contexts": {
+            "task-sched.md": "sealed-context.md",
+            "task-snap.md": "sealed-context.md",
+        }, "files": {
             judge.name: hashlib.sha256(judge.read_bytes()).hexdigest(),
             ctx_file.name: hashlib.sha256(ctx_file.read_bytes()).hexdigest(),
             "external-snapshots/a/index.html": hashlib.sha256(
@@ -959,6 +962,15 @@ def run_preflight():
         ok &= check(
             "judge batch with a different identity refused (no mixing)",
             ident_ok, notes)
+        try:
+            runner.score(config, list(reversed(docs)), judge, resume_out,
+                         scoring_seed=5, allow_unscheduled=True)
+            reorder_ok = False
+        except runner.InfraFailure as exc:
+            reorder_ok = "different identity" in str(exc)
+        ok &= check(
+            "reordered documents on resume refused (ordered identity)",
+            reorder_ok, notes)
         ok &= check(
             "scorer judge role recorded (blind, evidence-free)",
             all(r.get("role") == "scorer" for r in results),
@@ -1080,6 +1092,18 @@ def run_preflight():
         ok &= check(
             "manifest scoring without per-task sealed contexts refused",
             noctx_ok, notes)
+        try:
+            runner.score(config, sched_docs, judge, ws / "judge-swapctx",
+                         scoring_seed=5, manifest_path=manifest_path,
+                         score_task_paths=[str(task_s)],
+                         task_contexts={Path(task_s).name: str(judge)},
+                         seal_manifest_path=seal_file)
+            swap_ok = False
+        except runner.InfraFailure as exc:
+            swap_ok = "not the sealed context" in str(exc)
+        ok &= check(
+            "context not sealed FOR this task refused (association bound)",
+            swap_ok, notes)
         try:
             runner.score(config, sched_docs, judge, ws / "judge-noseal",
                          scoring_seed=5, manifest_path=manifest_path,

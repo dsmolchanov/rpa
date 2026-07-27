@@ -1586,7 +1586,29 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                 "`seal_package_sha256` — a recomputed or altered seal is "
                 "refused"
             )
-        seal_files = json.loads(seal_bytes.decode("utf-8")).get("files", {})
+        seal_doc = json.loads(seal_bytes.decode("utf-8"))
+        seal_files = seal_doc.get("files", {})
+        # The seal binds each task to ITS scoring context: a per-file hash
+        # proves a context is sealed, not that it belongs to this task —
+        # swapped mappings would judge replicates against another task's
+        # ground truth.
+        seal_assoc = seal_doc.get("task_contexts", {})
+        for assoc_doc, ctx_path in context_by_doc.items():
+            assoc_task = Path(task_by_doc[assoc_doc]).name
+            expected_ctx = seal_assoc.get(assoc_task)
+            if not expected_ctx:
+                raise InfraFailure(
+                    f"{assoc_task}: the sealed package records no "
+                    f"task→context association — the seal must bind each "
+                    f"task to its scoring context"
+                )
+            if Path(ctx_path).name != expected_ctx:
+                raise InfraFailure(
+                    f"{assoc_task}: supplied context "
+                    f"`{Path(ctx_path).name}` is not the sealed context "
+                    f"`{expected_ctx}` for this task — swapped contexts "
+                    f"refused"
+                )
         judge_prompt = _read_sealed(judge_prompt_path, seal_files)
         sealed_context_texts = {
             doc_name: _read_sealed(ctx_path, seal_files)
@@ -1708,7 +1730,10 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
         "manifest": str(manifest_path) if manifest_path is not None else None,
         "config_digest": config_digest(config),
         "role": role,
-        "docs": sorted(Path(d).name for d in doc_paths),
+        # ORDERED as supplied: the seeded shuffle operates on the
+        # caller's index order, so a reordered resume is a different
+        # batch — sorting here would let it slip through.
+        "docs": [Path(d).name for d in doc_paths],
     }
     # Batch state is namespaced by role: the scorer pass and the
     # verifier pass over the same documents may share one output
@@ -1745,7 +1770,15 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
 
     for i, doc_index in enumerate(order):
         if i < len(results):
-            continue  # judged before the interruption — never re-judged
+            # Judged before the interruption — never re-judged; the slot
+            # must still match the expected presentation document.
+            prior_doc = Path(results[i].get("doc", "")).name
+            if prior_doc != Path(doc_paths[doc_index]).name:
+                raise InfraFailure(
+                    "resumed batch presentation order mismatch — batch "
+                    "state corrupted or documents reordered"
+                )
+            continue
         doc, doc_text = doc_paths[doc_index], doc_texts[doc_index]
         if Path(doc).name in inconclusive_docs:
             # Task inconclusive per the registered source-drift gate:
