@@ -687,6 +687,32 @@ def run_preflight():
         ok &= check(
             "unsealed holdout task refused (tasks bound to the atomic seal)",
             unsealed_ok, notes)
+        badseal = ws / "seal-garbage.json"
+        badseal.write_bytes(b"{not json")
+        badseal_cfg = json.loads(json.dumps(cov_cfg))
+        badseal_cfg["seal_manifest"] = str(badseal)
+        badseal_cfg["seal_package_sha256"] = hashlib.sha256(
+            b"{not json").hexdigest()
+        try:
+            runner.make_schedule(badseal_cfg, six_tasks, 3, seed=1)
+            badseal_ok = False
+        except runner.InfraFailure as exc:
+            badseal_ok = "not valid UTF-8 JSON" in str(exc)
+        nofiles_bytes = json.dumps({"files": "nope"}).encode("utf-8")
+        nofiles = ws / "seal-nofiles.json"
+        nofiles.write_bytes(nofiles_bytes)
+        nofiles_cfg = json.loads(json.dumps(badseal_cfg))
+        nofiles_cfg["seal_manifest"] = str(nofiles)
+        nofiles_cfg["seal_package_sha256"] = hashlib.sha256(
+            nofiles_bytes).hexdigest()
+        try:
+            runner.make_schedule(nofiles_cfg, six_tasks, 3, seed=1)
+            nofiles_ok = False
+        except runner.InfraFailure as exc:
+            nofiles_ok = "must be an object" in str(exc)
+        ok &= check(
+            "malformed seal manifest classified before dereference",
+            badseal_ok and nofiles_ok, notes)
 
         s_dev = runner.make_schedule(cov_cfg, six_tasks, 3, seed=2,
                                      allow_nonstandard=True)
@@ -835,6 +861,36 @@ def run_preflight():
             manifest4["complete"] is True
             and manifest4["results"][1]["run_id"] != dropped_run
             and runs_aft == runs_b4 + 1,
+            notes)
+        # A run journal without a terminal outcome means the backend may
+        # have executed: neither adoptable nor safely re-runnable.
+        m5 = json.loads(manifest_path.read_text(encoding="utf-8"))
+        kept_run = m5["results"][0]["run_id"]
+        m5["results"] = m5["results"][:1]
+        m5["complete"] = False
+        manifest_path.write_text(json.dumps(m5), encoding="utf-8")
+        cur_rec = json.loads(
+            (ws / "out-sched" / f"run-{kept_run}.json")
+            .read_text(encoding="utf-8"))
+        inprog = dict(cur_rec)
+        inprog["run_id"] = "beefbeefbeef"
+        inprog["status"] = "in_progress"
+        for key in ("accounting", "nodes", "artifact_sha256", "failure"):
+            inprog.pop(key, None)
+        inprog_path = ws / "out-sched" / "run-beefbeefbeef.json"
+        inprog_path.write_text(json.dumps(inprog), encoding="utf-8")
+        try:
+            runner.run_schedule(config, sched_path, repos_map,
+                                ws / "out-sched", [str(task_s)])
+            inprog_ok = False
+        except runner.InfraFailure as exc:
+            inprog_ok = "in-progress run journal" in str(exc)
+        inprog_path.unlink()
+        manifest5 = runner.run_schedule(config, sched_path, repos_map,
+                                        ws / "out-sched", [str(task_s)])
+        ok &= check(
+            "in-progress run journal blocks the schedule (uncertain outcome)",
+            inprog_ok and manifest5["complete"] is True,
             notes)
 
         bad = dict(sched)
@@ -1397,6 +1453,58 @@ def run_preflight():
             pre_ok and len(flaky_res) == 2
             and sm_flaky["scoring_id"] == sid_crash
             and sm_flaky["complete"] is True,
+            notes)
+        bom_doc = ws / "bom-doc.md"
+        bom_doc.write_text(
+            "\ufeff---\nresearcher: Real Name\n---\n\nbody\n",
+            encoding="utf-8")
+        try:
+            runner.assert_blind_scorable(bom_doc)
+            bom_ok = False
+        except runner.InfraFailure as exc:
+            bom_ok = "not anonymized" in str(exc)
+        off_doc = ws / "offset-doc.md"
+        off_doc.write_text(
+            "\n---\ngit_commit: deadbeef\n---\n\nbody\n",
+            encoding="utf-8")
+        try:
+            runner.assert_blind_scorable(off_doc)
+            off_ok = False
+        except runner.InfraFailure as exc:
+            off_ok = "not anonymized" in str(exc)
+        anon_bom = runner.anonymize(
+            "\ufeff---\nresearcher: Real Name\n---\n\nbody\n", "tid")
+        ok &= check(
+            "fingerprints behind BOM/offset frontmatter refused and masked",
+            bom_ok and off_ok
+            and "Real Name" not in anon_bom
+            and "[anonymized:tid]" in anon_bom,
+            notes)
+        pend_out = ws / "judge-batch-pending"
+        p1 = runner.score(config, docs, judge, pend_out, scoring_seed=5,
+                          allow_unscheduled=True)
+        pmp = pend_out / "scoring-scorer-manifest.json"
+        pm = json.loads(pmp.read_text(encoding="utf-8"))
+        pm["complete"] = False
+        pm["results"] = []
+        pmp.write_text(json.dumps(pm), encoding="utf-8")
+        psid = pm["scoring_id"]
+        (pend_out / f"judge-{psid}-0.json").unlink()
+        (pend_out / f"judge-{psid}-0.pending").write_text(
+            "{}", encoding="utf-8")
+        try:
+            runner.score(config, docs, judge, pend_out, scoring_seed=5,
+                         allow_unscheduled=True)
+            pend_ok = False
+        except runner.InfraFailure as exc:
+            pend_ok = "pending judge journal" in str(exc)
+        (pend_out / f"judge-{psid}-0.pending").unlink()
+        p2 = runner.score(config, docs, judge, pend_out, scoring_seed=5,
+                          allow_unscheduled=True)
+        ok &= check(
+            "pending judge journal blocks resume (no silent second session)",
+            pend_ok and len(p2) == 2
+            and p2[1]["session_id"] == p1[1]["session_id"],
             notes)
         atomic_target = ws / "atomic-test.json"
         atomic_target.write_text("old", encoding="utf-8")

@@ -495,6 +495,27 @@ def read_input_bytes(path, what):
         raise InfraFailure(f"cannot read {what} {path}: {exc}") from exc
 
 
+def parse_seal_manifest(seal_bytes, path):
+    """The registered seal manifest is operator-supplied input: decode and
+    parse through the classified boundary, and require `files` to be an
+    object before any dereference."""
+    try:
+        seal_doc = json.loads(seal_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise InfraFailure(
+            f"seal manifest {path} is not valid UTF-8 JSON: {exc}"
+        ) from exc
+    if not isinstance(seal_doc, dict):
+        raise InfraFailure(f"seal manifest {path} must be a JSON object")
+    files = seal_doc.get("files")
+    if not isinstance(files, dict):
+        raise InfraFailure(
+            f"seal manifest {path}: `files` must be an object mapping "
+            f"package-relative paths to sha256 digests"
+        )
+    return seal_doc, files
+
+
 def read_task_text(task_path):
     return read_input_text(task_path, "task file")
 
@@ -959,11 +980,18 @@ def find_new_artifact(worktree, before):
 
 
 def anonymize(text, run_id):
+    # Frontmatter is located at the first non-blank line after stripping a
+    # BOM, never assumed at line 0: a byte-order mark or leading blank
+    # lines must not let fingerprint keys slip past masking.
+    text = text.lstrip("\ufeff")
     lines = text.splitlines()
-    if lines and lines[0].strip() == "---":
-        for idx in range(1, len(lines)):
+    start = 0
+    while start < len(lines) and not lines[start].strip():
+        start += 1
+    if start < len(lines) and lines[start].strip() == "---":
+        for idx in range(start + 1, len(lines)):
             if lines[idx].strip() == "---":
-                for j in range(1, idx):
+                for j in range(start + 1, idx):
                     key = lines[j].split(":", 1)[0].strip().lower()
                     if key in FINGERPRINT_KEYS:
                         lines[j] = f"{key}: '[anonymized:{run_id}]'"
@@ -1113,6 +1141,14 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
                 all_nodes.extend(partial)
                 raise
 
+        # Durable journal BEFORE the backend launches: if the harness dies
+        # after the session completes but before the terminal record is
+        # written, the schedule finds this in-progress marker (with its
+        # digest bindings) and blocks instead of silently executing an
+        # extra observed replicate.
+        record["status"] = "in_progress"
+        atomic_write_text(out / f"run-{run_id}.json",
+                          json.dumps(record, indent=2) + "\n")
         stdout = _spawn(prompt)
         session_id, nodes, response = parse_transcript(stdout)
         validate_models(nodes, arm["model"])
@@ -1375,7 +1411,7 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
                 "`seal_package_sha256` — a recomputed or altered seal is "
                 "refused"
             )
-        sealed_files = json.loads(seal_bytes.decode("utf-8")).get("files", {})
+        _, sealed_files = parse_seal_manifest(seal_bytes, seal_path)
         for task in tasks:
             if sealed_files.get(Path(task).name) != task_digests[task]:
                 raise InfraFailure(
@@ -1590,25 +1626,42 @@ def run_schedule(config, schedule_path, repos, output_dir, task_paths):
         # orphan record (terminal status, this entry's arm+task, not yet
         # referenced by the manifest) is adopted instead of launched again.
         orphans = []
+        inflight = []
         for record_path in sorted(out.glob("run-*.json")):
             if record_path.name.count("-") != 1:
                 continue
             orphan = load_json_object(record_path, "run record")
-            if (orphan.get("run_id") not in referenced_runs
-                    and orphan.get("arm") == entry["arm"]
-                    and orphan.get("task") == entry["task"]
-                    and orphan.get("status") in ("completed",
-                                                 "workflow_failure")
+            if (orphan.get("run_id") in referenced_runs
+                    or orphan.get("arm") != entry["arm"]
+                    or orphan.get("task") != entry["task"]
                     # Stale records are not orphans: adoption requires the
                     # record's own immutable bindings to match the current
                     # schedule — same task contents (digest covers the
                     # pinned target-sha in frontmatter) and same registered
                     # runtime configuration.
-                    and orphan.get("task_sha256")
-                    == schedule["task_digests"][entry["task"]]
-                    and orphan.get("config_digest")
-                    == schedule["config_digest"]):
+                    or orphan.get("task_sha256")
+                    != schedule["task_digests"][entry["task"]]
+                    or orphan.get("config_digest")
+                    != schedule["config_digest"]):
+                continue
+            if orphan.get("status") in ("completed", "workflow_failure"):
                 orphans.append(orphan)
+            elif orphan.get("status") == "in_progress":
+                # The pre-spawn journal: the backend may have executed
+                # without leaving a terminal outcome. Neither adoptable nor
+                # safely re-runnable — the schedule blocks for
+                # investigation.
+                inflight.append(record_path.name)
+        if inflight:
+            write_manifest(False)
+            raise InfraFailure(
+                f"schedule entry {entry['index']} ({entry['arm']} / "
+                f"{entry['task']}) has in-progress run journal(s) without "
+                f"a terminal outcome ({', '.join(sorted(inflight))}) — the "
+                f"backend may have executed; investigate, then delete the "
+                f"journal record(s) to explicitly authorize re-running "
+                f"this entry"
+            )
         if len(orphans) > 1:
             raise InfraFailure(
                 f"schedule entry {entry['index']} ({entry['arm']} / "
@@ -1719,17 +1772,21 @@ def assert_blind_scorable(doc_path):
             f"anonymized copy (`run-<id>-anon.md`)"
         )
     text = read_input_text(path, "scoring document")
-    lines = text.splitlines()
-    if lines and lines[0].strip() == "---":
-        for idx in range(1, len(lines)):
-            if lines[idx].strip() == "---":
-                break
-            key = lines[idx].split(":", 1)[0].strip().lower()
-            if key in FINGERPRINT_KEYS and "[anonymized:" not in lines[idx]:
-                raise InfraFailure(
-                    f"{doc_path}: fingerprint key `{key}` is not anonymized "
-                    f"— blind scoring refused"
-                )
+    # Fingerprint keys are scanned across the WHOLE document, not only a
+    # frontmatter block assumed at line 0: a BOM or blank line before the
+    # opening `---` must not smuggle researcher/commit/branch identity
+    # past the blind judge. Overmatching refuses a scorable document
+    # (operator re-anonymizes); undermatching unblinds the judge.
+    key_re = re.compile(
+        "^\\ufeff?\\s*(" + "|".join(FINGERPRINT_KEYS) + ")\\s*:",
+        re.IGNORECASE)
+    for line in text.splitlines():
+        match = key_re.match(line)
+        if match and "[anonymized:" not in line:
+            raise InfraFailure(
+                f"{doc_path}: fingerprint key `{match.group(1).lower()}` "
+                f"is not anonymized — blind scoring refused"
+            )
     for match in re.finditer(
         r"^\*\*(Date|Researcher|Git Commit|Branch)\*\*:(.*)$", text, re.MULTILINE
     ):
@@ -1979,8 +2036,8 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                 "`seal_package_sha256` — a recomputed or altered seal is "
                 "refused"
             )
-        seal_doc = json.loads(seal_bytes.decode("utf-8"))
-        seal_files = seal_doc.get("files", {})
+        seal_doc, seal_files = parse_seal_manifest(seal_bytes,
+                                                   seal_manifest_path)
         # The seal binds each task to ITS scoring context: a per-file hash
         # proves a context is sealed, not that it belongs to this task —
         # swapped mappings would judge replicates against another task's
@@ -2233,7 +2290,22 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                 )
             results.append(orphan)
             write_scoring_manifest(False)
+            (out / f"judge-{scoring_id}-{i}.pending").unlink(missing_ok=True)
             continue
+        pending_path = out / f"judge-{scoring_id}-{i}.pending"
+        if pending_path.exists():
+            # The pre-launch journal survived without a judge record: a
+            # judge session may have launched and its outcome was lost.
+            # One score per document forbids silently launching another
+            # nondeterministic session — the batch blocks for
+            # investigation.
+            raise InfraFailure(
+                f"pending judge journal for slot {i} without a judge "
+                f"record ({pending_path.name}) — a judge session may have "
+                f"launched and its outcome was lost; investigate, then "
+                f"delete the journal to explicitly authorize re-judging "
+                f"this slot"
+            )
         doc, doc_text = doc_paths[doc_index], doc_texts[doc_index]
         if Path(doc).name in inconclusive_docs:
             # Task inconclusive per the registered source-drift gate:
@@ -2306,27 +2378,53 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             )
         prompt_parts.append("---\n\n" + doc_text)
         prompt = "\n\n".join(prompt_parts)
+        # Durable journal BEFORE the judge launches: if the harness dies
+        # after the session returns but before the judge record lands, the
+        # resume finds this marker and blocks instead of silently running
+        # a second nondeterministic session for the same document. An
+        # in-process failure retires the journal on its way out — the
+        # outcome is known (invalid session), so resume re-executes
+        # cleanly.
+        atomic_write_text(pending_path, json.dumps({
+            "doc": str(doc),
+            "presentation_index": i,
+            "scoring_id": scoring_id,
+            "role": role,
+        }, indent=2) + "\n")
         try:
-            stdout = spawn_session(
-                sandboxed_cmd, prompt, str(workdir), env,
-                config["timeout_seconds"]
-            )
-        except WorkflowFailure as wf:
-            # Judges have no workflow outcome: a timed-out judge session
-            # is an invalid session (infrastructure) — resume the batch
-            # and it re-executes only the unfinished documents.
-            raise InfraFailure(
-                f"judge session failed ({wf}) — invalid judge session; "
-                f"resume the scoring batch to re-execute it"
-            ) from wf
-        finally:
-            if ev_repo:
-                remove_worktree(ev_repo, workdir)
-        session_id, nodes, response = parse_transcript(stdout)
-        if not response.strip():
-            raise InfraFailure(f"judge session {session_id} returned no response text")
-        validate_models(nodes, judge_model)
-        effort_capture = validate_efforts(nodes, judge_effort)
+            try:
+                stdout = spawn_session(
+                    sandboxed_cmd, prompt, str(workdir), env,
+                    config["timeout_seconds"]
+                )
+            except WorkflowFailure as wf:
+                # Judges have no workflow outcome: a timed-out judge
+                # session is an invalid session (infrastructure) — resume
+                # the batch and it re-executes only the unfinished
+                # documents.
+                raise InfraFailure(
+                    f"judge session failed ({wf}) — invalid judge session; "
+                    f"resume the scoring batch to re-execute it"
+                ) from wf
+            finally:
+                if ev_repo:
+                    remove_worktree(ev_repo, workdir)
+        except InfraFailure:
+            pending_path.unlink(missing_ok=True)
+            raise
+        try:
+            session_id, nodes, response = parse_transcript(stdout)
+            if not response.strip():
+                raise InfraFailure(
+                    f"judge session {session_id} returned no response text")
+            validate_models(nodes, judge_model)
+            effort_capture = validate_efforts(nodes, judge_effort)
+        except InfraFailure:
+            # Post-spawn validation failed in-process: the outcome is
+            # known (invalid judge session), so the journal is retired and
+            # resume re-executes this slot cleanly.
+            pending_path.unlink(missing_ok=True)
+            raise
         result = {
             "doc": str(doc),
             "session_id": session_id,
@@ -2356,6 +2454,7 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                           json.dumps(result, indent=2) + "\n")
         results.append(result)
         write_scoring_manifest(False)
+        pending_path.unlink(missing_ok=True)
     judged = [r for r in results if not r.get("inconclusive")]
     if len({r["session_id"] for r in judged}) != len(judged) or len(
         {r["profile"] for r in judged}
