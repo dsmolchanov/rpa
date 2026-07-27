@@ -559,6 +559,16 @@ def check_artifact_validator(root, errors):
             "artifact validator accepted a document without the body "
             "metadata block (**Date**/**Researcher**/...) — template "
             "enforcement is broken")
+    bodymeta = fixtures / "artifact-bodymeta-invalid.md"
+    if not bodymeta.is_file():
+        errors.append("artifact-bodymeta-invalid.md fixture missing")
+        return
+    kb = _sp.run([_sys.executable, str(validator), str(bodymeta)],
+                 capture_output=True)
+    if kb.returncode == 0:
+        errors.append(
+            "artifact validator accepted body metadata disagreeing with "
+            "the frontmatter — duplicated-field cross-checks are broken")
 
 
 def validate(root, exclude_fixtures=True):

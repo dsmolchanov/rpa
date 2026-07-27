@@ -1227,7 +1227,7 @@ def run_preflight():
         script_date_doc.write_text(
             fn_doc.read_text(encoding="utf-8").replace(
                 "date: 2026-07-27T00:00:00Z",
-                "date: '2026-07-26 00:00:00 UTC'", 1),
+                "date: '2026-07-27 00:00:00 UTC'", 1),
             encoding="utf-8")
         script_date_ok = not runner.artifact_validator.validate(
             script_date_doc)

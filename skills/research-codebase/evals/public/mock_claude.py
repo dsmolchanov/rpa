@@ -41,7 +41,7 @@ last_updated_by: Mock Researcher
 
 # Research: Mock topic
 
-**Date**: 2026-07-26
+**Date**: 2026-07-26T00:00:00Z
 **Researcher**: Mock Researcher
 **Git Commit**: deadbeef
 **Branch**: mock-branch

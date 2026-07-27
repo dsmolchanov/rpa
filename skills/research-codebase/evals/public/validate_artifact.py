@@ -354,6 +354,37 @@ def validate(path, expected_git_commit=None, expected_repository=None,
                 errors.append(
                     "body `**Git Commit**` disagrees with the "
                     "frontmatter `git_commit`")
+    for label in ("Date", "Researcher", "Branch"):
+        body_val = body_meta.get(label, "")
+        if not body_val:
+            continue  # absence is already reported above
+        if _anonymized(body_val):
+            if not allow_anonymized:
+                errors.append(
+                    f"body `**{label}**` carries an anonymization marker "
+                    f"in a raw artifact")
+            continue
+        if label == "Date":
+            if not DATE_RE.match(body_val):
+                errors.append(
+                    f"body `**Date**` must be an ISO date-time with "
+                    f"timezone, got `{body_val}`")
+            fm_date = str(meta.get("date", "") or "").strip()
+            # Representations of one instant differ (Z vs +00:00 vs
+            # named zone): agreement is checked at day precision.
+            if (fm_date and not _anonymized(fm_date)
+                    and fm_date[:10] != body_val[:10]):
+                errors.append(
+                    "body `**Date**` disagrees with the frontmatter "
+                    "`date` (different day)")
+        else:
+            fm_key = label.lower()
+            fm_val = str(meta.get(fm_key, "") or "").strip()
+            if (fm_val and not _anonymized(fm_val)
+                    and fm_val != body_val):
+                errors.append(
+                    f"body `**{label}**` disagrees with the frontmatter "
+                    f"`{fm_key}`")
     body_repo = body_meta.get("Repository", "")
     if body_repo and not (allow_anonymized and _anonymized(body_repo)):
         if expected_repository is not None and (
