@@ -386,7 +386,18 @@ sanitized examples; raw run artifacts stay in a private location.
 1. CI validation gate — **done** (merged with the v0.2.1 prerequisites PR;
    `docs-validate` green in CI).
 2. Pass bar — **done** (registered in this document before any runs).
-3. Atomic seal — **pending**; must be authored in a separate session.
+3. Atomic seal — **done** (2026-07-27, authored in a separate
+   uncontaminated session per the protocol; only the package hash and
+   task basenames returned to this context):
+   `seal_package_sha256 =
+   e611ada9427954e34b597e093d7da35acb278d534dbdf54dffef72700a5da95c`;
+   sealed holdout tasks: `holdout-1.md`, `holdout-2.md`,
+   `holdout-3.md`, `holdout-4.md`, `holdout-5.md`, `holdout-6.md`
+   (six tasks, matching the archetype coverage design). The sealed
+   package (manifest, ground truth, snapshots, rubric, judge
+   configurations, designated third-arm tasks) lives in the private
+   eval workspace; its content remains unseen by this implementation
+   context and stays sealed until Sequence step 5.
 4. Skeleton + `research-v2-*` copies — **done** (v0.2.1 prerequisites PR).
 5. Eval-runner — harness landed at
    `skills/research-codebase/evals/public/` (`runner.py`, `mock_claude.py`,
@@ -395,9 +406,11 @@ sanitized examples; raw run artifacts stay in a private location.
    `evals/public/README.md`). Per-node effort capture is bounded by the
    backend stream schema; the two-mode effort policy in prerequisite 5
    above is the authoritative requirement (revised 2026-07-26 in response
-   to review). The **real-backend preflight** on the throwaway task
-   remains required once before baseline runs and must demonstrate the
-   effort pin propagates to the whole session tree.
+   to review). The **real-backend preflight** on the throwaway task —
+   **done 2026-07-27** (see the formal-preflight record after the
+   candidate-freeze section): one sandboxed real run per arm under the
+   full pinned configuration, effort pinned on every backend command
+   line with `command_pin` capture across the session tree.
 
 **Candidate status (2026-07-27):** the behavioral rewrite landed on the
 owner's instruction («продолжай по очереди все»): kernel `SKILL.md`
@@ -406,9 +419,10 @@ to `references/agent-contracts/`, `research-v2-*` reduced to thin
 adapters, `commands/research_codebase.md` reduced to the thin
 compatibility wrapper (opus parity pin retained), fleet routing isolated
 in `references/fleet-routing.md` for the ablation build, Quick Install
-copies `skills/`, plugin version bumped. **Not yet frozen:** dev-set
-tuning runs (Sequence step 3) and the candidate freeze (step 4) remain
-ahead; no holdout material has been seen by this implementation context.
+copies `skills/`, plugin version bumped. **Frozen 2026-07-27** after
+dev-set tuning round 1 (see the freeze record before the Sequence
+section); no holdout material has been seen by this implementation
+context.
 
 **Dev set status (Sequence step 2):** authored. Public tasks dev-3/dev-4
 (target: this repo) live at `skills/research-codebase/evals/public/dev-set/`;
@@ -462,6 +476,120 @@ hard blockers before any scored run. (The 2026-07-27 mechanical CLI
 shakedown validated the integration path — namespaced entrypoint, model
 pin resolution, stream parsing — but does not substitute for the formal
 preflight, which still stands.)
+
+**Candidate freeze (Sequence step 4, recorded 2026-07-27, owner
+instruction «давай, шаг 4»):**
+
+- **Frozen candidate SHA:** `b731f06cdff5f38c0fa4c5aa64f93277d69e741d`
+  (master merge of the dev-set tuning PR — the last behavioral change;
+  later commits are protocol records only).
+- **Installation artifacts** are built deterministically by
+  `skills/research-codebase/evals/public/build_installs.py` (pinned
+  SHAs inside; rebuild reproduces identical trees) and registered by
+  the tree hashes the eval-runner verifies before every run:
+  - baseline (frozen `a7de5f6` + recorded common overlay — `@AGENTS.md`
+    import line, current `scripts/spec_metadata.sh`):
+    `2762bf04e9ea82fec520906a0db0382eadff5c99cada5b44ba2f1c49a3e7b28c`
+  - candidate (frozen tree verbatim):
+    `5638b81633610a68192cc5d03dba4d1022175aa1980b27a209b3114d4c4d126c`
+  - ablation (candidate minus the six `research-v2-*` adapters and
+    `references/fleet-routing.md`; runner-enforced `forbid_subagents`):
+    `a1d44b131ebd5d858756280454b9f7f33cb79a4f13d034b2004d5993b21e9b57`
+- **Pre-registered shared runtime configuration** (identical across
+  arms; installation content is the only arm difference):
+  model `claude-opus-5` (the resolution of the command wrapper's
+  `model: opus` pin, confirmed against the real CLI 2026-07-27; the
+  pin overrides the CLI `--model`, so the registered value is the
+  pin's resolution), effort `high` (pinned on the backend command
+  line via `{effort}`), entrypoint `/rpa:research_codebase`,
+  `backend_cmd = ["claude", "--model", "claude-opus-5", "--effort",
+  "{effort}", "--plugin-dir", "{installation}", "--permission-mode",
+  "acceptEdits", "--verbose"]`, backend version pinned at
+  `2.1.220 (Claude Code)` (probed before every run),
+  `timeout_seconds 3600`, `max_infra_retries 2`,
+  `workflow_abort_exit_codes []` (any registration of real abort
+  codes happens at the formal preflight, before any scored run);
+  judge sessions mount-free at `judge_model opus` /
+  `judge_effort high`; 3 replicates per arm per task in randomized
+  interleaved order (unchanged from the registered design);
+  `sandbox_cmd = ["python3",
+  "<orchestrating-checkout>/skills/research-codebase/evals/public/ns_sandbox.py",
+  "--confine-to", "{workdir}", "--profile", "{profile}", "--"]` —
+  `ns_sandbox.py` (committed alongside this record) confines every
+  evaluated and judge session via util-linux `unshare` (user + mount
+  namespaces) and a chroot assembled on a private tmpfs from an
+  ALLOWLIST: read-write only the run's worktree and its clean profile
+  (plus fresh private `/tmp` and `HOME` tmpfs); read-only only the
+  OS/toolchain surface (`/usr /bin /sbin /lib* /etc /opt`), the git
+  common directory backing the worktree (derived inside the wrapper
+  from `workdir/.git`; needed by the metadata script's git calls), the
+  environment's TLS-proxy CA bundle (`HOME/.ccr`), and the backend
+  CLI's own credential directory (from
+  `CLAUDE_SESSION_INGRESS_TOKEN_FILE`, when the host authenticates by
+  file). Everything else on the host — other checkouts, sealed
+  packages, ground truth, manifests, prior run outputs — is ABSENT
+  from the session's mount tree, not merely read-only (revised in
+  review: an earlier read-only rbind of `/` left host paths readable).
+  The wrapper was validated at the formal real-backend preflight
+  below; the sandbox script lives harness-side (the orchestrating
+  checkout, like `runner.py`), not inside the frozen installation
+  trees, so the registered hashes are unaffected.
+
+**Formal real-backend preflight (recorded 2026-07-27, re-run after the
+sandbox revision; the last gate before scored runs — now passed):** one
+sandboxed real run per arm on the throwaway task (retargeted to the
+frozen `b731f06`; never a dev or holdout task), under the full
+pre-registered configuration above with the final allowlist wrapper.
+Mechanics proven on all three arms: registered installation hashes
+verified before each run, `ns_sandbox.py` wired around every session
+(probes: writes outside the two rw surfaces fail; a sealed-package
+stand-in next to the worktree, `/workspace`, and `/home/user` are
+INVISIBLE from inside; git and `spec_metadata.sh` work in the confined
+worktree; CLI auth works through the bound credential directory), model
+parity `claude-opus-5` on every transcript node, effort pinned on the
+command line with `command_pin` capture (the real stream schema carries
+no per-node effort field — the registered two-mode policy), both stream
+schemas parsed with full tree-wide token accounting, and the artifact
+gate enforced uniformly. The wrapper's confinement was hardened seven
+times in review (host paths absent rather than read-only; recursive
+read-only covering child mounts such as container /etc file mounts
+plus a fresh private /dev/shm hiding the host's shared tmpfs; a
+private PID namespace — `unshare -rmpf --kill-child` — with a fresh
+`/proc` that FAILS CLOSED rather than falling back to a host bind
+that would re-expose sibling process cmdlines; credential FILES bound
+individually instead of their parent directory, at every path the CLI
+can name them under — the environment's possibly-symlinked path and
+its resolved target; the operator clone's git directory replaced by a
+PRIVATE pinned-closure repository — exactly the sealed commit fetched
+into a fresh bare store, no refs or reflogs beyond it, so `git log
+--all` / `git cat-file --batch-all-objects` cannot reach history
+newer or more private than the pin; commits newer than the pin
+resolve to `bad object`). The pinned store lives INSIDE the worktree
+(`.pinned-git`, read-only via a namespace-local self-bind, excluded
+from `git status`): the backend CLI's permission layer blocks git
+metadata outside the session's allowed directories (the series-5 runs
+surfaced exactly that — sessions reported git unavailable — and were
+re-executed after the fix), and the runner's worktree removal cleans
+the store with the run, so no repository content persists on the host
+outside the run's own workspace. The pinned closure is bounded by the
+operator clone's completeness: a partial/shallow operator clone
+yields a correspondingly partial closure (never more). Per-arm runs
+were re-executed after every revision. Final-wrapper outcomes (series
+7): candidate **completed** (244 s) and ablation **completed** (297
+s, **zero subagents**: the pre-registered no-subagent policy held);
+baseline mechanics green (git metadata correct through the pinned
+store), artifact gate-rejected on legacy formatting in this
+replicate. **Recorded observation (six formatting-relevant baseline
+replicates across the preflight series):** legacy formatting
+discipline is VARIABLE — rejected / passed / rejected / passed /
+rejected / rejected (backticked body metadata values, improvised
+branch prose, dates without a time component) — so gate-failed
+baseline replicates are a realistic holdout outcome (3 of 6 here). The gate is pre-registered and uniform across arms and is NOT
+adjusted post-freeze; any protocol amendment (e.g. separate judging of
+gate-failed artifacts' content) is an owner decision and would have to
+be registered before Sequence step 5 unseals the holdout. No real
+workflow-abort exit codes were observed; `workflow_abort_exit_codes`
+stays `[]` as registered.
 
 ## Sequence
 
