@@ -386,7 +386,18 @@ sanitized examples; raw run artifacts stay in a private location.
 1. CI validation gate — **done** (merged with the v0.2.1 prerequisites PR;
    `docs-validate` green in CI).
 2. Pass bar — **done** (registered in this document before any runs).
-3. Atomic seal — **pending**; must be authored in a separate session.
+3. Atomic seal — **done** (2026-07-27, authored in a separate
+   uncontaminated session per the protocol; only the package hash and
+   task basenames returned to this context):
+   `seal_package_sha256 =
+   e611ada9427954e34b597e093d7da35acb278d534dbdf54dffef72700a5da95c`;
+   sealed holdout tasks: `holdout-1.md`, `holdout-2.md`,
+   `holdout-3.md`, `holdout-4.md`, `holdout-5.md`, `holdout-6.md`
+   (six tasks, matching the archetype coverage design). The sealed
+   package (manifest, ground truth, snapshots, rubric, judge
+   configurations, designated third-arm tasks) lives in the private
+   eval workspace; its content remains unseen by this implementation
+   context and stays sealed until Sequence step 5.
 4. Skeleton + `research-v2-*` copies — **done** (v0.2.1 prerequisites PR).
 5. Eval-runner — harness landed at
    `skills/research-codebase/evals/public/` (`runner.py`, `mock_claude.py`,
