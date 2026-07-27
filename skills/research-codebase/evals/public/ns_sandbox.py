@@ -116,7 +116,13 @@ def build_pinned_gitdir(workdir, common):
     head = subprocess.run(
         ["git", "-C", workdir, "rev-parse", "HEAD"],
         capture_output=True, text=True, check=True).stdout.strip()
-    private = tempfile.mkdtemp(prefix="pinned-git-", dir="/dev/shm")
+    # The store lives INSIDE the worktree: the runner's worktree
+    # removal cleans it with the run, so nothing accumulates on the
+    # host and no repository content persists outside the run's own
+    # workspace (a host-side scratch location like /dev/shm would
+    # outlive the mount namespace).
+    private = os.path.join(workdir, PINNED_GIT_NAME)
+    os.makedirs(private, exist_ok=False)
     run_quiet = dict(check=True, capture_output=True)
     subprocess.run(["git", "init", "--bare", "--quiet", private],
                    **run_quiet)
@@ -144,6 +150,11 @@ def build_pinned_gitdir(workdir, common):
     with open(os.path.join(info_dir, "exclude"), "a",
               encoding="utf-8") as fh:
         fh.write("/" + PINNED_GIT_NAME + "/\n")
+    # The worktree's replacement `.git` file — cleaned up with the
+    # store when the runner removes the worktree.
+    with open(os.path.join(private, "worktree-dotgit"), "w",
+              encoding="utf-8") as fh:
+        fh.write(f"gitdir: {private}\n")
     return private, head
 
 
@@ -237,17 +248,33 @@ def main():
     # bind here.
     ingress = os.environ.get("CLAUDE_SESSION_INGRESS_TOKEN_FILE")
     if ingress and os.path.isfile(ingress):
-        ingress = os.path.realpath(ingress)
-        cred_files = [ingress,
-                      os.path.join(os.path.dirname(ingress),
-                                   ".oauth_token")]
-        for cred in cred_files:
-            if not os.path.isfile(cred):
+        # The CLI opens the paths AS NAMED in its environment: bind
+        # each credential file at every path it is reachable under —
+        # the environment's own (possibly symlinked) path and its
+        # resolved target — or a symlinked token under the private
+        # /tmp or fresh HOME would dangle inside the chroot.
+        cred_paths = set()
+        for base in (ingress, os.path.realpath(ingress)):
+            cred_paths.add(base)
+            sibling = os.path.join(os.path.dirname(base),
+                                   ".oauth_token")
+            if os.path.isfile(sibling):
+                cred_paths.add(sibling)
+                cred_paths.add(os.path.realpath(sibling))
+        for cred in sorted(cred_paths):
+            src = os.path.realpath(cred)
+            if not os.path.isfile(src):
                 continue
             dest = newroot + cred
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            open(dest, "w").close()
-            mount("--bind", cred, dest)
+            try:
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                if not os.path.lexists(dest):
+                    open(dest, "w").close()
+            except OSError:
+                # Parent is on a read-only surface: the path is
+                # already carried by an allowlisted bind.
+                pass
+            mount("--bind", src, dest)
             mount("--bind", "-o", "remount,ro", dest)
 
     common = git_common_dir(workdir)
@@ -261,21 +288,16 @@ def main():
         mount("--rbind", rw_path, dest)
 
     if pinned_git is not None:
-        # Mount the pinned-closure git directory read-only INSIDE the
-        # worktree and rewire the worktree's `.git` file to it — a FILE
-        # bind inside this mount namespace only, so the operator's
-        # worktree wiring outside the sandbox is untouched.
-        pinned_mount = workdir + "/" + PINNED_GIT_NAME
-        bind_ro_dest = newroot + pinned_mount
-        os.makedirs(bind_ro_dest, exist_ok=True)
-        mount("--rbind", pinned_git, bind_ro_dest)
-        mount("--bind", "-o", "remount,ro", bind_ro_dest)
-        gitfile = tempfile.NamedTemporaryFile(
-            mode="w", suffix=".gitfile", delete=False,
-            dir="/dev/shm", encoding="utf-8")
-        gitfile.write(f"gitdir: {pinned_mount}\n")
-        gitfile.close()
-        mount("--bind", gitfile.name, newroot + workdir + "/.git")
+        # The store already sits inside the worktree bind; make it
+        # read-only in this namespace (self-bind + remount) and rewire
+        # the worktree's `.git` file to it — a FILE bind inside this
+        # mount namespace only, so the operator's worktree wiring
+        # outside the sandbox is untouched.
+        pinned_dest = newroot + pinned_git
+        mount("--bind", pinned_dest, pinned_dest)
+        mount("--bind", "-o", "remount,ro", pinned_dest)
+        mount("--bind", os.path.join(pinned_git, "worktree-dotgit"),
+              newroot + workdir + "/.git")
 
     cwd = os.getcwd()
     os.chroot(newroot)
