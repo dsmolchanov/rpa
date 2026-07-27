@@ -354,13 +354,23 @@ def run_preflight():
             and "{installation}" in record.get("failure", ""),
             notes)
 
+        dummy_tasks = []
+        for c in "abcdef":
+            dt = ws / f"t-{c}.md"
+            dt.write_text(
+                f"---\ntask-id: dummy-{c}\ntarget-repo: mock-repo\n"
+                f"target-sha: {'0' * 40}\n---\n\n## Task prompt\n\nDummy {c}.\n",
+                encoding="utf-8")
+            dummy_tasks.append(str(dt))
+        d_a, d_b, d_c = dummy_tasks[:3]
+
         config, _ = build_config(ws, "normal")
         config["arms"]["second"] = dict(config["arms"]["mock"],
                                         forbid_subagents=True,
-                                        schedule_tasks=["t-a.md", "t-b.md"])
-        s1 = runner.make_schedule(config, ["t-a.md", "t-b.md", "t-c.md"], 3,
+                                        schedule_tasks=[d_a, d_b])
+        s1 = runner.make_schedule(config, [d_a, d_b, d_c], 3,
                                   seed=42, allow_nonstandard=True)
-        s2 = runner.make_schedule(config, ["t-a.md", "t-b.md", "t-c.md"], 3,
+        s2 = runner.make_schedule(config, [d_a, d_b, d_c], 3,
                                   seed=42, allow_nonstandard=True)
         cell_counts = {}
         for entry in s1["entries"]:
@@ -370,16 +380,16 @@ def run_preflight():
             "pre-registered schedule balanced, scoped, seed-deterministic",
             s1 == s2
             and len(s1["entries"]) == 15
-            and cell_counts == {("mock", "t-a.md"): 3, ("mock", "t-b.md"): 3,
-                                ("mock", "t-c.md"): 3, ("second", "t-a.md"): 3,
-                                ("second", "t-b.md"): 3},
+            and cell_counts == {("mock", d_a): 3, ("mock", d_b): 3,
+                                ("mock", d_c): 3, ("second", d_a): 3,
+                                ("second", d_b): 3},
             notes)
 
         config, _ = build_config(ws, "normal")
         config["arms"]["second"] = dict(config["arms"]["mock"],
-                                        schedule_tasks=["t-a.md"])
+                                        schedule_tasks=[d_a])
         try:
-            runner.make_schedule(config, ["t-a.md", "t-b.md"], 3, seed=42,
+            runner.make_schedule(config, [d_a, d_b], 3, seed=42,
                                  allow_nonstandard=True)
             scope_ok = False
         except runner.InfraFailure as exc:
@@ -390,7 +400,7 @@ def run_preflight():
 
         config, _ = build_config(ws, "normal")
         try:
-            runner.make_schedule(config, ["t-a.md"], 2, seed=1)
+            runner.make_schedule(config, [d_a], 2, seed=1)
             rep_ok = False
         except runner.InfraFailure as exc:
             rep_ok = "replicates" in str(exc)
@@ -400,7 +410,7 @@ def run_preflight():
 
         config, _ = build_config(ws, "normal")
         try:
-            runner.make_schedule(config, ["t-a.md"], 3, seed=1)
+            runner.make_schedule(config, [d_a], 3, seed=1)
             topo_ok = False
         except runner.InfraFailure as exc:
             topo_ok = "three-arm topology" in str(exc)
@@ -413,13 +423,13 @@ def run_preflight():
         config["arms"]["baseline"] = dict(base_arm)
         config["arms"]["candidate"] = dict(base_arm)
         config["arms"]["ablation"] = dict(base_arm, forbid_subagents=True)
-        six_tasks = [f"t-{c}.md" for c in "abcdef"]
+        six_tasks = list(dummy_tasks)
         try:
             runner.make_schedule(config, six_tasks, 3, seed=1)
             abl_ok = False
         except runner.InfraFailure as exc:
             abl_ok = "schedule_tasks" in str(exc)
-        config["arms"]["ablation"]["schedule_tasks"] = ["t-a.md", "t-b.md"]
+        config["arms"]["ablation"]["schedule_tasks"] = [d_a, d_b]
         s_abl = runner.make_schedule(config, six_tasks, 3, seed=1)
         ok &= check(
             "ablation arm requires explicit two-task scoping (standard 3-arm ok)",
@@ -429,12 +439,12 @@ def run_preflight():
             notes)
 
         try:
-            runner.make_schedule(config, ["t-a.md", "t-b.md"], 3, seed=1)
+            runner.make_schedule(config, [d_a, d_b], 3, seed=1)
             six_ok = False
         except runner.InfraFailure as exc:
             six_ok = "distinct holdout tasks" in str(exc)
         try:
-            runner.make_schedule(config, six_tasks[:5] + ["t-a.md"], 3, seed=1)
+            runner.make_schedule(config, six_tasks[:5] + [d_a], 3, seed=1)
             six_ok = False
         except runner.InfraFailure as exc:
             six_ok = six_ok and "duplicate task paths" in str(exc)
@@ -447,7 +457,7 @@ def run_preflight():
         config["arms"]["baseline"] = dict(base_arm)
         config["arms"]["canddate"] = dict(base_arm)
         config["arms"]["ablation"] = dict(base_arm, forbid_subagents=True,
-                                          schedule_tasks=["t-a.md", "t-b.md"])
+                                          schedule_tasks=[d_a, d_b])
         try:
             runner.make_schedule(config, six_tasks, 3, seed=1)
             roles_ok = False
@@ -544,6 +554,19 @@ def run_preflight():
         ok &= check(
             "schedule entries routed to their task's registered clone",
             route_ok, notes)
+
+        original_task_bytes = Path(task_s).read_bytes()
+        Path(task_s).write_bytes(original_task_bytes + b"\n<!-- edited -->\n")
+        try:
+            runner.run_schedule(config, sched_path, repos_map,
+                                ws / "out-sched-taskdrift", [str(task_s)])
+            tdrift_ok = False
+        except runner.InfraFailure as exc:
+            tdrift_ok = "reconstructed" in str(exc)
+        Path(task_s).write_bytes(original_task_bytes)
+        ok &= check(
+            "schedule bound to task contents (edited task refused)",
+            tdrift_ok, notes)
 
         config, _ = build_config(ws, "normal")
         task_ret = write_task(ws, "retries", par_sha)
@@ -883,6 +906,29 @@ def run_preflight():
         ok &= check(
             "scored artifacts bound to the content digest recorded at run time",
             digest_ok, notes)
+        drift_cfg, _ = build_config(ws, "normal")
+        drift_cfg["timeout_seconds"] = 999
+        try:
+            runner.score(drift_cfg, sched_docs, judge, ws / "judge-cfgdrift",
+                         scoring_seed=5, manifest_path=manifest_path)
+            cdrift_ok = False
+        except runner.InfraFailure as exc:
+            cdrift_ok = "config digest mismatch" in str(exc)
+        ok &= check(
+            "runtime-config drift refused before scoring",
+            cdrift_ok, notes)
+        Path(task_s).write_bytes(original_task_bytes + b"\nX\n")
+        try:
+            runner.score(config, sched_docs, judge, ws / "judge-taskdrift",
+                         scoring_seed=5, manifest_path=manifest_path,
+                         evidence_repos={"mock-repo": str(repo_s)})
+            sdrift_ok = False
+        except runner.InfraFailure as exc:
+            sdrift_ok = "task file changed" in str(exc)
+        Path(task_s).write_bytes(original_task_bytes)
+        ok &= check(
+            "task drift refused at scoring time (binding to scheduled task)",
+            sdrift_ok, notes)
         ev_repo, ev_sha = make_git_repo(ws, "evidence")
         echo_dir = ws / "echo-verifier"
         os.environ["MOCK_ECHO_DIR"] = str(echo_dir)

@@ -1008,6 +1008,17 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
             entries.extend(
                 {"arm": arm_name, "task": task} for _ in range(replicates)
             )
+    # The schedule binds task CONTENTS, not just paths: an edited prompt or
+    # re-pinned target-sha after registration must break reconstruction,
+    # never silently mix revisions inside one experimental cell.
+    task_digests = {}
+    for task in tasks:
+        try:
+            task_digests[task] = hashlib.sha256(
+                Path(task).read_bytes()
+            ).hexdigest()
+        except OSError as exc:
+            raise InfraFailure(f"cannot read task file {task}: {exc}") from exc
     rng = random.Random(seed)
     rng.shuffle(entries)
     for index, entry in enumerate(entries):
@@ -1015,6 +1026,7 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
     return {
         "seed": seed,
         "replicates": replicates,
+        "task_digests": task_digests,
         "nonstandard": (replicates != REGISTERED_REPLICATES
                         or not standard_topology
                         or len(tasks) != REGISTERED_HOLDOUT_TASKS),
@@ -1133,6 +1145,7 @@ def run_schedule(config, schedule_path, repos, output_dir, task_paths):
             "status": final["status"],
             "attempts": len(attempts),
             "artifact_sha256": final.get("artifact_sha256"),
+            "task_sha256": schedule["task_digests"][entry["task"]],
         })
         write_manifest(False)
     return write_manifest(True)
@@ -1216,8 +1229,29 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                 "schedule manifest is incomplete — score only after the "
                 "whole schedule has run"
             )
+        # Judges run under the SAME sealed configuration the schedule
+        # bound: judge command/model/effort, backend version, and policy
+        # fields are all in the digest.
+        if manifest.get("config_digest") != config_digest(config):
+            raise InfraFailure(
+                "registered runtime configuration changed since the "
+                "scheduled runs (config digest mismatch) — judges must run "
+                "under the same sealed configuration"
+            )
         completed = [r for r in manifest.get("results", [])
                      if r.get("status") == "completed"]
+        for r in completed:
+            recorded_task = r.get("task_sha256")
+            if recorded_task is not None:
+                actual_task = hashlib.sha256(
+                    Path(r["task"]).read_bytes()
+                ).hexdigest()
+                if actual_task != recorded_task:
+                    raise InfraFailure(
+                        f"{r['task']}: task file changed since the "
+                        f"scheduled run — evidence selection and protocol "
+                        f"binding would use a different task"
+                    )
         expected_names = sorted(f"run-{r['run_id']}-anon.md" for r in completed)
         supplied_names = sorted(Path(d).name for d in doc_paths)
         if supplied_names != expected_names:
