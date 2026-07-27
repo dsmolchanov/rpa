@@ -1260,7 +1260,7 @@ def run_preflight():
         offset_doc.write_text(
             fn_doc.read_text(encoding="utf-8").replace(
                 "date: 2026-07-27T00:00:00Z",
-                "date: '2026-07-27 00:00:00 +0300'", 1),
+                "date: '2026-07-27 03:00:00 +0300'", 1),
             encoding="utf-8")
         offset_ok = not runner.artifact_validator.validate(offset_doc)
         timeshift_doc = ws / "2026-07-26-timeshift.md"
