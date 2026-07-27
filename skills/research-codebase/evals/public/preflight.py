@@ -1097,12 +1097,31 @@ def run_preflight():
                      for r in snap_manifest["results"]]
         snap_ctx = {task_snap.name: str(ctx_file)}
         snap_manifest_path = ws / "out-snap" / "schedule-manifest.json"
+        refetch_ok = ws / "refetch-ok"
+        (refetch_ok / "a").mkdir(parents=True)
+        (refetch_ok / "b").mkdir(parents=True)
+        (refetch_ok / "a" / "index.html").write_text(
+            "<html>SEALED-SNAPSHOT A</html>\n", encoding="utf-8")
+        (refetch_ok / "b" / "index.html").write_text(
+            "<html>SEALED-SNAPSHOT B</html>\n", encoding="utf-8")
+        refetch_bad = ws / "refetch-bad"
+        (refetch_bad / "a").mkdir(parents=True)
+        (refetch_bad / "b").mkdir(parents=True)
+        (refetch_bad / "a" / "index.html").write_text(
+            "<html>SEALED-SNAPSHOT A</html>\n", encoding="utf-8")
+        (refetch_bad / "b" / "index.html").write_text(
+            "<html>THE LIVE SOURCE CHANGED</html>\n", encoding="utf-8")
         drift_ok_file = ws / "drift-unchanged.json"
         drift_ok_file.write_text(json.dumps(
-            {task_snap.name: {"status": "unchanged"}}), encoding="utf-8")
+            {task_snap.name: {"refetched": str(refetch_ok)}}),
+            encoding="utf-8")
         drift_bad_file = ws / "drift-drifted.json"
         drift_bad_file.write_text(json.dumps(
-            {task_snap.name: {"status": "drifted"}}), encoding="utf-8")
+            {task_snap.name: {"refetched": str(refetch_bad)}}),
+            encoding="utf-8")
+        drift_claim_file = ws / "drift-claim.json"
+        drift_claim_file.write_text(json.dumps(
+            {task_snap.name: {"status": "unchanged"}}), encoding="utf-8")
         try:
             runner.score(snap_cfg, snap_docs, judge, ws / "judge-nosnap",
                          scoring_seed=5, manifest_path=snap_manifest_path,
@@ -1158,6 +1177,30 @@ def run_preflight():
             len(drift_res) == 1
             and drift_res[0].get("inconclusive") is True
             and "session_id" not in drift_res[0],
+            notes)
+        try:
+            runner.score(snap_cfg, snap_docs, judge, ws / "judge-claim",
+                         scoring_seed=5, manifest_path=snap_manifest_path,
+                         task_contexts=snap_ctx, seal_manifest_path=seal_file,
+                         evidence_repos={"mock-repo": str(repo_snap)},
+                         task_snapshots={task_snap.name: str(snap_dir)},
+                         drift_report_path=drift_claim_file)
+            claim_ok = False
+        except runner.InfraFailure as exc:
+            claim_ok = "not evidence" in str(exc)
+        ok &= check(
+            "bare drift status claim refused (harness computes drift)",
+            claim_ok, notes)
+        scorer_drift = runner.score(
+            snap_cfg, snap_docs, judge, ws / "judge-scorer-drift",
+            scoring_seed=5, manifest_path=snap_manifest_path,
+            task_contexts=snap_ctx, seal_manifest_path=seal_file,
+            task_snapshots={task_snap.name: str(snap_dir)},
+            drift_report_path=drift_bad_file)
+        ok &= check(
+            "blind scorer excludes drifted external tasks too",
+            len(scorer_drift) == 1
+            and scorer_drift[0].get("inconclusive") is True,
             notes)
         try:
             runner.score(config, sched_docs[:1], judge, ws / "judge-subset",

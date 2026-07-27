@@ -1489,18 +1489,20 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                 "(NAME=PATH mapping), not a single evidence repo/sha"
             )
         snapshot_by_doc = {}
+        snap_task_by_doc = {}
         inconclusive_docs = set()
         drift_report = None
         if drift_report_path is not None:
             drift_report = json.loads(
                 Path(drift_report_path).read_text(encoding="utf-8"))
-        if evidence_repos is not None:
-            # A holdout batch spans several target repositories: every
-            # document is verified against the worktree of its own task's
-            # pinned repo@sha, never one shared checkout.
-            doc_evidence = {}
-            for r in completed:
-                task_text = Path(r["task"]).read_text(encoding="utf-8")
+        doc_evidence = {} if evidence_repos is not None else None
+        for r in completed:
+            task_text = Path(r["task"]).read_text(encoding="utf-8")
+            doc_name = f"run-{r['run_id']}-anon.md"
+            if evidence_repos is not None:
+                # A holdout batch spans several target repositories: every
+                # document is verified against the worktree of its own
+                # task's pinned repo@sha, never one shared checkout.
                 repo_name = task_target_repo(task_text, r["task"])
                 if repo_name not in evidence_repos:
                     raise InfraFailure(
@@ -1508,46 +1510,25 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                         f"registered evidence clone — supply it as "
                         f"{repo_name}=/path/to/frozen-clone"
                     )
-                doc_name = f"run-{r['run_id']}-anon.md"
                 doc_evidence[doc_name] = (
                     evidence_repos[repo_name],
                     task_target_sha(task_text, r["task"]),
                 )
-                # External-context tasks: their claims are checked against
-                # the FROZEN sealed snapshots, not the live web (which the
-                # verifier rightly cannot reach).
-                if re.search(r"^external-snapshots:\s*true\s*$", task_text,
-                             re.MULTILINE):
-                    task_name = Path(r["task"]).name
-                    if not task_snapshots or task_name not in task_snapshots:
-                        raise InfraFailure(
-                            f"{r['task']}: task requires sealed external "
-                            f"snapshots — supply --task-snapshots "
-                            f"{task_name}=<sealed snapshot file/dir>"
-                        )
-                    snapshot_by_doc[doc_name] = task_snapshots[task_name]
-                    # Registered source-drift gate: the live sources are
-                    # re-fetched BEFORE scoring (by the operator's recorded
-                    # drift-check step) and the outcome supplied here; a
-                    # drifted source makes the task inconclusive — its
-                    # documents are recorded, never judged.
-                    if drift_report is None:
-                        raise InfraFailure(
-                            f"{r['task']}: external-context task requires "
-                            f"the pre-score source-drift report "
-                            f"(--drift-report) — re-fetch the sealed "
-                            f"sources and record drift before scoring"
-                        )
-                    drift_entry = drift_report.get(task_name)
-                    if (not isinstance(drift_entry, dict)
-                            or drift_entry.get("status")
-                            not in ("unchanged", "drifted")):
-                        raise InfraFailure(
-                            f"{r['task']}: drift report has no valid entry "
-                            f"(status must be unchanged|drifted)"
-                        )
-                    if drift_entry["status"] == "drifted":
-                        inconclusive_docs.add(doc_name)
+            # External-context tasks apply to BOTH judge roles: the
+            # verifier checks claims against the frozen snapshots, and the
+            # source-drift gate excludes drifted tasks from scorer and
+            # verifier alike.
+            if re.search(r"^external-snapshots:\s*true\s*$", task_text,
+                         re.MULTILINE):
+                task_name = Path(r["task"]).name
+                if not task_snapshots or task_name not in task_snapshots:
+                    raise InfraFailure(
+                        f"{r['task']}: task requires sealed external "
+                        f"snapshots — supply --task-snapshots "
+                        f"{task_name}=<sealed snapshot file/dir>"
+                    )
+                snapshot_by_doc[doc_name] = task_snapshots[task_name]
+                snap_task_by_doc[doc_name] = task_name
     else:
         context_by_doc = None
         task_by_doc = None
@@ -1589,6 +1570,59 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             doc_name: _read_sealed(ctx_path, seal_files)
             for doc_name, ctx_path in context_by_doc.items()
         }
+        # Registered source-drift gate, COMPUTED by the harness: a status
+        # claim is not evidence. The operator's recorded re-fetch step
+        # supplies the re-fetched copies; the harness diffs them against
+        # the SEALED snapshot digests — any mismatch makes the task
+        # inconclusive for scorer and verifier alike.
+        if snapshot_by_doc:
+            if drift_report is None:
+                raise InfraFailure(
+                    "external-context tasks require the pre-score source-"
+                    "drift report (--drift-report) with the re-fetched "
+                    "copies — re-fetch the sealed sources before scoring"
+                )
+            for doc_name, snap_path in snapshot_by_doc.items():
+                task_name = snap_task_by_doc[doc_name]
+                drift_entry = drift_report.get(task_name)
+                if (not isinstance(drift_entry, dict)
+                        or not drift_entry.get("refetched")):
+                    raise InfraFailure(
+                        f"{task_name}: drift report must supply the "
+                        f"re-fetched copy (`refetched`: path) — a bare "
+                        f"status claim is not evidence"
+                    )
+                snap_root = Path(snap_path)
+                refetched_root = Path(drift_entry["refetched"])
+                if snap_root.is_file():
+                    pairs = [(snap_root, refetched_root, snap_root.name)]
+                else:
+                    pairs = []
+                    for snap in sorted(p for p in snap_root.rglob("*")
+                                       if p.is_file()):
+                        rel = snap.relative_to(snap_root)
+                        pairs.append(
+                            (snap, refetched_root / rel,
+                             (Path(snap_root.name) / rel).as_posix())
+                        )
+                drifted = False
+                for snap, refetched, seal_key in pairs:
+                    sealed_digest = seal_files.get(seal_key)
+                    if sealed_digest is None:
+                        raise InfraFailure(
+                            f"{snap}: snapshot not in the atomic-seal "
+                            f"manifest"
+                        )
+                    if not refetched.exists():
+                        raise InfraFailure(
+                            f"{refetched}: re-fetched copy missing — "
+                            f"source drift cannot be verified"
+                        )
+                    if hashlib.sha256(
+                            refetched.read_bytes()).hexdigest() != sealed_digest:
+                        drifted = True
+                if drifted:
+                    inconclusive_docs.add(doc_name)
     else:
         judge_prompt = Path(judge_prompt_path).read_text(encoding="utf-8")
         sealed_context_texts = None
@@ -1903,7 +1937,12 @@ def main():
                         seal_manifest_path=args.seal_manifest,
                         task_snapshots=task_snapshots,
                         drift_report_path=args.drift_report)
-        print(json.dumps([{k: r[k] for k in ("doc", "session_id")} for r in results]))
+        print(json.dumps([
+            {"doc": r["doc"], "inconclusive": True}
+            if r.get("inconclusive")
+            else {"doc": r["doc"], "session_id": r["session_id"]}
+            for r in results
+        ]))
         sys.exit(0)
 
     if not (args.config and args.arm and args.task and args.repo):
