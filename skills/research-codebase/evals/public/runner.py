@@ -164,6 +164,18 @@ class InfraFailure(Exception):
     """Harness/environment fault: the run is invalid and must be re-executed."""
 
 
+class BlockingInfraFailure(InfraFailure):
+    """A fault that can neither be counted nor auto-re-executed: a
+    workflow-shaped failure (timeout/registered abort) that left no
+    effective-runtime evidence. Counting it would violate runtime parity
+    (nothing proves the session ran on the registered model/effort);
+    silently re-executing it would violate the counted-never-replaced
+    protocol for timeouts/aborts. The experiment stops here pending
+    operator investigation — reported through the same structured
+    infra_failure contract, but never consumed by the automatic retry
+    loop."""
+
+
 class WorkflowFailure(Exception):
     """The evaluated workflow failed (timeout, abort, no artifact): counted,
     never replaced. `stdout` carries any partial transcript emitted before
@@ -1073,12 +1085,17 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
                     # A counted failure needs effective-runtime evidence
                     # from THE SESSION THAT FAILED — nodes from earlier
                     # sessions cannot vouch for a continuation that emitted
-                    # nothing, so runtime drift there must invalidate, not
-                    # count.
-                    raise InfraFailure(
-                        f"workflow failure with no accounting nodes from "
-                        f"the failed session — no effective-runtime parity "
-                        f"evidence; run invalidated ({wf})"
+                    # nothing. But a timeout/abort is also a counted-never-
+                    # replaced outcome, so it must not be silently re-
+                    # executed either: the run BLOCKS pending operator
+                    # investigation instead of biasing the cell one way or
+                    # the other.
+                    raise BlockingInfraFailure(
+                        f"workflow-shaped failure with no accounting nodes "
+                        f"from the failed session — no effective-runtime "
+                        f"parity evidence to count it, and timeouts/aborts "
+                        f"are never auto-replaced; run blocked pending "
+                        f"investigation ({wf})"
                     ) from wf
                 validate_models(partial, arm["model"])
                 effort_modes.add(
@@ -1144,6 +1161,10 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
     except WorkflowFailure as exc:
         record["status"] = "workflow_failure"
         record["failure"] = str(exc)
+    except BlockingInfraFailure as exc:
+        record["status"] = "infra_failure"
+        record["blocking"] = True
+        record["failure"] = str(exc)
     except InfraFailure as exc:
         record["status"] = "infra_failure"
         record["failure"] = str(exc)
@@ -1190,6 +1211,11 @@ def run_task_with_retries(config, arm_name, task_path, repo_dir, output_dir,
                           attempt=attempt, scheduled=scheduled)
         attempts.append(record)
         if record["status"] != "infra_failure":
+            break
+        if record.get("blocking"):
+            # A workflow-shaped failure without runtime evidence can
+            # neither be counted nor auto-replaced: stop retrying and
+            # surface the block for operator investigation.
             break
     return attempts
 
@@ -1449,7 +1475,7 @@ def verify_results_against_records(results, entries, out_dir, require_all):
                 f"manifest result {done.get('index')} has no run record "
                 f"on disk — fabricated or foreign manifest refused"
             )
-        run_record = json.loads(record_path.read_text(encoding="utf-8"))
+        run_record = load_json_object(record_path, "run record")
         if (run_record.get("arm") != done.get("arm")
                 or run_record.get("task") != done.get("task")
                 or run_record.get("status") != done.get("status")
@@ -1566,11 +1592,14 @@ def run_schedule(config, schedule_path, repos, output_dir, task_paths):
         if final["status"] == "infra_failure":
             # Entry unfinished: persist progress so a re-run resumes HERE.
             write_manifest(False)
+            reason = ("run blocked pending operator investigation — "
+                      "workflow-shaped failure without runtime evidence"
+                      if final.get("blocking")
+                      else "infra retries exhausted")
             raise InfraFailure(
                 f"schedule interrupted at entry {entry['index']} "
-                f"({entry['arm']} / {entry['task']}): infra retries "
-                f"exhausted; progress persisted — re-run --run-schedule to "
-                f"resume at this entry"
+                f"({entry['arm']} / {entry['task']}): {reason}; progress "
+                f"persisted — re-run --run-schedule to resume at this entry"
             )
         results.append({
             "index": entry["index"],
@@ -2089,8 +2118,8 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
     # directory without colliding.
     scoring_manifest_path = out / f"scoring-{role}-manifest.json"
     if scoring_manifest_path.exists():
-        prior_batch = json.loads(
-            scoring_manifest_path.read_text(encoding="utf-8"))
+        prior_batch = load_json_object(scoring_manifest_path,
+                                       "scoring batch manifest")
         if prior_batch.get("complete"):
             raise InfraFailure(
                 "the scoring batch in this output directory is already "
@@ -2155,7 +2184,7 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             # manifest was not. Adopt the existing record instead of
             # launching a second nondeterministic session for the same
             # replicate.
-            orphan = json.loads(orphan_path.read_text(encoding="utf-8"))
+            orphan = load_json_object(orphan_path, "orphaned judge record")
             if (Path(orphan.get("doc", "")).name
                     != Path(doc_paths[doc_index]).name):
                 raise InfraFailure(

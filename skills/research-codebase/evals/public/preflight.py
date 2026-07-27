@@ -1022,10 +1022,17 @@ def run_preflight():
             record["status"] == "workflow_failure" and child_dead,
             notes)
 
-        record, _, _, _ = run_case(ws, "hang-silent", timeout=2)
+        # A workflow-shaped failure (timeout/abort) with an empty transcript
+        # can neither be counted (no parity evidence) nor auto-re-executed
+        # (counted failures are never replaced): it must BLOCK — one
+        # attempt, blocking flag set, classified infra.
+        record, _, _, _ = run_case(ws, "hang-silent", timeout=2,
+                                   use_retries=True)
         ok &= check(
-            "failure without any parity evidence invalidated (empty transcript)",
+            "evidence-less workflow failure blocks (not counted, no auto-rerun)",
             record["status"] == "infra_failure"
+            and record.get("blocking") is True
+            and record.get("attempt") == 1
             and "parity evidence" in record.get("failure", ""),
             notes)
 
@@ -1311,6 +1318,19 @@ def run_preflight():
         ok &= check(
             "missing or non-UTF-8 scoring document classified as infra",
             missdoc_ok and bindoc_ok, notes)
+        malformed_out = ws / "judge-batch-malformed"
+        malformed_out.mkdir()
+        (malformed_out / "scoring-scorer-manifest.json").write_text(
+            "{truncated", encoding="utf-8")
+        try:
+            runner.score(config, docs, judge, malformed_out, scoring_seed=5,
+                         allow_unscheduled=True)
+            malformed_ok = False
+        except runner.InfraFailure as exc:
+            malformed_ok = "scoring batch manifest" in str(exc)
+        ok &= check(
+            "malformed scoring batch manifest classified as infra",
+            malformed_ok, notes)
         atomic_target = ws / "atomic-test.json"
         atomic_target.write_text("old", encoding="utf-8")
         runner.atomic_write_text(atomic_target, "new-content")
