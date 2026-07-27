@@ -311,6 +311,14 @@ def load_config(path):
                     f"config {path}: arm `{arm_name}` is missing required "
                     f"`{required}`"
                 )
+    if ("nonstandard_config" in config
+            and not isinstance(config["nonstandard_config"], bool)):
+        raise InfraFailure(
+            f"config {path}: `nonstandard_config` must be a boolean, got "
+            f"{config['nonstandard_config']!r} — a truthy string like "
+            f"\"false\" would silently select dev mode and bypass the "
+            f"production safeguards"
+        )
     if (not isinstance(config.get("backend_cmd"), list)
             or not config["backend_cmd"]
             or not all(isinstance(part, str)
@@ -1178,6 +1186,17 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
     tasks = [str(Path(t)) for t in task_paths]
     if len(set(tasks)) != len(tasks):
         raise InfraFailure("duplicate task paths in the schedule task list")
+    # The schedule binds task CONTENTS, not just paths: an edited prompt or
+    # re-pinned target-sha after registration must break reconstruction,
+    # never silently mix revisions inside one experimental cell.
+    task_digests = {}
+    for task in tasks:
+        try:
+            task_digests[task] = hashlib.sha256(
+                Path(task).read_bytes()
+            ).hexdigest()
+        except OSError as exc:
+            raise InfraFailure(f"cannot read task file {task}: {exc}") from exc
     standard_topology = _standard_topology(config)
     if not allow_nonstandard:
         if config.get("nonstandard_config"):
@@ -1260,6 +1279,37 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
                 f"repositories {REGISTERED_HOLDOUT_REPOS}, got "
                 f"{sorted(seen_repos)}"
             )
+        # Holdout tasks are the SEALED prompts: every production task must
+        # appear in the registered atomic-seal manifest with a matching
+        # content digest — arbitrary files with plausible frontmatter can
+        # never run as protocol-valid holdout tasks.
+        seal_path = config.get("seal_manifest")
+        registered_seal = config.get("seal_package_sha256")
+        if not seal_path or not registered_seal:
+            raise InfraFailure(
+                "a standard (holdout) schedule requires the registered "
+                "atomic seal (`seal_manifest` + `seal_package_sha256` in "
+                "the config)"
+            )
+        try:
+            seal_bytes = Path(seal_path).read_bytes()
+        except OSError as exc:
+            raise InfraFailure(
+                f"cannot read seal manifest {seal_path}: {exc}"
+            ) from exc
+        if hashlib.sha256(seal_bytes).hexdigest() != registered_seal:
+            raise InfraFailure(
+                "seal manifest does not match the registered "
+                "`seal_package_sha256` — a recomputed or altered seal is "
+                "refused"
+            )
+        sealed_files = json.loads(seal_bytes.decode("utf-8")).get("files", {})
+        for task in tasks:
+            if sealed_files.get(Path(task).name) != task_digests[task]:
+                raise InfraFailure(
+                    f"{task}: not sealed in the registered package — "
+                    f"holdout tasks must be the exact sealed prompts"
+                )
     validate_arm_parity(config)
     entries = []
     for arm_name in sorted(config["arms"]):
@@ -1318,17 +1368,6 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
             entries.extend(
                 {"arm": arm_name, "task": task} for _ in range(replicates)
             )
-    # The schedule binds task CONTENTS, not just paths: an edited prompt or
-    # re-pinned target-sha after registration must break reconstruction,
-    # never silently mix revisions inside one experimental cell.
-    task_digests = {}
-    for task in tasks:
-        try:
-            task_digests[task] = hashlib.sha256(
-                Path(task).read_bytes()
-            ).hexdigest()
-        except OSError as exc:
-            raise InfraFailure(f"cannot read task file {task}: {exc}") from exc
     rng = random.Random(seed)
     rng.shuffle(entries)
     for index, entry in enumerate(entries):
@@ -1978,6 +2017,16 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
         # caller's index order, so a reordered resume is a different
         # batch — sorting here would let it slip through.
         "docs": [Path(d).name for d in doc_paths],
+        # Drift decisions are part of the batch identity: a corrected or
+        # replaced drift report between interruption and resume would
+        # otherwise mix old judged results with new inconclusive
+        # exclusions inside one batch.
+        "drift_decisions": {
+            "inconclusive": sorted(inconclusive_docs),
+            "notes_digest": hashlib.sha256(
+                json.dumps(drift_notes, sort_keys=True).encode("utf-8")
+            ).hexdigest(),
+        },
     }
     # Batch state is namespaced by role: the scorer pass and the
     # verifier pass over the same documents may share one output

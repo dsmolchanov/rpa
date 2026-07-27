@@ -25,6 +25,7 @@ EXPECTED_MAIN = {"input_tokens": 100, "output_tokens": 50, "tool_calls": 7}
 EXPECTED_SUB = {"input_tokens": 40, "output_tokens": 20, "tool_calls": 5}
 SECRET = "SECRET-GROUND-TRUTH-MARKER"
 SEAL_SHA = None
+SEAL_PATH = None
 
 
 def make_git_repo(workspace, label, seed_research=False):
@@ -79,6 +80,7 @@ def build_config(workspace, mode, timeout=20):
         "sandbox_cmd": [sys.executable, str(HERE / "mock_sandbox.py"),
                         "{workdir}", "--"],
         "seal_package_sha256": SEAL_SHA,
+        "seal_manifest": SEAL_PATH,
         "backend_version": "mock-claude 1.0.0",
         "backend_version_cmd": [sys.executable, str(HERE / "mock_claude.py"),
                                 "--version"],
@@ -130,7 +132,7 @@ def check(name, condition, notes, detail=""):
 
 
 def run_preflight():
-    global SEAL_SHA
+    global SEAL_SHA, SEAL_PATH
     notes = []
     ok = True
     with tempfile.TemporaryDirectory() as tmp:
@@ -152,22 +154,50 @@ def run_preflight():
             "<html>SEALED-SNAPSHOT A</html>\n", encoding="utf-8")
         (snap_dir / "b" / "index.html").write_text(
             "<html>SEALED-SNAPSHOT B</html>\n", encoding="utf-8")
+        dummy_tasks = []
+        dummy_meta = {
+            "a": ("1 — subsystem-explanation", "dsmolchanov/rpa"),
+            "b": ("3 — narrow where-is", "dsmolchanov/rpa"),
+            "c": ("2 — subsystem-explanation, largest repo",
+                  "dsmolchanov/neomenu"),
+            "d": ("4 — code + thoughts history", "dsmolchanov/neomenu"),
+            "e": ("5 — external library context",
+                  "dsmolchanov/livekit-voice-agent"),
+            "f": ("6 — known-wrong premise",
+                  "dsmolchanov/livekit-voice-agent"),
+        }
+        for c in "abcdef":
+            arch, trepo = dummy_meta[c]
+            dt = ws / f"t-{c}.md"
+            dt.write_text(
+                f"---\ntask-id: dummy-{c}\narchetype: \"{arch}\"\n"
+                f"target-repo: {trepo}\n"
+                f"target-sha: {'0' * 40}\n---\n\n## Task prompt\n\nDummy {c}.\n",
+                encoding="utf-8")
+            dummy_tasks.append(str(dt))
+        d_a, d_b, d_c = dummy_tasks[:3]
+
         seal_file = ws / "seal-manifest.json"
-        seal_file.write_text(json.dumps({"judge_prompts": {
-            "scorer": "judge-prompt.md",
-            "verifier": "judge-prompt.md",
-        }, "task_contexts": {
-            "task-sched.md": "sealed-context.md",
-            "task-snap.md": "sealed-context.md",
-        }, "files": {
+        seal_files_map = {
             judge.name: hashlib.sha256(judge.read_bytes()).hexdigest(),
             ctx_file.name: hashlib.sha256(ctx_file.read_bytes()).hexdigest(),
             "external-snapshots/a/index.html": hashlib.sha256(
                 (snap_dir / "a" / "index.html").read_bytes()).hexdigest(),
             "external-snapshots/b/index.html": hashlib.sha256(
                 (snap_dir / "b" / "index.html").read_bytes()).hexdigest(),
-        }}), encoding="utf-8")
+        }
+        for sealed_task in dummy_tasks:
+            seal_files_map[Path(sealed_task).name] = hashlib.sha256(
+                Path(sealed_task).read_bytes()).hexdigest()
+        seal_file.write_text(json.dumps({"judge_prompts": {
+            "scorer": "judge-prompt.md",
+            "verifier": "judge-prompt.md",
+        }, "task_contexts": {
+            "task-sched.md": "sealed-context.md",
+            "task-snap.md": "sealed-context.md",
+        }, "files": seal_files_map}), encoding="utf-8")
         SEAL_SHA = hashlib.sha256(seal_file.read_bytes()).hexdigest()
+        SEAL_PATH = str(seal_file)
 
         record, out, echo_dir, sha = run_case(ws, "normal")
         ok &= check("clean run completes", record["status"] == "completed",
@@ -445,29 +475,6 @@ def run_preflight():
             and "{installation}" in record.get("failure", ""),
             notes)
 
-        dummy_tasks = []
-        dummy_meta = {
-            "a": ("1 — subsystem-explanation", "dsmolchanov/rpa"),
-            "b": ("3 — narrow where-is", "dsmolchanov/rpa"),
-            "c": ("2 — subsystem-explanation, largest repo",
-                  "dsmolchanov/neomenu"),
-            "d": ("4 — code + thoughts history", "dsmolchanov/neomenu"),
-            "e": ("5 — external library context",
-                  "dsmolchanov/livekit-voice-agent"),
-            "f": ("6 — known-wrong premise",
-                  "dsmolchanov/livekit-voice-agent"),
-        }
-        for c in "abcdef":
-            arch, trepo = dummy_meta[c]
-            dt = ws / f"t-{c}.md"
-            dt.write_text(
-                f"---\ntask-id: dummy-{c}\narchetype: \"{arch}\"\n"
-                f"target-repo: {trepo}\n"
-                f"target-sha: {'0' * 40}\n---\n\n## Task prompt\n\nDummy {c}.\n",
-                encoding="utf-8")
-            dummy_tasks.append(str(dt))
-        d_a, d_b, d_c = dummy_tasks[:3]
-
         config, _ = build_config(ws, "normal")
         config["arms"]["second"] = dict(config["arms"]["mock"],
                                         forbid_subagents=True,
@@ -654,6 +661,21 @@ def run_preflight():
             "standard schedule validates the full coverage matrix",
             cov_ok and cov_ok2 and cov_ok3, notes)
 
+        unsealed = ws / "t-unsealed.md"
+        unsealed.write_text(
+            (ws / "t-f.md").read_text(encoding="utf-8").replace(
+                "Dummy f.", "Unsealed impostor task."),
+            encoding="utf-8")
+        try:
+            runner.make_schedule(cov_cfg, six_tasks[:5] + [str(unsealed)],
+                                 3, seed=1)
+            unsealed_ok = False
+        except runner.InfraFailure as exc:
+            unsealed_ok = "not sealed" in str(exc)
+        ok &= check(
+            "unsealed holdout task refused (tasks bound to the atomic seal)",
+            unsealed_ok, notes)
+
         s_dev = runner.make_schedule(cov_cfg, six_tasks, 3, seed=2,
                                      allow_nonstandard=True)
         ok &= check(
@@ -706,6 +728,18 @@ def run_preflight():
         ok &= check(
             "structurally invalid config refused at load (no deep KeyError)",
             shape_ok, notes)
+        strflag_cfg = ws / "strflag-config.json"
+        base_cfg, _ = build_config(ws, "normal")
+        base_cfg["nonstandard_config"] = "false"
+        strflag_cfg.write_text(json.dumps(base_cfg), encoding="utf-8")
+        try:
+            runner.load_config(strflag_cfg)
+            flag_ok = False
+        except runner.InfraFailure as exc:
+            flag_ok = "must be a boolean" in str(exc)
+        ok &= check(
+            "non-boolean nonstandard_config refused (truthy string trap)",
+            flag_ok, notes)
 
         config, _ = build_config(ws, "normal")
         repo_s, sha_s = make_git_repo(ws, "sched")
@@ -1573,6 +1607,24 @@ def run_preflight():
             len(scorer_drift) == 1
             and scorer_drift[0].get("inconclusive") is True,
             notes)
+        sd_manifest = ws / "judge-scorer-drift" / "scoring-scorer-manifest.json"
+        sdm = json.loads(sd_manifest.read_text(encoding="utf-8"))
+        sdm["complete"] = False
+        sdm["results"] = []
+        sd_manifest.write_text(json.dumps(sdm), encoding="utf-8")
+        try:
+            runner.score(snap_cfg, snap_docs, judge, ws / "judge-scorer-drift",
+                         scoring_seed=5, manifest_path=snap_manifest_path,
+                         score_task_paths=[str(task_snap)],
+                         task_contexts=snap_ctx, seal_manifest_path=seal_file,
+                         task_snapshots={task_snap.name: str(snap_dir)},
+                         drift_report_path=drift_ok_file)
+            ddrift_ok = False
+        except runner.InfraFailure as exc:
+            ddrift_ok = "different identity" in str(exc)
+        ok &= check(
+            "changed drift decisions refused on resume (identity bound)",
+            ddrift_ok, notes)
         try:
             runner.score(snap_cfg, snap_docs, judge, ws / "judge-noadj",
                          scoring_seed=5, manifest_path=snap_manifest_path,
