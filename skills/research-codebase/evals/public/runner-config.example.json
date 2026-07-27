@@ -1,0 +1,54 @@
+{
+  "nonstandard_config": false,
+  "_nonstandard_config_note": "Production/holdout configs keep this false: every run then requires the registered three-arm topology. Dev/tuning configs with fewer arms must set it true.",
+  "_comment": "Eval-runner configuration example (pilot plan, prerequisite 5). Copy, fill in real installation dirs + hashes at candidate freeze, and keep the filled copy in the private eval workspace. All arms must share model/effort per the pinned runtime configuration (enforced by validate_arm_parity); only installation content differs. NOTE: with the real claude CLI the arm's `model` must equal the effective model id the CLI reports in stream events (e.g. a full claude-... id, not an alias) — establish the exact value during the real-backend preflight.",
+  "arms": {
+    "baseline": {
+      "installation_dir": "/private-eval-workspace/installs/baseline-a7de5f6-plus-overlay",
+      "sha256": "<recorded at installation build>",
+      "model": "opus",
+      "effort": "high",
+      "entrypoint": "/research_codebase"
+    },
+    "candidate": {
+      "installation_dir": "/private-eval-workspace/installs/candidate-<sha>",
+      "sha256": "<recorded at installation build>",
+      "model": "opus",
+      "effort": "high",
+      "entrypoint": "/research_codebase"
+    },
+    "ablation": {
+      "installation_dir": "/private-eval-workspace/installs/ablation-<sha>",
+      "sha256": "<recorded at installation build>",
+      "model": "opus",
+      "effort": "high",
+      "entrypoint": "/research_codebase",
+      "forbid_subagents": true,
+      "schedule_tasks": ["<designated-holdout-task-A>.md", "<designated-holdout-task-B>.md"],
+      "_schedule_tasks_note": "The third arm runs on exactly its two pre-registered designated tasks; --make-schedule refuses a no-subagent arm without this explicit two-task scope.",
+      "_forbid_subagents_note": "Pre-registered third-arm policy: a fleet-ablation run that spawns any subagent is a counted workflow failure."
+    }
+  },
+  "backend_cmd": ["claude", "--model", "opus", "--effort", "{effort}", "--plugin-dir", "{installation}"],
+  "_backend_cmd_note": "{installation} expands per run to the verified installation copy mounted inside the run's clean profile; {effort} expands to the arm's registered effort so it is pinned on the command line, not inherited. Adjust flags to whatever the pinned Claude Code version uses for local plugin loading and effort control — validated during the real-backend preflight. The arm's `entrypoint` is prefixed to the task prompt so the session actually enters the evaluated workflow.",
+  "judge_backend_cmd": ["claude", "--model", "opus", "--effort", "{effort}"],
+  "_judge_backend_cmd_note": "Judge sessions must be mount-free: no {installation} placeholder, no plugin flags. The runner refuses to score if the resolved judge command still contains {installation}. {effort} expands to judge_effort.",
+  "judge_model": "opus",
+  "judge_effort": "high",
+  "workflow_abort_exit_codes": [],
+  "_workflow_abort_exit_codes_note": "Backend exit codes that mean the evaluated workflow itself gave up (counted as workflow_failure, never rerun). Any other nonzero exit is infra_failure (rerun). Real values for the pinned claude CLI are established during the real-backend preflight; leave empty until then.",
+  "max_infra_retries": 2,
+  "_max_infra_retries_note": "Infrastructure failures invalidate the run and are re-executed automatically up to this many additional attempts; every attempt's record is written. Workflow failures are counted, never replaced.",
+  "sandbox_cmd": ["<sandbox-wrapper>", "--confine-to", "{workdir}", "--profile", "{profile}", "--"],
+  "_sandbox_cmd_note": "REQUIRED for production configs: a filesystem sandbox (e.g. bwrap or sandbox-exec invocation) confining every evaluated and judge session to its {workdir} and {profile}; exact wrapper validated during the real-backend preflight.",
+  "drift_fetch_cmd": ["curl", "-fsSL", "{url}", "-o", "{dest}"],
+  "_drift_fetch_cmd_note": "REQUIRED to score external-context tasks: the harness itself re-fetches every sealed live source URL (from the seal's snapshot_sources) through this registered command and diffs the bytes against the sealed digests. Operator-supplied local copies are never accepted as drift evidence.",
+  "seal_manifest": "/private-eval-workspace/sealed/seal-manifest.json",
+  "_seal_manifest_note": "Path to the sealed package manifest (file → sha256 + role/task associations + snapshot_sources: sealed snapshot key → live source URL + judge_config: the sealed judge session configuration, validated against this config at scheduling and scoring). Its own SHA-256 must equal seal_package_sha256; standard schedules verify every holdout task against it.",
+  "seal_package_sha256": "<single package SHA-256 recorded at sealing>",
+  "backend_version": "<exact output of the pinned `claude --version`, recorded at pin time>",
+  "backend_version_cmd": ["claude", "--version"],
+  "_backend_version_note": "Probed before every run and judge pass; any drift from the registered version blocks the run (pinned-runtime protocol).",
+  "timeout_seconds": 3600,
+  "_timeout_seconds_note": "Run-level deadline shared by the initial session and every driver continuation — resumed sessions receive only the remaining time, never a fresh full timeout."
+}
