@@ -44,7 +44,7 @@
   "drift_fetch_cmd": ["curl", "-fsSL", "{url}", "-o", "{dest}"],
   "_drift_fetch_cmd_note": "REQUIRED to score external-context tasks: the harness itself re-fetches every sealed live source URL (from the seal's snapshot_sources) through this registered command and diffs the bytes against the sealed digests. Operator-supplied local copies are never accepted as drift evidence.",
   "seal_manifest": "/private-eval-workspace/sealed/seal-manifest.json",
-  "_seal_manifest_note": "Path to the sealed package manifest (file → sha256 + role/task associations + snapshot_sources: sealed snapshot key → live source URL). Its own SHA-256 must equal seal_package_sha256; standard schedules verify every holdout task against it.",
+  "_seal_manifest_note": "Path to the sealed package manifest (file → sha256 + role/task associations + snapshot_sources: sealed snapshot key → live source URL + judge_config: the sealed judge session configuration, validated against this config at scheduling and scoring). Its own SHA-256 must equal seal_package_sha256; standard schedules verify every holdout task against it.",
   "seal_package_sha256": "<single package SHA-256 recorded at sealing>",
   "backend_version": "<exact output of the pinned `claude --version`, recorded at pin time>",
   "backend_version_cmd": ["claude", "--version"],

@@ -197,6 +197,13 @@ def run_preflight():
         }, "task_contexts": {
             "task-sched.md": "sealed-context.md",
             "task-snap.md": "sealed-context.md",
+        }, "judge_config": {
+            "judge_backend_cmd": [sys.executable,
+                                  str(HERE / "mock_claude.py"),
+                                  "--mode", "no-artifact",
+                                  "--effort", "{effort}"],
+            "judge_model": "opus",
+            "judge_effort": "high",
         }, "snapshot_sources": {
             "external-snapshots/a/index.html":
                 "https://mock.invalid/live/a/index.html",
@@ -279,6 +286,20 @@ def run_preflight():
         record, _, _, _ = run_case(ws, "normal", label="tamper", tamper=True)
         ok &= check(
             "hash verification (tampered installation blocked as infra)",
+            record["status"] == "infra_failure"
+            and "hash mismatch" in record.get("failure", ""),
+            notes)
+
+        modecfg, modeinstall = build_config(ws, "normal")
+        orig_mode = (modeinstall / "plugin.txt").stat().st_mode
+        os.chmod(modeinstall / "plugin.txt", 0o755)
+        moderepo, modesha = make_git_repo(ws, "mode-tamper")
+        modetask = write_task(ws, "mode-tamper", modesha)
+        record = runner.run_task(modecfg, "mock", modetask, moderepo,
+                                 ws / "out-mode-tamper")
+        os.chmod(modeinstall / "plugin.txt", orig_mode)
+        ok &= check(
+            "mode drift (executable bit) blocked as infra (metadata hashed)",
             record["status"] == "infra_failure"
             and "hash mismatch" in record.get("failure", ""),
             notes)
@@ -720,6 +741,16 @@ def run_preflight():
         ok &= check(
             "malformed seal manifest classified before dereference",
             badseal_ok and nofiles_ok, notes)
+        judged_cfg = json.loads(json.dumps(cov_cfg))
+        judged_cfg["judge_model"] = "sonnet"
+        try:
+            runner.make_schedule(judged_cfg, six_tasks, 3, seed=1)
+            sealjudge_ok = False
+        except runner.InfraFailure as exc:
+            sealjudge_ok = "sealed judge configuration" in str(exc)
+        ok &= check(
+            "judge settings drifted from the seal refused at scheduling",
+            sealjudge_ok, notes)
 
         s_dev = runner.make_schedule(cov_cfg, six_tasks, 3, seed=2,
                                      allow_nonstandard=True)
@@ -2036,6 +2067,70 @@ def run_preflight():
         ok &= check(
             "failed live-source fetch classified as infra (no silent skip)",
             fetchfail_ok, notes)
+        # Drift is fetched once per task and the verdict applied to every
+        # replicate: per-document fetching could split a nondeterministic
+        # live source into judged and excluded replicates of one cell.
+        sched2 = runner.make_schedule(snap_cfg, [str(task_snap)], 2,
+                                      seed=12, allow_nonstandard=True)
+        sched2_path = ws / "schedule-snap2.json"
+        sched2_path.write_text(json.dumps(sched2), encoding="utf-8")
+        man2 = runner.run_schedule(snap_cfg, sched2_path,
+                                   {"mock-repo": str(repo_snap)},
+                                   ws / "out-snap2", [str(task_snap)])
+        docs2 = [ws / "out-snap2" / f"run-{r['run_id']}-anon.md"
+                 for r in man2["results"]]
+        os.environ["MOCK_LIVE_ROOT"] = str(refetch_bad)
+        fetch_log = ws / "fetch-log.txt"
+        os.environ["MOCK_FETCH_LOG"] = str(fetch_log)
+        try:
+            two_res = runner.score(
+                snap_cfg, docs2, judge, ws / "judge-snap2",
+                scoring_seed=5,
+                manifest_path=ws / "out-snap2" / "schedule-manifest.json",
+                score_task_paths=[str(task_snap)],
+                task_contexts=snap_ctx, seal_manifest_path=seal_file,
+                evidence_repos={"mock-repo": str(repo_snap)},
+                task_snapshots={task_snap.name: str(snap_dir)},
+                drift_report_path=drift_bad_file)
+        finally:
+            os.environ.pop("MOCK_FETCH_LOG", None)
+            os.environ.pop("MOCK_LIVE_ROOT", None)
+        fetches = fetch_log.read_text(encoding="utf-8").splitlines()
+        ok &= check(
+            "drift fetched once per task, verdict uniform across replicates",
+            len(two_res) == 2
+            and all(r.get("inconclusive") is True for r in two_res)
+            and len({json.dumps(r.get("source_drift"), sort_keys=True)
+                     for r in two_res}) == 1
+            and len(fetches) == 2,
+            notes)
+        cfgJ, _ = build_config(ws, "normal")
+        cfgJ["judge_effort"] = "low"
+        schedJ = runner.make_schedule(cfgJ, [str(task_s)], 1, seed=11,
+                                      allow_nonstandard=True)
+        schedJ_path = ws / "schedule-sealjudge.json"
+        schedJ_path.write_text(json.dumps(schedJ), encoding="utf-8")
+        manJ = runner.run_schedule(cfgJ, schedJ_path,
+                                   {"mock-repo": str(repo_s)},
+                                   ws / "out-sealjudge", [str(task_s)])
+        docsJ = [ws / "out-sealjudge" / f"run-{r['run_id']}-anon.md"
+                 for r in manJ["results"]]
+        try:
+            runner.score(cfgJ, docsJ, judge, ws / "judge-sealjudge",
+                         scoring_seed=5,
+                         manifest_path=(ws / "out-sealjudge"
+                                        / "schedule-manifest.json"),
+                         score_task_paths=[str(task_s)],
+                         task_contexts={Path(str(task_s)).name:
+                                        str(ctx_file)},
+                         seal_manifest_path=seal_file,
+                         evidence_repos={"mock-repo": str(repo_s)})
+            sealjudge2_ok = False
+        except runner.InfraFailure as exc:
+            sealjudge2_ok = "sealed judge configuration" in str(exc)
+        ok &= check(
+            "judge settings drifted from the seal refused at scoring",
+            sealjudge2_ok, notes)
         vres3 = runner.score(config, sched_docs, judge, ws / "judge-sched",
                              scoring_seed=5, manifest_path=manifest_path,
                              score_task_paths=[str(task_s)],

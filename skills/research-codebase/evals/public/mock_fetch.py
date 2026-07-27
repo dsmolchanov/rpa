@@ -26,6 +26,10 @@ def main():
     if marker not in url:
         print(f"mock_fetch: unexpected url {url}", file=sys.stderr)
         sys.exit(2)
+    log = os.environ.get("MOCK_FETCH_LOG")
+    if log:
+        with open(log, "a", encoding="utf-8") as fh:
+            fh.write(url + "\n")
     source = Path(root) / url.split(marker, 1)[1]
     if not source.is_file():
         print(f"mock_fetch: no live source at {source}", file=sys.stderr)

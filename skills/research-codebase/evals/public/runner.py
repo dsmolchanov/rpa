@@ -254,13 +254,27 @@ def apply_sandbox(config, cmd, workdir, profile):
 
 def hash_tree(root):
     """Deterministic SHA-256 of a directory tree: sorted relative POSIX
-    paths, each followed by NUL + content + NUL."""
+    paths, each followed by NUL + entry type + permission bits + content +
+    NUL. Metadata is part of the artifact: an executable-bit flip changes
+    how an installation runs, so it must change the registered digest —
+    content-only hashing would let a mode-drifted installation pass
+    verification."""
     root = Path(root)
     digest = hashlib.sha256()
-    for path in sorted(p for p in root.rglob("*") if p.is_file()):
+    for path in sorted(root.rglob("*")):
         rel = path.relative_to(root).as_posix()
         digest.update(rel.encode("utf-8") + b"\0")
-        digest.update(path.read_bytes())
+        if path.is_symlink():
+            kind, mode = "symlink", 0
+        elif path.is_dir():
+            kind, mode = "dir", path.stat().st_mode & 0o7777
+        else:
+            kind, mode = "file", path.stat().st_mode & 0o7777
+        digest.update(f"{kind}:{mode:o}".encode("utf-8") + b"\0")
+        if kind == "file":
+            digest.update(path.read_bytes())
+        elif kind == "symlink":
+            digest.update(os.readlink(path).encode("utf-8"))
         digest.update(b"\0")
     return digest.hexdigest()
 
@@ -494,6 +508,29 @@ def read_input_bytes(path, what):
         return Path(path).read_bytes()
     except OSError as exc:
         raise InfraFailure(f"cannot read {what} {path}: {exc}") from exc
+
+
+def validate_sealed_judge_config(config, seal_doc):
+    """The atomic seal registers the judge session configuration; the
+    runtime config must match it exactly. config_digest alone binds
+    whatever judge settings existed at schedule creation — without this
+    check, a config changed after sealing but before scheduling would pass
+    every later digest comparison while scoring under unregistered judge
+    settings."""
+    sealed = seal_doc.get("judge_config")
+    if not isinstance(sealed, dict):
+        raise InfraFailure(
+            "the sealed package records no `judge_config` — the atomic "
+            "seal must bind the judge session configuration "
+            "(judge_backend_cmd, judge_model, judge_effort)"
+        )
+    for key in ("judge_backend_cmd", "judge_model", "judge_effort"):
+        if sealed.get(key) != config.get(key):
+            raise InfraFailure(
+                f"registered `{key}` differs from the sealed judge "
+                f"configuration — scoring would run under unregistered "
+                f"judge settings; fix the config or re-seal"
+            )
 
 
 def parse_seal_manifest(seal_bytes, path):
@@ -1412,7 +1449,9 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
                 "`seal_package_sha256` — a recomputed or altered seal is "
                 "refused"
             )
-        _, sealed_files = parse_seal_manifest(seal_bytes, seal_path)
+        seal_doc_sched, sealed_files = parse_seal_manifest(seal_bytes,
+                                                           seal_path)
+        validate_sealed_judge_config(config, seal_doc_sched)
         for task in tasks:
             if sealed_files.get(Path(task).name) != task_digests[task]:
                 raise InfraFailure(
@@ -2067,6 +2106,7 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             )
         seal_doc, seal_files = parse_seal_manifest(seal_bytes,
                                                    seal_manifest_path)
+        validate_sealed_judge_config(config, seal_doc)
         # The seal binds each task to ITS scoring context: a per-file hash
         # proves a context is sealed, not that it belongs to this task —
         # swapped mappings would judge replicates against another task's
@@ -2138,8 +2178,25 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                     "to its live source URL (`snapshot_sources`) — drift "
                     "cannot be verified against unprovenanced copies"
                 )
+            # Drift is computed ONCE PER TASK and the verdict applied to
+            # every replicate document of that task: per-document fetching
+            # could split a nondeterministic live source into judged and
+            # excluded replicates of the same cell. Each sealed source is
+            # also fetched exactly once per invocation (keyed cache).
+            fetched_digests = {}
+            task_docs = {}
             for doc_name, snap_path in snapshot_by_doc.items():
                 task_name = snap_task_by_doc[doc_name]
+                entry = task_docs.setdefault(task_name, (snap_path, []))
+                if entry[0] != snap_path:
+                    raise InfraFailure(
+                        f"{task_name}: replicate documents reference "
+                        f"different snapshot copies — one sealed snapshot "
+                        f"per task"
+                    )
+                entry[1].append(doc_name)
+            for task_name in sorted(task_docs):
+                snap_path, doc_names = task_docs[task_name]
                 drift_entry = drift_report.get(task_name)
                 if not isinstance(drift_entry, dict):
                     raise InfraFailure(
@@ -2166,10 +2223,12 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                             f"has no source URL in the sealed package — "
                             f"drift cannot be verified"
                         )
-                    fetched = _fetch_live_source(
-                        fetch_cmd, url, config["timeout_seconds"])
-                    if (hashlib.sha256(fetched).hexdigest()
-                            != seal_files[seal_key]):
+                    if seal_key not in fetched_digests:
+                        fetched = _fetch_live_source(
+                            fetch_cmd, url, config["timeout_seconds"])
+                        fetched_digests[seal_key] = hashlib.sha256(
+                            fetched).hexdigest()
+                    if fetched_digests[seal_key] != seal_files[seal_key]:
                         changed_keys.append(seal_key)
                 if changed_keys:
                     # The registered gate is about MATERIAL drift in a
@@ -2200,7 +2259,7 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                     # in the batch identity — a corrected material-drift
                     # report between interruption and resume is a different
                     # batch even when the same task stays inconclusive.
-                    drift_notes[doc_name] = {
+                    note = {
                         "changed": changed_keys,
                         "material": material,
                         "adjudications": {
@@ -2208,8 +2267,13 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                             for key in changed_keys
                         },
                     }
-                    if material:
-                        inconclusive_docs.add(doc_name)
+                    # One verdict for the whole task: every replicate
+                    # document carries the same note and the same
+                    # inconclusive outcome.
+                    for doc_name in doc_names:
+                        drift_notes[doc_name] = note
+                        if material:
+                            inconclusive_docs.add(doc_name)
     else:
         judge_prompt = read_input_text(judge_prompt_path, "judge prompt")
         sealed_context_texts = None
