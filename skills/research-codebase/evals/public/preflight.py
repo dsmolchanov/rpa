@@ -1469,6 +1469,26 @@ def run_preflight():
                 "/artifact-contract.md")),
             notes)
 
+        # Each v2 adapter must IMPORT its contract at parse time
+        # (@${CLAUDE_PLUGIN_ROOT}/...): the adapters have no Bash tool,
+        # so a plugin-root path left as prose is unreadable to them in a
+        # plugin-only install and all six would dead-end at the honest
+        # failure branch instead of researching.
+        adapter_dir = HERE.parents[3] / "agents"
+        adapter_files = sorted(adapter_dir.glob("research-v2-*.md"))
+        adapters_import = bool(adapter_files) and len(adapter_files) == 6
+        for adapter in adapter_files:
+            a_text = adapter.read_text(encoding="utf-8")
+            contract = adapter.name.replace(
+                "research-v2-", "research-", 1)
+            adapters_import &= (
+                "@${CLAUDE_PLUGIN_ROOT}/skills/research-codebase/references"
+                f"/agent-contracts/{contract}" in a_text)
+        ok &= check(
+            "v2 adapters import their agent contracts at parse time",
+            adapters_import,
+            notes)
+
         record, _, _, _ = run_case(ws, "stale-artifact")
         ok &= check(
             "artifact metadata bound to the run's pinned checkout",
