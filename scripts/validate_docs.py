@@ -505,8 +505,14 @@ def check_artifact_validator(root, errors):
     (conventions SS4)."""
     import subprocess as _sp
     import sys as _sys
-    validator = (root / "skills" / "research-codebase" / "evals" / "public"
-                 / "validate_artifact.py")
+    skill_root = root / "skills" / "research-codebase"
+    if not skill_root.is_dir():
+        # not_applicable: the research skill package is absent from this
+        # root (e.g. the self-test fixture repos) — there is no artifact
+        # contract to bind. In the real repo the package exists and the
+        # gate below is enforced.
+        return
+    validator = skill_root / "evals" / "public" / "validate_artifact.py"
     fixtures = validator.parent / "fixtures"
     good = fixtures / "artifact-valid.md"
     bad = fixtures / "artifact-invalid.md"
