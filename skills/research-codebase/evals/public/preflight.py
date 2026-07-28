@@ -2443,6 +2443,7 @@ def run_preflight():
             "drift fetched once per task, verdict uniform across replicates",
             len(two_res) == 2
             and all(r.get("inconclusive") is True for r in two_res)
+            and all(r.get("axis") == "primary" for r in two_res)
             and len({json.dumps(r.get("source_drift"), sort_keys=True)
                      for r in two_res}) == 1
             and len(fetches) == 2,

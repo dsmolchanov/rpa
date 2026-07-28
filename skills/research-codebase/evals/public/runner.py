@@ -2602,6 +2602,11 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                 "scoring_seed": scoring_seed,
                 "presentation_index": i,
                 "scheduled": manifest_path is not None,
+                # Exclusions carry the batch axis too: downstream
+                # aggregation must distinguish a primary exclusion from
+                # a diagnostic one.
+                "role": role,
+                "axis": "diagnostic" if diagnostic_axis else "primary",
             }
             atomic_write_text(out / f"judge-{scoring_id}-{i}.json",
                               json.dumps(result, indent=2) + "\n")
