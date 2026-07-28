@@ -50,6 +50,10 @@ import tempfile
 
 import ns_sandbox
 
+# The pilot's registered backend CLI: MACOS_SANDBOX_CLI_ROOT must
+# provably be its install subtree (or the wrapped command's).
+BACKEND_CLI = "claude"
+
 RO_SUBPATHS = ["/usr", "/bin", "/sbin", "/System", "/Library", "/opt",
                "/etc", "/private/etc", "/var/db/timezone",
                "/private/var/db/timezone", "/dev"]
@@ -117,21 +121,91 @@ def main():
         if not os.path.isdir(path):
             sys.exit(f"macos_sandbox: not a directory: {path}")
 
-    # Toolchain: the backend binary's install prefix must be readable
-    # (e.g. a Homebrew or nvm tree outside the system paths) — but ONLY
-    # when it is not already covered by the system allowlist, and NEVER
-    # the filesystem root: /bin/sh's two-levels-up prefix is `/`, and
-    # allowlisting it would grant read access to the whole host.
+    # Toolchain: the backend binary's install location must be readable
+    # when it is not already covered by the system allowlist (e.g. a
+    # Homebrew or nvm tree). The surface is the NARROWEST useful one —
+    # the binary's own directory subtree — and never a directory that
+    # would expose operator identity wholesale: if the CLI resolves
+    # directly inside HOME or ~/.claude (real settings, transcripts,
+    # auth material live there), the operator must point
+    # MACOS_SANDBOX_CLI_ROOT at a dedicated install subtree instead of
+    # the wrapper guessing wider. The mandatory operator check's
+    # CLI-start probe verifies whichever surface results.
     exe = shutil.which(cmd[0]) or cmd[0]
     exe_real = os.path.realpath(exe)
-    exe_prefix = os.path.dirname(os.path.dirname(exe_real))
+    exe_dir = os.path.dirname(exe_real)
     covered = any(
         exe_real.startswith(os.path.realpath(p) + "/")
         for p in RO_SUBPATHS if os.path.exists(p))
     extra_ro = []
-    if not covered and exe_prefix not in ("/", "") \
-            and os.path.dirname(exe_prefix) != exe_prefix:
-        extra_ro.append(sbpl_subpath(exe_prefix))
+    if not covered:
+        home_real = os.path.realpath(os.path.expanduser("~"))
+        claude_real = os.path.realpath(
+            os.path.join(home_real, ".claude"))
+
+        def contains(root, path):
+            root = root.rstrip("/") or "/"
+            return path == root or path.startswith(root + "/")
+
+        def unsafe_root(root):
+            # Unsafe is STRUCTURAL, not an exact-path blacklist: any
+            # root that contains the operator's HOME (so /, /Users,
+            # /System/Volumes/Data, HOME itself) or the real ~/.claude
+            # would make identity material readable. A subtree INSIDE
+            # them (e.g. ~/.claude/local) is fine — it does not
+            # contain them.
+            return (root == "/" or contains(root, home_real)
+                    or contains(root, claude_real))
+
+        if not unsafe_root(exe_dir):
+            extra_ro.append(sbpl_subpath(exe_dir))
+        elif not os.environ.get("MACOS_SANDBOX_CLI_ROOT"):
+            sys.exit(f"macos_sandbox: the command resolves inside "
+                     f"{exe_dir}, which would expose the operator's "
+                     f"config tree — set MACOS_SANDBOX_CLI_ROOT to a "
+                     f"dedicated install subtree")
+
+    # The explicit CLI root applies WHENEVER it is set, independent of
+    # what cmd[0] happens to be: probes and sessions that reach the
+    # backend CLI through a shell (`sh -c "... claude ..."`) must get
+    # the same install subtree the direct invocation would.
+    override = os.environ.get("MACOS_SANDBOX_CLI_ROOT")
+    if override:
+        home_real = os.path.realpath(os.path.expanduser("~"))
+        claude_real = os.path.realpath(
+            os.path.join(home_real, ".claude"))
+        root = os.path.realpath(override)
+        root_clean = root.rstrip("/") or "/"
+        if (root == "/"
+                or home_real == root_clean
+                or home_real.startswith(root_clean + "/")
+                or claude_real == root_clean
+                or claude_real.startswith(root_clean + "/")):
+            sys.exit("macos_sandbox: MACOS_SANDBOX_CLI_ROOT may not "
+                     "be / or any tree containing HOME or ~/.claude — "
+                     "use a dedicated install subtree")
+        if not os.path.isdir(root):
+            sys.exit(f"macos_sandbox: MACOS_SANDBOX_CLI_ROOT is not a "
+                     f"directory: {root}")
+        # The root must PROVABLY be a CLI install subtree — it has to
+        # contain the wrapped command's executable or the resolved
+        # backend CLI (registered backend: `claude`). Without this, a
+        # mis-set value (another eval volume, a data directory) would
+        # become readable to every evaluated and judge session.
+        def in_root(path):
+            return (path == root_clean
+                    or path.startswith(root_clean + "/"))
+
+        backend = shutil.which(BACKEND_CLI)
+        backend_real = os.path.realpath(backend) if backend else None
+        if not (in_root(exe_real)
+                or (backend_real is not None
+                    and in_root(backend_real))):
+            sys.exit("macos_sandbox: MACOS_SANDBOX_CLI_ROOT must be a "
+                     "subtree containing the wrapped command's "
+                     f"executable ({exe_real}) or the resolved "
+                     f"backend CLI (`{BACKEND_CLI}`)")
+        extra_ro.append(sbpl_subpath(root))
 
     # Credential file (file-authenticating hosts only): the named file
     # and its .oauth_token sibling, as literals — never the parent
