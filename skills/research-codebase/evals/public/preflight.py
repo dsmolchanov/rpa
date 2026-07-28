@@ -1489,6 +1489,30 @@ def run_preflight():
             adapters_import,
             notes)
 
+        # macOS amendment: the wrapper must carry the registered
+        # interface and deny-default profile, and the operator check
+        # must refuse to run anywhere but a Mac — the actual sandbox
+        # behavior is validated on the operator host (sandbox-exec does
+        # not exist here).
+        mac_wrap = HERE / "macos_sandbox.py"
+        mac_check_path = HERE / "macos_sandbox_check.py"
+        mac_help = subprocess.run(
+            [sys.executable, str(mac_wrap), "--help"],
+            capture_output=True, text=True)
+        wrap_text = mac_wrap.read_text(encoding="utf-8")
+        notmac = subprocess.run(
+            [sys.executable, str(mac_check_path), "--repo", "x"],
+            capture_output=True, text=True)
+        ok &= check(
+            "macOS wrapper registered (behavior validated on the operator host)",
+            mac_help.returncode == 0
+            and "--confine-to" in mac_help.stdout
+            and "(deny default)" in wrap_text
+            and "build_pinned_gitdir" in wrap_text
+            and notmac.returncode != 0
+            and "operator" in (notmac.stdout + notmac.stderr),
+            notes)
+
         record, _, _, _ = run_case(ws, "stale-artifact")
         ok &= check(
             "artifact metadata bound to the run's pinned checkout",
