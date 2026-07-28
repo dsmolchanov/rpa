@@ -153,25 +153,51 @@ def main():
             return (root == "/" or contains(root, home_real)
                     or contains(root, claude_real))
 
-        override = os.environ.get("MACOS_SANDBOX_CLI_ROOT")
-        if override:
-            root = os.path.realpath(override)
-            if unsafe_root(root):
-                sys.exit("macos_sandbox: MACOS_SANDBOX_CLI_ROOT may "
-                         "not be / or any tree containing HOME or "
-                         "~/.claude — use a dedicated install subtree")
-            if not contains(root, exe_real):
-                sys.exit("macos_sandbox: MACOS_SANDBOX_CLI_ROOT must "
-                         "be a subtree containing the resolved backend "
-                         f"executable ({exe_real})")
-            extra_ro.append(sbpl_subpath(root))
-        elif not unsafe_root(exe_dir):
+        if not unsafe_root(exe_dir):
             extra_ro.append(sbpl_subpath(exe_dir))
-        else:
-            sys.exit(f"macos_sandbox: the backend CLI resolves inside "
+            cmd_exe_readable = True
+        elif not os.environ.get("MACOS_SANDBOX_CLI_ROOT"):
+            sys.exit(f"macos_sandbox: the command resolves inside "
                      f"{exe_dir}, which would expose the operator's "
                      f"config tree — set MACOS_SANDBOX_CLI_ROOT to a "
                      f"dedicated install subtree")
+        else:
+            cmd_exe_readable = False
+    else:
+        cmd_exe_readable = True
+
+    # The explicit CLI root applies WHENEVER it is set, independent of
+    # what cmd[0] happens to be: probes and sessions that reach the
+    # backend CLI through a shell (`sh -c "... claude ..."`) must get
+    # the same install subtree the direct invocation would.
+    override = os.environ.get("MACOS_SANDBOX_CLI_ROOT")
+    if override:
+        home_real = os.path.realpath(os.path.expanduser("~"))
+        claude_real = os.path.realpath(
+            os.path.join(home_real, ".claude"))
+        root = os.path.realpath(override)
+        root_clean = root.rstrip("/") or "/"
+        if (root == "/"
+                or home_real == root_clean
+                or home_real.startswith(root_clean + "/")
+                or claude_real == root_clean
+                or claude_real.startswith(root_clean + "/")):
+            sys.exit("macos_sandbox: MACOS_SANDBOX_CLI_ROOT may not "
+                     "be / or any tree containing HOME or ~/.claude — "
+                     "use a dedicated install subtree")
+        if not os.path.isdir(root):
+            sys.exit(f"macos_sandbox: MACOS_SANDBOX_CLI_ROOT is not a "
+                     f"directory: {root}")
+        if not cmd_exe_readable and not (
+                exe_real == root_clean
+                or exe_real.startswith(root_clean + "/")):
+            # The direct command's executable is readable ONLY through
+            # this root — an unrelated broad prefix cannot stand in
+            # for the install subtree.
+            sys.exit("macos_sandbox: MACOS_SANDBOX_CLI_ROOT must be a "
+                     "subtree containing the resolved command "
+                     f"executable ({exe_real})")
+        extra_ro.append(sbpl_subpath(root))
 
     # Credential file (file-authenticating hosts only): the named file
     # and its .oauth_token sibling, as literals — never the parent

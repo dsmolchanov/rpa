@@ -49,11 +49,15 @@ def check(name, passed, detail=""):
     return passed
 
 
-def wrapped(workdir, profile, shell_cmd):
+def wrapped_argv(workdir, profile, argv):
     return subprocess.run(
         [sys.executable, str(WRAPPER), "--confine-to", str(workdir),
-         "--profile", str(profile), "--", "sh", "-c", shell_cmd],
+         "--profile", str(profile), "--"] + argv,
         capture_output=True, text=True)
+
+
+def wrapped(workdir, profile, shell_cmd):
+    return wrapped_argv(workdir, profile, ["sh", "-c", shell_cmd])
 
 
 def main():
@@ -142,9 +146,15 @@ def main():
                     f"2>&1 | head -1")
         check("newer-than-pin commit unreadable",
               "bad object" in r.stdout + r.stderr)
-        r = wrapped(wt, profile, "claude --version")
+        # Invoked DIRECTLY (not through sh -c): scored runs pass
+        # `claude` as the wrapped command, so the probe must exercise
+        # the same executable-allowlisting path the real backend
+        # command takes (including MACOS_SANDBOX_CLI_ROOT when the
+        # install lives outside the system paths).
+        r = wrapped_argv(wt, profile, ["claude", "--version"])
         check("backend CLI starts under the wrapper",
-              r.returncode == 0, detail=r.stdout.strip()[:40])
+              r.returncode == 0,
+              detail=(r.stdout + r.stderr).strip()[:60])
     finally:
         subprocess.run(["git", "-C", args.repo, "worktree", "remove",
                         "--force", str(wt)], capture_output=True)
