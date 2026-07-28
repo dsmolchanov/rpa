@@ -1684,7 +1684,7 @@ def run_preflight():
         resume_out = ws / "judge-batch-resume"
         r1 = runner.score(config, docs, judge, resume_out, scoring_seed=5,
                           allow_unscheduled=True)
-        sm_path = resume_out / "scoring-scorer-manifest.json"
+        sm_path = resume_out / "scoring-scorer-primary-manifest.json"
         sm = json.loads(sm_path.read_text(encoding="utf-8"))
         sm["complete"] = False
         sm["results"] = sm["results"][:1]
@@ -1722,7 +1722,7 @@ def run_preflight():
         rec_out = ws / "judge-batch-reconcile"
         q1 = runner.score(config, docs, judge, rec_out, scoring_seed=5,
                           allow_unscheduled=True)
-        smp = rec_out / "scoring-scorer-manifest.json"
+        smp = rec_out / "scoring-scorer-primary-manifest.json"
         smj = json.loads(smp.read_text(encoding="utf-8"))
         smj["complete"] = False
         smj["results"] = []
@@ -1739,7 +1739,7 @@ def run_preflight():
         forged_out = ws / "judge-batch-forged"
         runner.score(config, docs, judge, forged_out, scoring_seed=5,
                      allow_unscheduled=True)
-        fmp = forged_out / "scoring-scorer-manifest.json"
+        fmp = forged_out / "scoring-scorer-primary-manifest.json"
         fm = json.loads(fmp.read_text(encoding="utf-8"))
         fm["complete"] = False
         fm["results"][0]["response"] = "FORGED-VERDICT: coverage 10/10"
@@ -1756,7 +1756,7 @@ def run_preflight():
         gone_out = ws / "judge-batch-gone-record"
         runner.score(config, docs, judge, gone_out, scoring_seed=5,
                      allow_unscheduled=True)
-        gmp = gone_out / "scoring-scorer-manifest.json"
+        gmp = gone_out / "scoring-scorer-primary-manifest.json"
         gm = json.loads(gmp.read_text(encoding="utf-8"))
         gm["complete"] = False
         gmp.write_text(json.dumps(gm), encoding="utf-8")
@@ -1790,7 +1790,7 @@ def run_preflight():
             missdoc_ok and bindoc_ok, notes)
         malformed_out = ws / "judge-batch-malformed"
         malformed_out.mkdir()
-        (malformed_out / "scoring-scorer-manifest.json").write_text(
+        (malformed_out / "scoring-scorer-primary-manifest.json").write_text(
             "{truncated", encoding="utf-8")
         try:
             runner.score(config, docs, judge, malformed_out, scoring_seed=5,
@@ -1818,16 +1818,16 @@ def run_preflight():
                 pre_ok = False
             except runner.InfraFailure:
                 pre_ok = (flaky_out
-                          / "scoring-scorer-manifest.json").exists()
+                          / "scoring-scorer-primary-manifest.json").exists()
             sid_crash = json.loads(
-                (flaky_out / "scoring-scorer-manifest.json")
+                (flaky_out / "scoring-scorer-primary-manifest.json")
                 .read_text(encoding="utf-8"))["scoring_id"]
             flaky_res = runner.score(flaky_cfg, docs, judge, flaky_out,
                                      scoring_seed=5, allow_unscheduled=True)
         finally:
             os.environ.pop("MOCK_STATE_FILE", None)
         sm_flaky = json.loads(
-            (flaky_out / "scoring-scorer-manifest.json")
+            (flaky_out / "scoring-scorer-primary-manifest.json")
             .read_text(encoding="utf-8"))
         ok &= check(
             "scoring id persisted before the first judge (crash-safe resume)",
@@ -1864,7 +1864,7 @@ def run_preflight():
         pend_out = ws / "judge-batch-pending"
         p1 = runner.score(config, docs, judge, pend_out, scoring_seed=5,
                           allow_unscheduled=True)
-        pmp = pend_out / "scoring-scorer-manifest.json"
+        pmp = pend_out / "scoring-scorer-primary-manifest.json"
         pm = json.loads(pmp.read_text(encoding="utf-8"))
         pm["complete"] = False
         pm["results"] = []
@@ -2283,7 +2283,7 @@ def run_preflight():
                     "rationale": "a different recorded basis"}}}}),
             encoding="utf-8")
         mdr_manifest = (ws / "judge-drifted"
-                        / "scoring-verifier-manifest.json")
+                        / "scoring-verifier-primary-manifest.json")
         mdm = json.loads(mdr_manifest.read_text(encoding="utf-8"))
         mdm["complete"] = False
         mdr_manifest.write_text(json.dumps(mdm), encoding="utf-8")
@@ -2327,7 +2327,7 @@ def run_preflight():
             len(scorer_drift) == 1
             and scorer_drift[0].get("inconclusive") is True,
             notes)
-        sd_manifest = ws / "judge-scorer-drift" / "scoring-scorer-manifest.json"
+        sd_manifest = ws / "judge-scorer-drift" / "scoring-scorer-primary-manifest.json"
         sdm = json.loads(sd_manifest.read_text(encoding="utf-8"))
         sdm["complete"] = False
         sdm["results"] = []
@@ -2443,6 +2443,7 @@ def run_preflight():
             "drift fetched once per task, verdict uniform across replicates",
             len(two_res) == 2
             and all(r.get("inconclusive") is True for r in two_res)
+            and all(r.get("axis") == "primary" for r in two_res)
             and len({json.dumps(r.get("source_drift"), sort_keys=True)
                      for r in two_res}) == 1
             and len(fetches) == 2,
@@ -2494,6 +2495,102 @@ def run_preflight():
         ok &= check(
             "subset or duplicated scoring inputs refused against the manifest",
             subset_ok, notes)
+        # Registered amendment (owner decision, 2026-07-28): gate-failed
+        # replicates stay counted workflow failures for the primary
+        # outcome, but their documents' content is blind-scored on a
+        # separate diagnostic axis — and NEVER leaks into the primary
+        # batch.
+        cfg_diag, _ = build_config(ws, "bad-artifact")
+        sched_diag = runner.make_schedule(cfg_diag, [str(task_s)], 1,
+                                          seed=17, allow_nonstandard=True)
+        sched_diag_path = ws / "schedule-diag.json"
+        sched_diag_path.write_text(json.dumps(sched_diag),
+                                   encoding="utf-8")
+        man_diag = runner.run_schedule(cfg_diag, sched_diag_path,
+                                       {"mock-repo": str(repo_s)},
+                                       ws / "out-diag", [str(task_s)])
+        diag_recs = [r for r in man_diag["results"]
+                     if r.get("status") == "workflow_failure"
+                     and r.get("diagnostic_sha256")]
+        diag_docs = [ws / "out-diag" / f"run-{r['run_id']}-diag.md"
+                     for r in diag_recs]
+        diag_digest_ok = bool(diag_recs) and all(
+            hashlib.sha256(d.read_bytes()).hexdigest()
+            == r["diagnostic_sha256"]
+            for d, r in zip(diag_docs, diag_recs))
+        man_diag_path = ws / "out-diag" / "schedule-manifest.json"
+        try:
+            runner.score(cfg_diag, diag_docs, judge,
+                         ws / "judge-diag-prim", scoring_seed=7,
+                         manifest_path=man_diag_path,
+                         score_task_paths=[str(task_s)],
+                         task_contexts=sched_ctx,
+                         seal_manifest_path=seal_file)
+            diag_prim_refused = False
+        except runner.InfraFailure as exc:
+            diag_prim_refused = "exactly once" in str(exc)
+        dres = runner.score(cfg_diag, diag_docs, judge, ws / "judge-diag",
+                            scoring_seed=7, manifest_path=man_diag_path,
+                            score_task_paths=[str(task_s)],
+                            task_contexts=sched_ctx,
+                            seal_manifest_path=seal_file,
+                            diagnostic_axis=True)
+        # A malformed metadata STRUCTURE (unclosed frontmatter) is one
+        # of the gate failures the diagnostic axis exists to score: the
+        # anonymizer must mask fingerprint keys anyway, or one broken
+        # replicate would abort the whole blind-scoring batch.
+        broken_doc = ("---\n"
+                      "researcher: Real Name\n"
+                      "git_commit: 1234567deadbeef\n"
+                      "# Research: unclosed frontmatter\n"
+                      "**Researcher**: Real Name\n")
+        masked = runner.anonymize(broken_doc, "probe")
+        masked_path = ws / "run-probe-diag.md"
+        masked_path.write_text(masked, encoding="utf-8")
+        try:
+            runner.assert_blind_scorable(masked_path)
+            unclosed_masked_ok = "Real Name" not in masked
+        except runner.InfraFailure:
+            unclosed_masked_ok = False
+        # Primary and diagnostic batches share an output directory:
+        # state is namespaced by role AND axis, so a completed primary
+        # batch must not reject the diagnostic batch.
+        shared_out = ws / "judge-diag-shared"
+        pres_shared = runner.score(cfg_diag, [], judge, shared_out,
+                                   scoring_seed=7,
+                                   manifest_path=man_diag_path,
+                                   score_task_paths=[str(task_s)],
+                                   task_contexts=sched_ctx,
+                                   seal_manifest_path=seal_file)
+        dres_shared = runner.score(cfg_diag, diag_docs, judge, shared_out,
+                                   scoring_seed=7,
+                                   manifest_path=man_diag_path,
+                                   score_task_paths=[str(task_s)],
+                                   task_contexts=sched_ctx,
+                                   seal_manifest_path=seal_file,
+                                   diagnostic_axis=True)
+        try:
+            runner.score(cfg_diag, diag_docs, judge,
+                         ws / "judge-diag-verif", scoring_seed=7,
+                         manifest_path=man_diag_path,
+                         score_task_paths=[str(task_s)],
+                         task_contexts=sched_ctx,
+                         seal_manifest_path=seal_file,
+                         evidence_repos={"mock-repo": str(repo_s)},
+                         diagnostic_axis=True)
+            diag_verif_refused = False
+        except runner.InfraFailure as exc:
+            diag_verif_refused = "blind SCORER" in str(exc)
+        ok &= check(
+            "gate-failed replicates scored on the diagnostic axis only",
+            diag_digest_ok and diag_prim_refused
+            and len(dres) == len(diag_recs)
+            and all(r.get("axis") == "diagnostic" for r in dres)
+            and unclosed_masked_ok
+            and pres_shared == []
+            and len(dres_shared) == len(diag_recs)
+            and diag_verif_refused,
+            notes)
         vres2 = runner.score(config, sched_docs, judge, ws / "judge-mverify",
                              scoring_seed=5, manifest_path=manifest_path,
                          score_task_paths=[str(task_s)],
