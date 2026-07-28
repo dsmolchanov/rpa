@@ -591,6 +591,32 @@ be registered before Sequence step 5 unseals the holdout. No real
 workflow-abort exit codes were observed; `workflow_abort_exit_codes`
 stays `[]` as registered.
 
+**Registered amendment — diagnostic content axis (owner decision
+2026-07-28, registered BEFORE Sequence step 5; the holdout remains
+sealed):** the owner selected option 2 of the recorded question, with
+this scope:
+
+- **The primary end-to-end outcome is unchanged.** An artifact-gate
+  rejection stays a counted workflow failure — binary, per replicate,
+  uniform across arms. No repairs, no re-runs.
+- **A separate diagnostic axis scores CONTENT for every produced
+  document.** The blind scorer judges the content of gate-passed and
+  gate-failed documents alike, under the same sealed rubric and
+  procedure; diagnostic results are reported alongside — never inside —
+  the primary outcome, so the results can show whether the baseline
+  loses on format discipline, on content, or on both.
+- **Mechanism (harness, registered with this amendment):** a
+  gate-failed replicate's anonymized document is preserved as
+  `run-<id>-diag.md` with its digest recorded as `diagnostic_sha256`
+  in the run record and manifest (verified against the immutable run
+  record like the primary digest). Scoring gains a manifest-bound
+  `--diagnostic-axis` batch — completed replicates' anonymized
+  artifacts PLUS gate-failed replicates' diagnostic copies, each
+  exactly once, digest-verified, task-context-routed, with every
+  judge output labeled `axis: diagnostic`; the primary batch is
+  unchanged and refuses diagnostic documents. Proven by the synthetic
+  preflight (155/155) before any holdout run.
+
 ## Sequence
 
 1. Prerequisites 1–5.

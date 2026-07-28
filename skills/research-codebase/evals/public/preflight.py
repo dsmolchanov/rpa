@@ -2494,6 +2494,52 @@ def run_preflight():
         ok &= check(
             "subset or duplicated scoring inputs refused against the manifest",
             subset_ok, notes)
+        # Registered amendment (owner decision, 2026-07-28): gate-failed
+        # replicates stay counted workflow failures for the primary
+        # outcome, but their documents' content is blind-scored on a
+        # separate diagnostic axis — and NEVER leaks into the primary
+        # batch.
+        cfg_diag, _ = build_config(ws, "bad-artifact")
+        sched_diag = runner.make_schedule(cfg_diag, [str(task_s)], 1,
+                                          seed=17, allow_nonstandard=True)
+        sched_diag_path = ws / "schedule-diag.json"
+        sched_diag_path.write_text(json.dumps(sched_diag),
+                                   encoding="utf-8")
+        man_diag = runner.run_schedule(cfg_diag, sched_diag_path,
+                                       {"mock-repo": str(repo_s)},
+                                       ws / "out-diag", [str(task_s)])
+        diag_recs = [r for r in man_diag["results"]
+                     if r.get("status") == "workflow_failure"
+                     and r.get("diagnostic_sha256")]
+        diag_docs = [ws / "out-diag" / f"run-{r['run_id']}-diag.md"
+                     for r in diag_recs]
+        diag_digest_ok = bool(diag_recs) and all(
+            hashlib.sha256(d.read_bytes()).hexdigest()
+            == r["diagnostic_sha256"]
+            for d, r in zip(diag_docs, diag_recs))
+        man_diag_path = ws / "out-diag" / "schedule-manifest.json"
+        try:
+            runner.score(cfg_diag, diag_docs, judge,
+                         ws / "judge-diag-prim", scoring_seed=7,
+                         manifest_path=man_diag_path,
+                         score_task_paths=[str(task_s)],
+                         task_contexts=sched_ctx,
+                         seal_manifest_path=seal_file)
+            diag_prim_refused = False
+        except runner.InfraFailure as exc:
+            diag_prim_refused = "exactly once" in str(exc)
+        dres = runner.score(cfg_diag, diag_docs, judge, ws / "judge-diag",
+                            scoring_seed=7, manifest_path=man_diag_path,
+                            score_task_paths=[str(task_s)],
+                            task_contexts=sched_ctx,
+                            seal_manifest_path=seal_file,
+                            diagnostic_axis=True)
+        ok &= check(
+            "gate-failed replicates scored on the diagnostic axis only",
+            diag_digest_ok and diag_prim_refused
+            and len(dres) == len(diag_recs)
+            and all(r.get("axis") == "diagnostic" for r in dres),
+            notes)
         vres2 = runner.score(config, sched_docs, judge, ws / "judge-mverify",
                              scoring_seed=5, manifest_path=manifest_path,
                          score_task_paths=[str(task_s)],

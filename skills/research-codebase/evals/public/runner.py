@@ -1368,6 +1368,19 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
         )
         if contract_defects:
             record["artifact_defects"] = contract_defects
+            # Registered amendment (owner decision, 2026-07-28, recorded
+            # before unsealing): the gate rejection stays a counted
+            # workflow failure for the primary end-to-end outcome — no
+            # repair, no re-run — but the document's CONTENT is still
+            # blind-scored on a separate diagnostic axis, so the
+            # anonymized diagnostic copy and its digest are preserved
+            # alongside the raw evidence.
+            diag_text = anonymize(raw, run_id)
+            (out / f"run-{run_id}-diag.md").write_text(diag_text,
+                                                       encoding="utf-8")
+            record["diagnostic_sha256"] = hashlib.sha256(
+                diag_text.encode("utf-8")
+            ).hexdigest()
             shown = "; ".join(contract_defects[:5])
             more = " …" if len(contract_defects) > 5 else ""
             raise WorkflowFailure(
@@ -1706,7 +1719,9 @@ def verify_results_against_records(results, entries, out_dir, require_all):
                 or run_record.get("task") != done.get("task")
                 or run_record.get("status") != done.get("status")
                 or run_record.get("artifact_sha256")
-                != done.get("artifact_sha256")):
+                != done.get("artifact_sha256")
+                or run_record.get("diagnostic_sha256")
+                != done.get("diagnostic_sha256")):
             raise InfraFailure(
                 f"manifest result {done.get('index')} does not match its "
                 f"immutable run record — edited manifest refused"
@@ -1861,6 +1876,10 @@ def run_schedule(config, schedule_path, repos, output_dir, task_paths):
             "status": final["status"],
             "attempts": final.get("attempt", 1),
             "artifact_sha256": final.get("artifact_sha256"),
+            # Registered diagnostic axis (2026-07-28): the digest of a
+            # gate-failed replicate's anonymized diagnostic copy — the
+            # scoring side derives the diagnostic batch from this.
+            "diagnostic_sha256": final.get("diagnostic_sha256"),
             "task_sha256": schedule["task_digests"][entry["task"]],
         })
         referenced_runs.add(final["run_id"])
@@ -1995,7 +2014,8 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
           evidence_repo=None, evidence_sha=None, scoring_seed=None,
           manifest_path=None, allow_unscheduled=False, evidence_repos=None,
           task_contexts=None, seal_manifest_path=None, task_snapshots=None,
-          drift_report_path=None, score_task_paths=None):
+          drift_report_path=None, score_task_paths=None,
+          diagnostic_axis=False):
     """One fresh pinned backend session per document. The judge's full
     response text is preserved on disk — it IS the scoring artifact. Judge
     prompts live in the sealed package and are passed in at runtime.
@@ -2026,6 +2046,12 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             "score mode requires the schedule manifest so every scheduled "
             "replicate is scored exactly once — ad-hoc/dev scoring must be "
             "explicitly marked unscheduled"
+        )
+    if diagnostic_axis and manifest_path is None:
+        raise InfraFailure(
+            "`diagnostic_axis` is defined only for manifest-bound scoring "
+            "— the diagnostic batch is derived from the manifest's "
+            "gate-failed replicates"
         )
     doc_evidence = None
     role = "verifier" if (evidence_repo or evidence_repos is not None) else "scorer"
@@ -2070,7 +2096,25 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             )
         completed = [r for r in manifest.get("results", [])
                      if r.get("status") == "completed"]
-        for r in completed:
+        # The scoreable set: completed replicates' anonymized artifacts.
+        # Registered amendment (owner decision, 2026-07-28, recorded
+        # before unsealing): with `diagnostic_axis`, gate-failed
+        # replicates' diagnostic copies join the batch — their gate
+        # rejection stays a counted workflow failure for the PRIMARY
+        # end-to-end outcome, but every produced document's CONTENT is
+        # blind-scored on this separate diagnostic axis, so format
+        # discipline and content quality are measured independently.
+        scoreable = [(r, f"run-{r['run_id']}-anon.md",
+                      r.get("artifact_sha256")) for r in completed]
+        if diagnostic_axis:
+            scoreable += [
+                (r, f"run-{r['run_id']}-diag.md",
+                 r.get("diagnostic_sha256"))
+                for r in manifest.get("results", [])
+                if r.get("status") == "workflow_failure"
+                and r.get("diagnostic_sha256")
+            ]
+        for r, _, _ in scoreable:
             recorded_task = r.get("task_sha256")
             if recorded_task is not None:
                 actual_task = hashlib.sha256(
@@ -2102,19 +2146,18 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                 "registered configuration and task set — trimmed or edited "
                 "schedules are refused at scoring time"
             )
-        expected_names = sorted(f"run-{r['run_id']}-anon.md" for r in completed)
+        expected_names = sorted(name for _, name, _ in scoreable)
         supplied_names = sorted(Path(d).name for d in doc_paths)
         if supplied_names != expected_names:
             raise InfraFailure(
-                f"scoring inputs must cover every completed scheduled "
+                f"scoring inputs must cover every scoreable scheduled "
                 f"replicate exactly once — expected {expected_names}, "
                 f"got {supplied_names}"
             )
         # Identity by name is not enough: the contents must be the exact
         # artifact the run produced, or an edited/substituted file with the
         # right name would be scored as that replicate.
-        digest_by_name = {f"run-{r['run_id']}-anon.md": r.get("artifact_sha256")
-                          for r in completed}
+        digest_by_name = {name: digest for _, name, digest in scoreable}
         for doc in doc_paths:
             actual = hashlib.sha256(
                 read_input_bytes(doc, "scoring document")).hexdigest()
@@ -2135,14 +2178,13 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             )
         context_by_doc = {}
         task_by_doc = {}
-        for r in completed:
+        for r, doc_name, _ in scoreable:
             task_name = Path(r["task"]).name
             if task_name not in task_contexts:
                 raise InfraFailure(
                     f"no sealed scoring context supplied for task "
                     f"{task_name} — every scored task needs one"
                 )
-            doc_name = f"run-{r['run_id']}-anon.md"
             context_by_doc[doc_name] = task_contexts[task_name]
             task_by_doc[doc_name] = r["task"]
         if evidence_repo or evidence_sha:
@@ -2160,9 +2202,8 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             drift_report = load_json_object(drift_report_path,
                                             "drift report")
         doc_evidence = {} if evidence_repos is not None else None
-        for r in completed:
+        for r, doc_name, _ in scoreable:
             task_text = read_task_text(r["task"])
-            doc_name = f"run-{r['run_id']}-anon.md"
             if evidence_repos is not None:
                 # A holdout batch spans several target repositories: every
                 # document is verified against the worktree of its own
@@ -2426,6 +2467,7 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
         "manifest": str(manifest_path) if manifest_path is not None else None,
         "config_digest": config_digest(config),
         "role": role,
+        "axis": "diagnostic" if diagnostic_axis else "primary",
         # ORDERED as supplied: the seeded shuffle operates on the
         # caller's index order, so a reordered resume is a different
         # batch — sorting here would let it slip through.
@@ -2627,6 +2669,7 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             "presentation_index": i,
             "scoring_id": scoring_id,
             "role": role,
+            "axis": "diagnostic" if diagnostic_axis else "primary",
         }, indent=2) + "\n")
         try:
             try:
@@ -2668,6 +2711,7 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             "profile": str(profile),
             "cwd": str(workdir),
             "role": role,
+            "axis": "diagnostic" if diagnostic_axis else "primary",
             "backend_version": backend_version,
             "scoring_seed": scoring_seed,
             "presentation_index": i,
@@ -2737,6 +2781,14 @@ def main():
     parser.add_argument("--unscheduled-docs", action="store_true",
                         help="score mode: explicitly allow ad-hoc/dev "
                              "scoring without a schedule manifest")
+    parser.add_argument("--diagnostic-axis", action="store_true",
+                        help="score mode with --manifest: the registered "
+                             "diagnostic content axis — the batch covers "
+                             "every produced document (completed "
+                             "replicates' anonymized artifacts PLUS "
+                             "gate-failed replicates' diagnostic copies); "
+                             "gate failures stay counted workflow "
+                             "failures for the primary outcome")
     parser.add_argument("--task-contexts", nargs="+",
                         help="score mode with --manifest: TASKFILE=CONTEXT "
                              "mapping from task file basename to its sealed "
@@ -2858,6 +2910,7 @@ def main():
                             scoring_seed=args.scoring_seed,
                             manifest_path=args.manifest,
                             allow_unscheduled=args.unscheduled_docs,
+                            diagnostic_axis=args.diagnostic_axis,
                             evidence_repos=evidence_repos,
                             task_contexts=task_contexts,
                             seal_manifest_path=args.seal_manifest,
