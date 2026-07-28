@@ -2057,6 +2057,12 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
         )
     doc_evidence = None
     role = "verifier" if (evidence_repo or evidence_repos is not None) else "scorer"
+    if diagnostic_axis and role == "verifier":
+        raise InfraFailure(
+            "`diagnostic_axis` is defined only for the blind SCORER — the "
+            "registered amendment scores document CONTENT; verifier-mode "
+            "diagnostic records are outside the protocol"
+        )
     if manifest_path is not None:
         # No post-hoc selection: the supplied documents must cover every
         # completed scheduled replicate exactly once — no subsets, no

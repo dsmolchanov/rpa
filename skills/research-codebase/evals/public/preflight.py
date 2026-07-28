@@ -2569,6 +2569,18 @@ def run_preflight():
                                    task_contexts=sched_ctx,
                                    seal_manifest_path=seal_file,
                                    diagnostic_axis=True)
+        try:
+            runner.score(cfg_diag, diag_docs, judge,
+                         ws / "judge-diag-verif", scoring_seed=7,
+                         manifest_path=man_diag_path,
+                         score_task_paths=[str(task_s)],
+                         task_contexts=sched_ctx,
+                         seal_manifest_path=seal_file,
+                         evidence_repos={"mock-repo": str(repo_s)},
+                         diagnostic_axis=True)
+            diag_verif_refused = False
+        except runner.InfraFailure as exc:
+            diag_verif_refused = "blind SCORER" in str(exc)
         ok &= check(
             "gate-failed replicates scored on the diagnostic axis only",
             diag_digest_ok and diag_prim_refused
@@ -2576,7 +2588,8 @@ def run_preflight():
             and all(r.get("axis") == "diagnostic" for r in dres)
             and unclosed_masked_ok
             and pres_shared == []
-            and len(dres_shared) == len(diag_recs),
+            and len(dres_shared) == len(diag_recs)
+            and diag_verif_refused,
             notes)
         vres2 = runner.score(config, sched_docs, judge, ws / "judge-mverify",
                              scoring_seed=5, manifest_path=manifest_path,
