@@ -69,6 +69,31 @@ def main():
         sys.exit("macos-sandbox-check must run on the macOS operator "
                  "host — this is not a Mac")
 
+    # Validate --newer OUTSIDE the sandbox first: a mistyped SHA would
+    # also print `bad object` inside and prove nothing. It must be a
+    # real commit of the clone and must NOT be an ancestor of the pin
+    # (an ancestor is part of the pinned closure and legitimately
+    # readable).
+    r = subprocess.run(["git", "-C", args.repo, "rev-parse",
+                        "--verify", args.newer + "^{commit}"],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.exit(f"--newer {args.newer!r} is not a commit in "
+                 f"{args.repo} — the newer-commit probe needs a real "
+                 f"post-pin commit")
+    newer_sha = r.stdout.strip()
+    anc = subprocess.run(["git", "-C", args.repo, "merge-base",
+                          "--is-ancestor", newer_sha, args.pin],
+                         capture_output=True)
+    if anc.returncode == 0:
+        sys.exit(f"--newer {args.newer} is an ancestor of the pin — "
+                 f"it is part of the pinned closure and proves "
+                 f"nothing; supply a post-pin commit")
+    if anc.returncode != 1:
+        sys.exit(f"cannot establish ancestry of --newer against the "
+                 f"pin: {anc.stderr.decode(errors='replace').strip()}")
+    args.newer = newer_sha
+
     ws = Path(tempfile.mkdtemp(prefix="macsbx-check-"))
     profile = ws / "prof"
     profile.mkdir()
