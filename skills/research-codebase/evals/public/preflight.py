@@ -1489,6 +1489,49 @@ def run_preflight():
             adapters_import,
             notes)
 
+        # macOS amendment: the wrapper must carry the registered
+        # interface and deny-default profile, and the operator check
+        # must refuse to run anywhere but a Mac — the actual sandbox
+        # behavior is validated on the operator host (sandbox-exec does
+        # not exist here).
+        mac_wrap = HERE / "macos_sandbox.py"
+        mac_check_path = HERE / "macos_sandbox_check.py"
+        mac_help = subprocess.run(
+            [sys.executable, str(mac_wrap), "--help"],
+            capture_output=True, text=True)
+        wrap_text = mac_wrap.read_text(encoding="utf-8")
+        notmac = subprocess.run(
+            [sys.executable, str(mac_check_path), "--repo", "x",
+             "--newer", "x"],
+            capture_output=True, text=True)
+        # The shared pinned-store builder must be idempotent across
+        # continuations that re-enter the same worktree (both wrappers
+        # re-invoke it per session).
+        import importlib.util as _ilu_ns
+        _spec_ns = _ilu_ns.spec_from_file_location(
+            "ns_sb_probe", HERE / "ns_sandbox.py")
+        ns_sb = _ilu_ns.module_from_spec(_spec_ns)
+        _spec_ns.loader.exec_module(ns_sb)
+        reuse_repo, reuse_sha = make_git_repo(ws, "pinned-reuse")
+        reuse_wt = runner.make_worktree(reuse_repo, reuse_sha,
+                                        ws / "pinned-reuse-out",
+                                        name="mock-repo")
+        reuse_common = ns_sb.git_common_dir(str(reuse_wt))
+        p1, h1 = ns_sb.build_pinned_gitdir(str(reuse_wt), reuse_common)
+        p2, h2 = ns_sb.build_pinned_gitdir(str(reuse_wt), reuse_common)
+        rebuild_ok = (p1 == p2 and h1 == h2 == reuse_sha)
+        runner.remove_worktree(reuse_repo, reuse_wt)
+        ok &= check(
+            "macOS wrapper registered (behavior validated on the operator host)",
+            mac_help.returncode == 0
+            and "--confine-to" in mac_help.stdout
+            and "(deny default)" in wrap_text
+            and "build_pinned_gitdir" in wrap_text
+            and notmac.returncode != 0
+            and "operator" in (notmac.stdout + notmac.stderr)
+            and rebuild_ok,
+            notes)
+
         record, _, _, _ = run_case(ws, "stale-artifact")
         ok &= check(
             "artifact metadata bound to the run's pinned checkout",

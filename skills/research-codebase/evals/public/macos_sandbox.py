@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+"""macOS sandbox wrapper for evaluated and judge sessions.
+
+Registered amendment (owner decision «поправка для мак», 2026-07-28,
+recorded before unsealing): scored runs may execute on the operator's
+macOS host through this wrapper. Same CLI contract and confinement
+goals as the registered Linux wrapper (`ns_sandbox.py`):
+
+  read-write: the run's working directory, its clean profile, a fresh
+              private TMPDIR and HOME (created per session)
+  read-only:  the OS/toolchain surface and the backend CLI's install
+              location; the credential file named by
+              CLAUDE_SESSION_INGRESS_TOKEN_FILE when the host
+              authenticates by file (env-var auth needs nothing)
+  denied:     everything else — `(deny default)` SBPL, so other
+              checkouts, sealed packages, ground truth, and prior run
+              outputs are unreadable, not merely unwritable
+
+Git confinement matches the Linux wrapper: a PRIVATE pinned-closure
+store is built inside the worktree (`.pinned-git`, via the shared
+builder in `ns_sandbox.py`). macOS has no mount namespaces, so instead
+of rewiring the worktree's `.git` file (a real edit could not be
+restored if the runner's timeout SIGKILLs the wrapper's process
+group), the session is pointed at the store through GIT_DIR and
+GIT_WORK_TREE in its environment — nothing on disk changes, so there
+is nothing to restore and the operator clone's worktree bookkeeping
+stays intact on every exit path. The clone itself is DENIED by the
+profile, so even a session that clears those variables cannot reach
+unpinned history through the untouched `.git` file; the store is
+write-DENIED by an explicit rule, matching the Linux wrapper's
+read-only bind.
+
+VALIDATION BOUNDARY: the Linux implementation context cannot execute
+`sandbox-exec`. Before any scored run, `macos_sandbox_check.py` MUST
+pass on the operator host; its PASS output is recorded with the
+results. This file carries the registered mechanism; the operator
+check carries the proof.
+
+Usage (the shape registered as `sandbox_cmd` on macOS hosts):
+
+  macos_sandbox.py --confine-to {workdir} --profile {profile} -- CMD [ARG...]
+"""
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+import ns_sandbox
+
+RO_SUBPATHS = ["/usr", "/bin", "/sbin", "/System", "/Library", "/opt",
+               "/etc", "/private/etc", "/var/db/timezone",
+               "/private/var/db/timezone", "/dev"]
+
+SBPL_TEMPLATE = """(version 1)
+(deny default)
+(allow process-exec*)
+(allow process-fork)
+(allow process-info*)
+(allow signal (target same-sandbox))
+(allow sysctl-read)
+(allow mach-lookup)
+(allow mach-register)
+(allow mach-priv-task-port)
+(allow ipc-posix*)
+(allow system-socket)
+(allow network*)
+(allow file-read-metadata)
+(allow file-ioctl (subpath "/dev"))
+(allow file-write-data (literal "/dev/null") (literal "/dev/dtracehelper"))
+(allow file-read*
+{ro_paths})
+(allow file-read* file-write*
+{rw_paths})
+(deny file-write*
+{deny_writes})
+"""
+
+
+def sbpl_subpath(path):
+    return f'  (subpath "{os.path.realpath(path)}")'
+
+
+def sbpl_literal(path):
+    return f'  (literal "{os.path.realpath(path)}")'
+
+
+def build_profile(workdir, profile, extra_ro, rw_paths, deny_writes):
+    ro = [sbpl_subpath(p) for p in RO_SUBPATHS if os.path.exists(p)]
+    ro += extra_ro
+    rw = [sbpl_subpath(p) for p in rw_paths]
+    # SBPL: the last matching rule wins, so the write-deny block after
+    # the rw allowances carves the pinned store (and the worktree's
+    # `.git` file) OUT of the writable worktree.
+    deny = deny_writes or ['  (literal "/nonexistent-deny-anchor")']
+    return SBPL_TEMPLATE.format(ro_paths="\n".join(ro),
+                                rw_paths="\n".join(rw),
+                                deny_writes="\n".join(deny))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--confine-to", required=True, dest="workdir")
+    parser.add_argument("--profile", required=True)
+    parser.add_argument("cmd", nargs=argparse.REMAINDER)
+    args = parser.parse_args()
+    cmd = args.cmd
+    if cmd and cmd[0] == "--":
+        cmd = cmd[1:]
+    if not cmd:
+        sys.exit("macos_sandbox: no command to run")
+    workdir = os.path.realpath(args.workdir)
+    profile = os.path.realpath(args.profile)
+    for path in (workdir, profile):
+        if not os.path.isdir(path):
+            sys.exit(f"macos_sandbox: not a directory: {path}")
+
+    # Toolchain: the backend binary's install prefix must be readable
+    # (e.g. a Homebrew or nvm tree outside the system paths) — but ONLY
+    # when it is not already covered by the system allowlist, and NEVER
+    # the filesystem root: /bin/sh's two-levels-up prefix is `/`, and
+    # allowlisting it would grant read access to the whole host.
+    exe = shutil.which(cmd[0]) or cmd[0]
+    exe_real = os.path.realpath(exe)
+    exe_prefix = os.path.dirname(os.path.dirname(exe_real))
+    covered = any(
+        exe_real.startswith(os.path.realpath(p) + "/")
+        for p in RO_SUBPATHS if os.path.exists(p))
+    extra_ro = []
+    if not covered and exe_prefix not in ("/", "") \
+            and os.path.dirname(exe_prefix) != exe_prefix:
+        extra_ro.append(sbpl_subpath(exe_prefix))
+
+    # Credential file (file-authenticating hosts only): the named file
+    # and its .oauth_token sibling, as literals — never the parent
+    # directory. Env-var auth passes through the environment untouched.
+    ingress = os.environ.get("CLAUDE_SESSION_INGRESS_TOKEN_FILE")
+    if ingress and os.path.isfile(ingress):
+        for base in (ingress, os.path.realpath(ingress)):
+            extra_ro.append(sbpl_literal(base))
+            sibling = os.path.join(os.path.dirname(base), ".oauth_token")
+            if os.path.isfile(sibling):
+                extra_ro.append(sbpl_literal(sibling))
+
+    # Fresh private TMPDIR and HOME: the session must not read the
+    # operator's real home (Keychain, dotfiles, other checkouts).
+    scratch = tempfile.mkdtemp(prefix="macsbx-")
+    fake_home = os.path.join(scratch, "home")
+    fake_tmp = os.path.join(scratch, "tmp")
+    os.makedirs(fake_home)
+    os.makedirs(fake_tmp)
+
+    # Pinned-closure git store, shared builder with the Linux wrapper.
+    # The worktree's `.git` file is left UNTOUCHED (a real rewrite
+    # could not be restored if the runner's timeout SIGKILLs the
+    # process group): the session reaches the store through
+    # GIT_DIR/GIT_WORK_TREE instead, and the clone the `.git` file
+    # points at is denied by the profile anyway.
+    pinned = None
+    common = ns_sandbox.git_common_dir(workdir)
+    if common and os.path.isdir(common):
+        pinned, _ = ns_sandbox.build_pinned_gitdir(workdir, common)
+
+    deny_writes = []
+    if pinned is not None:
+        deny_writes.append(sbpl_subpath(pinned))
+        deny_writes.append(sbpl_literal(os.path.join(workdir, ".git")))
+
+    profile_text = build_profile(
+        workdir, profile, extra_ro,
+        rw_paths=[workdir, profile, fake_tmp, fake_home],
+        deny_writes=deny_writes)
+    sbpl_path = os.path.join(scratch, "session.sb")
+    with open(sbpl_path, "w", encoding="utf-8") as fh:
+        fh.write(profile_text)
+
+    env = dict(os.environ)
+    env["TMPDIR"] = fake_tmp
+    env["HOME"] = fake_home
+    if pinned is not None:
+        env["GIT_DIR"] = pinned
+        env["GIT_WORK_TREE"] = workdir
+    try:
+        result = subprocess.run(
+            ["sandbox-exec", "-f", sbpl_path, exe] + cmd[1:], env=env)
+        code = result.returncode
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    sys.exit(code)
+
+
+if __name__ == "__main__":
+    main()

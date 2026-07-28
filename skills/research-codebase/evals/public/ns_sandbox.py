@@ -122,7 +122,23 @@ def build_pinned_gitdir(workdir, common):
     # workspace (a host-side scratch location like /dev/shm would
     # outlive the mount namespace).
     private = os.path.join(workdir, PINNED_GIT_NAME)
-    os.makedirs(private, exist_ok=False)
+    if os.path.isdir(private):
+        # A continuation (or a repeated probe) re-enters the SAME
+        # worktree: reuse the store when it already pins this HEAD,
+        # rebuild from scratch otherwise — never abort the session on
+        # a leftover directory.
+        try:
+            with open(os.path.join(private, "HEAD"),
+                      encoding="utf-8") as fh:
+                existing = fh.read().strip()
+        except OSError:
+            existing = None
+        if (existing == head
+                and os.path.isfile(os.path.join(private,
+                                                "worktree-dotgit"))):
+            return private, head
+        shutil.rmtree(private)
+    os.makedirs(private)
     run_quiet = dict(check=True, capture_output=True)
     subprocess.run(["git", "init", "--bare", "--quiet", private],
                    **run_quiet)
