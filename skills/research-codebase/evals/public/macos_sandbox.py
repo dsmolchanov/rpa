@@ -50,6 +50,10 @@ import tempfile
 
 import ns_sandbox
 
+# The pilot's registered backend CLI: MACOS_SANDBOX_CLI_ROOT must
+# provably be its install subtree (or the wrapped command's).
+BACKEND_CLI = "claude"
+
 RO_SUBPATHS = ["/usr", "/bin", "/sbin", "/System", "/Library", "/opt",
                "/etc", "/private/etc", "/var/db/timezone",
                "/private/var/db/timezone", "/dev"]
@@ -155,16 +159,11 @@ def main():
 
         if not unsafe_root(exe_dir):
             extra_ro.append(sbpl_subpath(exe_dir))
-            cmd_exe_readable = True
         elif not os.environ.get("MACOS_SANDBOX_CLI_ROOT"):
             sys.exit(f"macos_sandbox: the command resolves inside "
                      f"{exe_dir}, which would expose the operator's "
                      f"config tree — set MACOS_SANDBOX_CLI_ROOT to a "
                      f"dedicated install subtree")
-        else:
-            cmd_exe_readable = False
-    else:
-        cmd_exe_readable = True
 
     # The explicit CLI root applies WHENEVER it is set, independent of
     # what cmd[0] happens to be: probes and sessions that reach the
@@ -188,15 +187,24 @@ def main():
         if not os.path.isdir(root):
             sys.exit(f"macos_sandbox: MACOS_SANDBOX_CLI_ROOT is not a "
                      f"directory: {root}")
-        if not cmd_exe_readable and not (
-                exe_real == root_clean
-                or exe_real.startswith(root_clean + "/")):
-            # The direct command's executable is readable ONLY through
-            # this root — an unrelated broad prefix cannot stand in
-            # for the install subtree.
+        # The root must PROVABLY be a CLI install subtree — it has to
+        # contain the wrapped command's executable or the resolved
+        # backend CLI (registered backend: `claude`). Without this, a
+        # mis-set value (another eval volume, a data directory) would
+        # become readable to every evaluated and judge session.
+        def in_root(path):
+            return (path == root_clean
+                    or path.startswith(root_clean + "/"))
+
+        backend = shutil.which(BACKEND_CLI)
+        backend_real = os.path.realpath(backend) if backend else None
+        if not (in_root(exe_real)
+                or (backend_real is not None
+                    and in_root(backend_real))):
             sys.exit("macos_sandbox: MACOS_SANDBOX_CLI_ROOT must be a "
-                     "subtree containing the resolved command "
-                     f"executable ({exe_real})")
+                     "subtree containing the wrapped command's "
+                     f"executable ({exe_real}) or the resolved "
+                     f"backend CLI (`{BACKEND_CLI}`)")
         extra_ro.append(sbpl_subpath(root))
 
     # Credential file (file-authenticating hosts only): the named file
