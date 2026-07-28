@@ -106,10 +106,20 @@ def main():
             sys.exit(f"macos_sandbox: not a directory: {path}")
 
     # Toolchain: the backend binary's install prefix must be readable
-    # (e.g. a Homebrew or nvm tree outside the system paths).
+    # (e.g. a Homebrew or nvm tree outside the system paths) — but ONLY
+    # when it is not already covered by the system allowlist, and NEVER
+    # the filesystem root: /bin/sh's two-levels-up prefix is `/`, and
+    # allowlisting it would grant read access to the whole host.
     exe = shutil.which(cmd[0]) or cmd[0]
-    exe_prefix = os.path.dirname(os.path.dirname(os.path.realpath(exe)))
-    extra_ro = [sbpl_subpath(exe_prefix)]
+    exe_real = os.path.realpath(exe)
+    exe_prefix = os.path.dirname(os.path.dirname(exe_real))
+    covered = any(
+        exe_real.startswith(os.path.realpath(p) + "/")
+        for p in RO_SUBPATHS if os.path.exists(p))
+    extra_ro = []
+    if not covered and exe_prefix not in ("/", "") \
+            and os.path.dirname(exe_prefix) != exe_prefix:
+        extra_ro.append(sbpl_subpath(exe_prefix))
 
     # Credential file (file-authenticating hosts only): the named file
     # and its .oauth_token sibling, as literals — never the parent

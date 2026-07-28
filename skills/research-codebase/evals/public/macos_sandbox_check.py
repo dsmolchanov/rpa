@@ -18,10 +18,12 @@ Probes (mirroring the Linux wrapper's validated properties):
   6. the backend CLI starts (`claude --version`) under the wrapper
 
 Usage: macos_sandbox_check.py --repo /path/to/rpa-clone
-       [--pin <sha>] [--newer <sha>]
-`--pin` defaults to the frozen candidate SHA; `--newer` to a commit
-known NOT to be an ancestor of the pin (defaults to none — probe 5's
-newer-commit leg is skipped when omitted and reported as such).
+       --newer <sha> [--pin <sha>]
+`--pin` defaults to the frozen candidate SHA; `--newer` is REQUIRED —
+a commit present in the clone but NOT an ancestor of the pin (e.g. a
+later master commit). The registered protocol demands the
+newer-commit confinement probe before any macOS scored run, so the
+check cannot pass without it.
 """
 
 import argparse
@@ -58,7 +60,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", required=True)
     parser.add_argument("--pin", default=FROZEN_CANDIDATE)
-    parser.add_argument("--newer")
+    parser.add_argument("--newer", required=True,
+                        help="commit in the clone that is NOT an "
+                             "ancestor of --pin; the newer-commit "
+                             "confinement probe is mandatory")
     args = parser.parse_args()
     if sys.platform != "darwin":
         sys.exit("macos-sandbox-check must run on the macOS operator "
@@ -95,19 +100,17 @@ def main():
         r = wrapped(wt, profile,
                     f"cd {wt} && git rev-parse HEAD "
                     f"&& git status --short | wc -l")
-        git_ok = args.pin in r.stdout
-        check("git pinned worktree works", git_ok,
-              detail=r.stdout.strip().splitlines()[-1] if git_ok else
-              (r.stdout + r.stderr)[:80])
-        if args.newer:
-            r = wrapped(wt, profile,
-                        f"cd {wt} && git show {args.newer} --oneline "
-                        f"2>&1 | head -1")
-            check("newer-than-pin commit unreadable",
-                  "bad object" in r.stdout + r.stderr)
-        else:
-            print("macos-sandbox-check: newer-commit probe SKIPPED "
-                  "(--newer not supplied)")
+        out_lines = r.stdout.split()
+        git_ok = (r.returncode == 0 and len(out_lines) >= 2
+                  and out_lines[0] == args.pin
+                  and out_lines[-1] == "0")
+        check("git pinned worktree works (clean status)", git_ok,
+              detail=(r.stdout + r.stderr).strip()[:80])
+        r = wrapped(wt, profile,
+                    f"cd {wt} && git show {args.newer} --oneline "
+                    f"2>&1 | head -1")
+        check("newer-than-pin commit unreadable",
+              "bad object" in r.stdout + r.stderr)
         r = wrapped(wt, profile, "claude --version")
         check("backend CLI starts under the wrapper",
               r.returncode == 0, detail=r.stdout.strip()[:40])
