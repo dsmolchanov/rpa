@@ -2485,10 +2485,13 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             ).hexdigest(),
         },
     }
-    # Batch state is namespaced by role: the scorer pass and the
-    # verifier pass over the same documents may share one output
-    # directory without colliding.
-    scoring_manifest_path = out / f"scoring-{role}-manifest.json"
+    # Batch state is namespaced by role AND axis: the scorer pass, the
+    # verifier pass, and the registered diagnostic-axis pass over the
+    # same output directory must coexist — a completed primary batch
+    # must not reject the diagnostic batch as already complete (nor an
+    # interrupted one as a different identity).
+    axis = "diagnostic" if diagnostic_axis else "primary"
+    scoring_manifest_path = out / f"scoring-{role}-{axis}-manifest.json"
     if scoring_manifest_path.exists():
         prior_batch = load_json_object(scoring_manifest_path,
                                        "scoring batch manifest")
