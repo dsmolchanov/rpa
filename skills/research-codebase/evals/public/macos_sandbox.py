@@ -18,12 +18,17 @@ goals as the registered Linux wrapper (`ns_sandbox.py`):
 
 Git confinement matches the Linux wrapper: a PRIVATE pinned-closure
 store is built inside the worktree (`.pinned-git`, via the shared
-builder in `ns_sandbox.py`) and the worktree's `.git` file is pointed
-at it for the session's duration. macOS has no mount namespaces, so
-the rewiring is a real file edit restored after the session exits (the
-wrapper waits on the child instead of exec-ing it); the operator clone
-itself is DENIED by the profile, so `git log --all`-style access to
-unpinned history is closed the same way.
+builder in `ns_sandbox.py`). macOS has no mount namespaces, so instead
+of rewiring the worktree's `.git` file (a real edit could not be
+restored if the runner's timeout SIGKILLs the wrapper's process
+group), the session is pointed at the store through GIT_DIR and
+GIT_WORK_TREE in its environment — nothing on disk changes, so there
+is nothing to restore and the operator clone's worktree bookkeeping
+stays intact on every exit path. The clone itself is DENIED by the
+profile, so even a session that clears those variables cannot reach
+unpinned history through the untouched `.git` file; the store is
+write-DENIED by an explicit rule, matching the Linux wrapper's
+read-only bind.
 
 VALIDATION BOUNDARY: the Linux implementation context cannot execute
 `sandbox-exec`. Before any scored run, `macos_sandbox_check.py` MUST
@@ -69,6 +74,8 @@ SBPL_TEMPLATE = """(version 1)
 {ro_paths})
 (allow file-read* file-write*
 {rw_paths})
+(deny file-write*
+{deny_writes})
 """
 
 
@@ -80,12 +87,17 @@ def sbpl_literal(path):
     return f'  (literal "{os.path.realpath(path)}")'
 
 
-def build_profile(workdir, profile, extra_ro, rw_paths):
+def build_profile(workdir, profile, extra_ro, rw_paths, deny_writes):
     ro = [sbpl_subpath(p) for p in RO_SUBPATHS if os.path.exists(p)]
     ro += extra_ro
     rw = [sbpl_subpath(p) for p in rw_paths]
+    # SBPL: the last matching rule wins, so the write-deny block after
+    # the rw allowances carves the pinned store (and the worktree's
+    # `.git` file) OUT of the writable worktree.
+    deny = deny_writes or ['  (literal "/nonexistent-deny-anchor")']
     return SBPL_TEMPLATE.format(ro_paths="\n".join(ro),
-                                rw_paths="\n".join(rw))
+                                rw_paths="\n".join(rw),
+                                deny_writes="\n".join(deny))
 
 
 def main():
@@ -141,21 +153,25 @@ def main():
     os.makedirs(fake_tmp)
 
     # Pinned-closure git store, shared builder with the Linux wrapper.
-    # No mount namespaces here: the worktree's `.git` file is really
-    # rewritten and restored after the session exits.
-    dotgit = os.path.join(workdir, ".git")
-    original_gitfile = None
+    # The worktree's `.git` file is left UNTOUCHED (a real rewrite
+    # could not be restored if the runner's timeout SIGKILLs the
+    # process group): the session reaches the store through
+    # GIT_DIR/GIT_WORK_TREE instead, and the clone the `.git` file
+    # points at is denied by the profile anyway.
+    pinned = None
     common = ns_sandbox.git_common_dir(workdir)
     if common and os.path.isdir(common):
         pinned, _ = ns_sandbox.build_pinned_gitdir(workdir, common)
-        with open(dotgit, encoding="utf-8") as fh:
-            original_gitfile = fh.read()
-        with open(dotgit, "w", encoding="utf-8") as fh:
-            fh.write(f"gitdir: {pinned}\n")
+
+    deny_writes = []
+    if pinned is not None:
+        deny_writes.append(sbpl_subpath(pinned))
+        deny_writes.append(sbpl_literal(os.path.join(workdir, ".git")))
 
     profile_text = build_profile(
         workdir, profile, extra_ro,
-        rw_paths=[workdir, profile, fake_tmp, fake_home])
+        rw_paths=[workdir, profile, fake_tmp, fake_home],
+        deny_writes=deny_writes)
     sbpl_path = os.path.join(scratch, "session.sb")
     with open(sbpl_path, "w", encoding="utf-8") as fh:
         fh.write(profile_text)
@@ -163,14 +179,14 @@ def main():
     env = dict(os.environ)
     env["TMPDIR"] = fake_tmp
     env["HOME"] = fake_home
+    if pinned is not None:
+        env["GIT_DIR"] = pinned
+        env["GIT_WORK_TREE"] = workdir
     try:
         result = subprocess.run(
             ["sandbox-exec", "-f", sbpl_path, exe] + cmd[1:], env=env)
         code = result.returncode
     finally:
-        if original_gitfile is not None:
-            with open(dotgit, "w", encoding="utf-8") as fh:
-                fh.write(original_gitfile)
         shutil.rmtree(scratch, ignore_errors=True)
     sys.exit(code)
 

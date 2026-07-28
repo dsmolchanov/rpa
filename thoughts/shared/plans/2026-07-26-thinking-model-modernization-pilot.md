@@ -630,15 +630,19 @@ its clean profile, and a fresh private TMPDIR/HOME created per session;
 credential FILES allowed as literals (environment-variable auth passes
 through untouched); and the same pinned-closure git store via the
 shared builder in `ns_sandbox.py` — macOS has no mount namespaces, so
-the worktree's `.git` file is really rewritten for the session's
-duration and restored when the wrapper's child exits, while the
-operator clone itself stays denied by the profile. **Validation
+the session reaches the store through GIT_DIR/GIT_WORK_TREE in its
+environment while the worktree's `.git` file stays UNTOUCHED (a real
+rewrite could not be restored if the runner's timeout SIGKILLs the
+wrapper's process group); the operator clone the file points at stays
+denied by the profile, and the store itself is write-denied by an
+explicit last-match rule, matching the Linux wrapper's read-only bind.
+**Validation
 boundary:** the Linux implementation context cannot execute
 `sandbox-exec`, so before any scored run `macos_sandbox_check.py` MUST
 pass on the operator host (probes mirror the Linux wrapper's validated
 properties: rw surfaces writable, write-outside denied, a sealed
 stand-in unreadable, fresh private HOME, pinned git with a
-newer-than-pin commit resolving to `bad object`, the backend CLI
+newer-than-pin commit resolving to `bad object`, a write into the pinned store denied, the backend CLI
 starting under the wrapper) and its full PASS output is recorded with
 the results. The Linux wrapper remains the registered default; the
 backend version pin (`2.1.220 (Claude Code)`) applies unchanged on the

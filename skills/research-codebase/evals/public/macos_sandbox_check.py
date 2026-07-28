@@ -132,6 +132,12 @@ def main():
         check("git pinned worktree works (clean status)", git_ok,
               detail=(r.stdout + r.stderr).strip()[:80])
         r = wrapped(wt, profile,
+                    f"echo x > {wt}/.pinned-git/evil 2>&1 "
+                    f"|| echo STORE_DENIED")
+        check("pinned store write denied",
+              "STORE_DENIED" in r.stdout
+              and not (wt / ".pinned-git" / "evil").exists())
+        r = wrapped(wt, profile,
                     f"cd {wt} && git show {args.newer} --oneline "
                     f"2>&1 | head -1")
         check("newer-than-pin commit unreadable",
