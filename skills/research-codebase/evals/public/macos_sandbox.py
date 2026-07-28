@@ -136,17 +136,36 @@ def main():
     extra_ro = []
     if not covered:
         home_real = os.path.realpath(os.path.expanduser("~"))
-        unsafe = {"/", home_real,
-                  os.path.realpath(os.path.join(home_real, ".claude"))}
+        claude_real = os.path.realpath(
+            os.path.join(home_real, ".claude"))
+
+        def contains(root, path):
+            root = root.rstrip("/") or "/"
+            return path == root or path.startswith(root + "/")
+
+        def unsafe_root(root):
+            # Unsafe is STRUCTURAL, not an exact-path blacklist: any
+            # root that contains the operator's HOME (so /, /Users,
+            # /System/Volumes/Data, HOME itself) or the real ~/.claude
+            # would make identity material readable. A subtree INSIDE
+            # them (e.g. ~/.claude/local) is fine — it does not
+            # contain them.
+            return (root == "/" or contains(root, home_real)
+                    or contains(root, claude_real))
+
         override = os.environ.get("MACOS_SANDBOX_CLI_ROOT")
         if override:
             root = os.path.realpath(override)
-            if root in unsafe:
+            if unsafe_root(root):
                 sys.exit("macos_sandbox: MACOS_SANDBOX_CLI_ROOT may "
-                         "not be /, HOME, or ~/.claude — use a "
-                         "dedicated install subtree")
+                         "not be / or any tree containing HOME or "
+                         "~/.claude — use a dedicated install subtree")
+            if not contains(root, exe_real):
+                sys.exit("macos_sandbox: MACOS_SANDBOX_CLI_ROOT must "
+                         "be a subtree containing the resolved backend "
+                         f"executable ({exe_real})")
             extra_ro.append(sbpl_subpath(root))
-        elif exe_dir not in unsafe:
+        elif not unsafe_root(exe_dir):
             extra_ro.append(sbpl_subpath(exe_dir))
         else:
             sys.exit(f"macos_sandbox: the backend CLI resolves inside "
