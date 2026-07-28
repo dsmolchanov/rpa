@@ -1121,22 +1121,24 @@ def find_new_artifact(worktree, before):
 
 
 def anonymize(text, run_id):
-    # Frontmatter is located at the first non-blank line after stripping a
-    # BOM, never assumed at line 0: a byte-order mark or leading blank
-    # lines must not let fingerprint keys slip past masking.
+    # Fingerprint keys are masked across the WHOLE document with the
+    # same pattern `assert_blind_scorable` enforces at the score
+    # boundary \u2014 never only inside a well-formed frontmatter block. A
+    # document whose metadata structure is malformed (unclosed or
+    # missing delimiters \u2014 exactly the gate failures the diagnostic
+    # axis scores) must still come out fully masked, or one broken
+    # replicate would abort its whole blind-scoring batch.
+    # Over-masking a look-alike prose line is the safe direction.
     text = text.lstrip("\ufeff")
+    key_re = re.compile(
+        "^\\ufeff?\\s*(" + "|".join(FINGERPRINT_KEYS) + ")\\s*:",
+        re.IGNORECASE)
     lines = text.splitlines()
-    start = 0
-    while start < len(lines) and not lines[start].strip():
-        start += 1
-    if start < len(lines) and lines[start].strip() == "---":
-        for idx in range(start + 1, len(lines)):
-            if lines[idx].strip() == "---":
-                for j in range(start + 1, idx):
-                    key = lines[j].split(":", 1)[0].strip().lower()
-                    if key in FINGERPRINT_KEYS:
-                        lines[j] = f"{key}: '[anonymized:{run_id}]'"
-                break
+    for j, line in enumerate(lines):
+        match = key_re.match(line)
+        if match:
+            lines[j] = (f"{match.group(1).lower()}: "
+                        f"'[anonymized:{run_id}]'")
     body = "\n".join(lines)
     body = re.sub(
         r"^\*\*(Date|Researcher|Git Commit|Branch)\*\*:.*$",

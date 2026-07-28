@@ -2534,11 +2534,29 @@ def run_preflight():
                             task_contexts=sched_ctx,
                             seal_manifest_path=seal_file,
                             diagnostic_axis=True)
+        # A malformed metadata STRUCTURE (unclosed frontmatter) is one
+        # of the gate failures the diagnostic axis exists to score: the
+        # anonymizer must mask fingerprint keys anyway, or one broken
+        # replicate would abort the whole blind-scoring batch.
+        broken_doc = ("---\n"
+                      "researcher: Real Name\n"
+                      "git_commit: 1234567deadbeef\n"
+                      "# Research: unclosed frontmatter\n"
+                      "**Researcher**: Real Name\n")
+        masked = runner.anonymize(broken_doc, "probe")
+        masked_path = ws / "run-probe-diag.md"
+        masked_path.write_text(masked, encoding="utf-8")
+        try:
+            runner.assert_blind_scorable(masked_path)
+            unclosed_masked_ok = "Real Name" not in masked
+        except runner.InfraFailure:
+            unclosed_masked_ok = False
         ok &= check(
             "gate-failed replicates scored on the diagnostic axis only",
             diag_digest_ok and diag_prim_refused
             and len(dres) == len(diag_recs)
-            and all(r.get("axis") == "diagnostic" for r in dres),
+            and all(r.get("axis") == "diagnostic" for r in dres)
+            and unclosed_masked_ok,
             notes)
         vres2 = runner.score(config, sched_docs, judge, ws / "judge-mverify",
                              scoring_seed=5, manifest_path=manifest_path,
