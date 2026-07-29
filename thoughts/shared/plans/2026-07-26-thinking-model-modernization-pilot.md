@@ -660,6 +660,23 @@ macOS host.
    pinned configuration in randomized, interleaved order: baseline and
    candidate on every holdout task, the third arm on its two designated
    tasks — exactly 3 replicates per arm per task.
+   **Execution (recorded 2026-07-28):** step 5 runs on the operator host
+   that holds the sealed package and the target clones, driven by
+   `skills/research-codebase/evals/public/step5_operator.py` — a
+   mechanical restatement of this plan's freeze record that FAILS
+   CLOSED before any scored run: it refuses a config whose arms,
+   model/effort/entrypoint, installation hashes, seal hash, backend
+   version pin, timeouts or retry policy differ from the registered
+   values; it rebuilds the three installations and verifies them
+   against both the registered hashes and the config's registrations;
+   on macOS it requires the mandatory `macos_sandbox_check.py` to pass;
+   it verifies the seal manifest and the six registered holdout task
+   basenames; and only then writes the pre-registered schedule and
+   executes it (resumable). The driver never reads or prints holdout
+   task CONTENT — basenames and digests only — so operating it exposes
+   no sealed prompts or ground truth. The **implementation context that
+   authored the candidate does not execute step 5** and has still seen
+   no holdout material.
 6. Blind scoring + evidence verification.
 7. Results doc in `thoughts/shared/research/` (aggregated, sanitized) with a
    go/no-go recommendation — scoped to the Claude-side research pattern.

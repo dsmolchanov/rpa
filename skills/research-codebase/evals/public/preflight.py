@@ -1521,6 +1521,68 @@ def run_preflight():
         p2, h2 = ns_sb.build_pinned_gitdir(str(reuse_wt), reuse_common)
         rebuild_ok = (p1 == p2 and h1 == h2 == reuse_sha)
         runner.remove_worktree(reuse_repo, reuse_wt)
+        # The step-5 operator driver mechanically restates the plan's
+        # freeze record: its constants must match the plan text, and a
+        # drifted operator config must be refused before any run.
+        _spec_s5 = _ilu.spec_from_file_location(
+            "step5_probe", HERE / "step5_operator.py")
+        step5 = _ilu.module_from_spec(_spec_s5)
+        _spec_s5.loader.exec_module(step5)
+        plan_text = (HERE.parents[3] / "thoughts" / "shared" / "plans"
+                     / "2026-07-26-thinking-model-modernization-pilot.md"
+                     ).read_text(encoding="utf-8")
+        constants_in_plan = (
+            step5.FROZEN_CANDIDATE_SHA in plan_text
+            and step5.REGISTERED_SEAL_PACKAGE_SHA256 in plan_text
+            and all(h in plan_text
+                    for h in step5.REGISTERED_INSTALL_SHA256.values())
+            and step5.REGISTERED_BACKEND_VERSION in plan_text)
+        good_cfg = {
+            "nonstandard_config": False,
+            "arms": {
+                arm: {
+                    "installation_dir": f"/x/{arm}",
+                    "sha256": sha,
+                    "model": step5.REGISTERED_MODEL,
+                    "effort": step5.REGISTERED_EFFORT,
+                    "entrypoint": step5.REGISTERED_ENTRYPOINT,
+                    **({"forbid_subagents": True,
+                        "schedule_tasks": ["holdout-1.md", "holdout-2.md"]}
+                       if arm == "ablation" else {}),
+                }
+                for arm, sha in step5.REGISTERED_INSTALL_SHA256.items()
+            },
+            "sandbox_cmd": ["python3", "/x/ns_sandbox.py", "--confine-to",
+                            "{workdir}", "--profile", "{profile}", "--"],
+            "seal_package_sha256": step5.REGISTERED_SEAL_PACKAGE_SHA256,
+            "backend_version": step5.REGISTERED_BACKEND_VERSION,
+            "timeout_seconds": step5.REGISTERED_TIMEOUT_SECONDS,
+            "max_infra_retries": step5.REGISTERED_MAX_INFRA_RETRIES,
+            "judge_model": step5.RECORDED_JUDGE_MODEL,
+            "judge_effort": step5.RECORDED_JUDGE_EFFORT,
+        }
+        clean_problems, clean_warnings = step5.validate_config(good_cfg)
+        drifts = []
+        for mutate in (
+            lambda c: c["arms"]["candidate"].update(model="opus"),
+            lambda c: c["arms"]["baseline"].update(effort="medium"),
+            lambda c: c["arms"]["candidate"].update(sha256="0" * 64),
+            lambda c: c["arms"]["ablation"].pop("forbid_subagents"),
+            lambda c: c.update(seal_package_sha256="0" * 64),
+            lambda c: c.update(backend_version="9.9.9"),
+            lambda c: c.update(nonstandard_config=True),
+            lambda c: c.pop("sandbox_cmd"),
+            lambda c: c.update(sandbox_cmd=["/usr/bin/env"]),
+        ):
+            cfg = json.loads(json.dumps(good_cfg))
+            mutate(cfg)
+            drifts.append(bool(step5.validate_config(cfg)[0]))
+        ok &= check(
+            "step-5 driver restates the freeze record and refuses drift",
+            constants_in_plan and not clean_problems
+            and not clean_warnings and all(drifts),
+            notes)
+
         ok &= check(
             "macOS wrapper registered (behavior validated on the operator host)",
             mac_help.returncode == 0
