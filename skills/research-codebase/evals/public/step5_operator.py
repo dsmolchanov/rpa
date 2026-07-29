@@ -325,7 +325,10 @@ def phase_gates(args, config):
     tail = pre.stdout.strip().splitlines()[-1] if pre.stdout.strip() else ""
     if pre.returncode != 0:
         print(pre.stdout[-2000:], file=sys.stderr)
-        fail(f"synthetic harness preflight FAILED ({tail})")
+        fail(f"synthetic harness preflight FAILED ({tail}) — the "
+             f"preflight is host-agnostic by design, so a check "
+             f"failing for host-specific reasons is a defect to "
+             f"report, not to bypass")
     ok(f"synthetic harness preflight ({tail})")
 
     # Durable receipt: the scored phases refuse to proceed without one

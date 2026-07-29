@@ -1552,7 +1552,9 @@ def run_preflight():
                 }
                 for arm, sha in step5.REGISTERED_INSTALL_SHA256.items()
             },
-            "sandbox_cmd": ["python3", str(HERE / "ns_sandbox.py"),
+            "sandbox_cmd": ["python3",
+                            str(HERE / step5.PLATFORM_WRAPPER.get(
+                                sys.platform, step5.DEFAULT_WRAPPER)),
                             "--confine-to", "{workdir}", "--profile",
                             "{profile}", "--"],
             "backend_cmd": list(step5.REGISTERED_BACKEND_CMD),
@@ -1624,7 +1626,8 @@ def run_preflight():
             and "(deny default)" in wrap_text
             and "build_pinned_gitdir" in wrap_text
             and notmac.returncode != 0
-            and "operator" in (notmac.stdout + notmac.stderr)
+            and (sys.platform == "darwin"
+                 or "operator" in (notmac.stdout + notmac.stderr))
             and rebuild_ok,
             notes)
 
