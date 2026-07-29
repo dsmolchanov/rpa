@@ -171,6 +171,25 @@ def sandbox_problem(cmd):
     return None
 
 
+def canonical_tasks(tasks):
+    """Canonical holdout order, independent of CLI argument order.
+
+    `make_schedule` consumes the task ORDER before shuffling with the
+    recorded seed, so the same seed with a different argument order
+    would produce a different scored interleaving — argument order
+    must not be an unregistered input to the experiment.
+
+    Returns (ordered_tasks, problem)."""
+    by_name = {Path(task).name: task for task in tasks}
+    if len(by_name) != len(tasks):
+        return None, "--tasks contains duplicate basenames"
+    if set(by_name) != set(REGISTERED_HOLDOUT_TASKS):
+        return None, (f"--tasks basenames {sorted(by_name)} do not "
+                      f"match the registered holdout set "
+                      f"{sorted(REGISTERED_HOLDOUT_TASKS)}")
+    return [by_name[name] for name in REGISTERED_HOLDOUT_TASKS], None
+
+
 def gate_identity(config):
     """What a gate receipt attests: this config, this host, this
     wrapper build. Any of them changing invalidates the receipt."""
@@ -561,6 +580,17 @@ def phase_next(args, config):
               + " \\")
         for line in extra:
             print(f"    {line} \\")
+        # The registered holdout includes an external-library/API
+        # archetype task, and manifest-bound scoring REFUSES such a
+        # batch without its sealed snapshots — and, once snapshots are
+        # present, without the harness's own drift report. The driver
+        # does not read task content, so which basename is external is
+        # left as a placeholder; drop both lines only if the batch has
+        # no external-context task.
+        print(f"    --task-snapshots <external-task>.md="
+              f"<sealed>/<snapshot dir> \\")
+        print(f"    --drift-report {Path(args.out) / 'drift-report.json'}"
+              f" \\")
         print(f"    --scoring-seed <recorded> --output {judge_out}\n")
 
     print("\nstep5: scoring — run these in the judge session; document "
@@ -573,8 +603,11 @@ def phase_next(args, config):
     emit(f"3. diagnostic content axis ({len(diagnostic)} documents: "
          f"{len(primary)} completed + {len(diagnostic) - len(primary)} "
          f"gate-failed)", diagnostic, ["--diagnostic-axis"])
-    print("External-context tasks additionally need --task-snapshots "
-          "and a --drift-report from the harness's own re-fetch.")
+    print("The --task-snapshots / --drift-report lines above are "
+          "required for the external-context holdout task; the drift "
+          "report comes from the harness's own re-fetch of the sealed "
+          "sources (registered `drift_fetch_cmd`), never from a "
+          "local copy.")
 
 
 def main():
@@ -602,6 +635,11 @@ def main():
     parser.add_argument("--phases", default=",".join(
         p for p in PHASES if p != "score"))
     args = parser.parse_args()
+
+    canonical, problem = canonical_tasks(args.tasks)
+    if problem:
+        fail(problem)
+    args.tasks = canonical
 
     phases = [p.strip() for p in args.phases.split(",") if p.strip()]
     unknown = [p for p in phases if p not in PHASES]

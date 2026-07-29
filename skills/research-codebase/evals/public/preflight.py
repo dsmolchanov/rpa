@@ -1651,13 +1651,23 @@ def run_preflight():
             receipt_dir / "preflight.txt")
         write_receipt(artifacts=forged)
         not_passing = step5.gate_receipt_problem(receipt_dir, good_cfg)
+        shuffled = [f"/sealed/{n}" for n in
+                    ("holdout-4.md", "holdout-1.md", "holdout-6.md",
+                     "holdout-2.md", "holdout-5.md", "holdout-3.md")]
+        ordered, order_problem = step5.canonical_tasks(shuffled)
+        canonical_ok = (
+            not order_problem
+            and [Path(x).name for x in ordered]
+            == list(step5.REGISTERED_HOLDOUT_TASKS)
+            and step5.canonical_tasks(shuffled[:5])[1]
+            and step5.canonical_tasks(shuffled + shuffled[:1])[1])
         ok &= check(
             "step-5 driver restates the freeze record and refuses drift",
             constants_in_plan and not clean_problems
             and not clean_warnings and all(drifts)
             and missing_receipt and not fresh_receipt
             and stale_receipt and partial_gates and no_transcripts
-            and tampered and not_passing,
+            and tampered and not_passing and canonical_ok,
             notes)
 
         ok &= check(
