@@ -1521,6 +1521,155 @@ def run_preflight():
         p2, h2 = ns_sb.build_pinned_gitdir(str(reuse_wt), reuse_common)
         rebuild_ok = (p1 == p2 and h1 == h2 == reuse_sha)
         runner.remove_worktree(reuse_repo, reuse_wt)
+        # The step-5 operator driver mechanically restates the plan's
+        # freeze record: its constants must match the plan text, and a
+        # drifted operator config must be refused before any run.
+        _spec_s5 = _ilu.spec_from_file_location(
+            "step5_probe", HERE / "step5_operator.py")
+        step5 = _ilu.module_from_spec(_spec_s5)
+        _spec_s5.loader.exec_module(step5)
+        plan_text = (HERE.parents[3] / "thoughts" / "shared" / "plans"
+                     / "2026-07-26-thinking-model-modernization-pilot.md"
+                     ).read_text(encoding="utf-8")
+        constants_in_plan = (
+            step5.FROZEN_CANDIDATE_SHA in plan_text
+            and step5.REGISTERED_SEAL_PACKAGE_SHA256 in plan_text
+            and all(h in plan_text
+                    for h in step5.REGISTERED_INSTALL_SHA256.values())
+            and step5.REGISTERED_BACKEND_VERSION in plan_text)
+        good_cfg = {
+            "nonstandard_config": False,
+            "arms": {
+                arm: {
+                    "installation_dir": f"/x/{arm}",
+                    "sha256": sha,
+                    "model": step5.REGISTERED_MODEL,
+                    "effort": step5.REGISTERED_EFFORT,
+                    "entrypoint": step5.REGISTERED_ENTRYPOINT,
+                    **({"forbid_subagents": True,
+                        "schedule_tasks": ["holdout-1.md", "holdout-2.md"]}
+                       if arm == "ablation" else {}),
+                }
+                for arm, sha in step5.REGISTERED_INSTALL_SHA256.items()
+            },
+            "sandbox_cmd": ["python3",
+                            str(HERE / step5.PLATFORM_WRAPPER.get(
+                                sys.platform, step5.DEFAULT_WRAPPER)),
+                            "--confine-to", "{workdir}", "--profile",
+                            "{profile}", "--"],
+            "backend_cmd": list(step5.REGISTERED_BACKEND_CMD),
+            "backend_version_cmd": list(
+                step5.REGISTERED_BACKEND_VERSION_CMD),
+            "workflow_abort_exit_codes": list(
+                step5.REGISTERED_ABORT_EXIT_CODES),
+            "seal_package_sha256": step5.REGISTERED_SEAL_PACKAGE_SHA256,
+            "backend_version": step5.REGISTERED_BACKEND_VERSION,
+            "timeout_seconds": step5.REGISTERED_TIMEOUT_SECONDS,
+            "max_infra_retries": step5.REGISTERED_MAX_INFRA_RETRIES,
+            "judge_model": step5.RECORDED_JUDGE_MODEL,
+            "judge_effort": step5.RECORDED_JUDGE_EFFORT,
+        }
+        clean_problems, clean_warnings = step5.validate_config(good_cfg)
+        drifts = []
+        for mutate in (
+            lambda c: c["arms"]["candidate"].update(model="opus"),
+            lambda c: c["arms"]["baseline"].update(effort="medium"),
+            lambda c: c["arms"]["candidate"].update(sha256="0" * 64),
+            lambda c: c["arms"]["ablation"].pop("forbid_subagents"),
+            lambda c: c.update(seal_package_sha256="0" * 64),
+            lambda c: c.update(backend_version="9.9.9"),
+            lambda c: c.update(nonstandard_config=True),
+            lambda c: c.pop("sandbox_cmd"),
+            lambda c: c.update(sandbox_cmd=["/usr/bin/env"]),
+            # A lookalike that mentions the wrapper's filename but
+            # never runs it — the substring test this replaced.
+            lambda c: c.update(sandbox_cmd=[
+                "env", "TAG=ns_sandbox.py", "W={workdir}",
+                "P={profile}", "--"]),
+            # A `python`-prefixed shim that is not python3 at all.
+            lambda c: c.update(sandbox_cmd=[
+                "python-evil", c["sandbox_cmd"][1], "--confine-to",
+                "{workdir}", "--profile", "{profile}", "--"]),
+            lambda c: c.update(backend_cmd=[
+                "claude", "--model", "claude-opus-5", "--effort",
+                "{effort}", "--plugin-dir", "{installation}"]),
+            lambda c: c.update(backend_version_cmd=["claude", "-v"]),
+            lambda c: c.update(workflow_abort_exit_codes=[2]),
+        ):
+            cfg = json.loads(json.dumps(good_cfg))
+            mutate(cfg)
+            drifts.append(bool(step5.validate_config(cfg)[0]))
+        # Scored phases require a durable gate receipt for THIS host
+        # and config: `--phases schedule,runs` cannot bypass the
+        # mandatory gates (on macOS, the host-side sandbox check), and
+        # a hand-written receipt cannot stand in for gates that never
+        # ran — the recorded gate list and every gate's transcript
+        # (present, digest-matching, PASSING) are part of the proof.
+        receipt_dir = ws / "step5-receipt"
+        receipt_dir.mkdir(exist_ok=True)
+        missing_receipt = step5.gate_receipt_problem(receipt_dir,
+                                                     good_cfg)
+        required_gates = ["preflight"]
+        if sys.platform == "darwin":
+            required_gates.append("macos_sandbox_check")
+        artifacts = {}
+        for gate_name in required_gates:
+            transcript = receipt_dir / f"{gate_name}.txt"
+            transcript.write_text(
+                step5.GATE_TRANSCRIPT_MARKERS[gate_name] + " passed\n",
+                encoding="utf-8")
+            artifacts[gate_name] = {
+                "path": str(transcript),
+                "sha256": step5.file_digest(transcript),
+            }
+
+        def write_receipt(**overrides):
+            body = {"identity": step5.gate_identity(good_cfg),
+                    "gates": list(step5.REQUIRED_GATES),
+                    "artifacts": json.loads(json.dumps(artifacts))}
+            body.update(overrides)
+            step5.gate_receipt_path(receipt_dir).write_text(
+                json.dumps(body), encoding="utf-8")
+
+        write_receipt()
+        fresh_receipt = step5.gate_receipt_problem(receipt_dir,
+                                                   good_cfg)
+        other_cfg = json.loads(json.dumps(good_cfg))
+        other_cfg["timeout_seconds"] = 1800
+        stale_receipt = step5.gate_receipt_problem(receipt_dir,
+                                                   other_cfg)
+        write_receipt(gates=["preflight"])
+        partial_gates = step5.gate_receipt_problem(receipt_dir, good_cfg)
+        write_receipt(artifacts={})
+        no_transcripts = step5.gate_receipt_problem(receipt_dir, good_cfg)
+        write_receipt()
+        (receipt_dir / "preflight.txt").write_text(
+            "preflight FAILED: 1/157\n", encoding="utf-8")
+        tampered = step5.gate_receipt_problem(receipt_dir, good_cfg)
+        forged = json.loads(json.dumps(artifacts))
+        forged["preflight"]["sha256"] = step5.file_digest(
+            receipt_dir / "preflight.txt")
+        write_receipt(artifacts=forged)
+        not_passing = step5.gate_receipt_problem(receipt_dir, good_cfg)
+        shuffled = [f"/sealed/{n}" for n in
+                    ("holdout-4.md", "holdout-1.md", "holdout-6.md",
+                     "holdout-2.md", "holdout-5.md", "holdout-3.md")]
+        ordered, order_problem = step5.canonical_tasks(shuffled)
+        canonical_ok = (
+            not order_problem
+            and [Path(x).name for x in ordered]
+            == list(step5.REGISTERED_HOLDOUT_TASKS)
+            and step5.canonical_tasks(shuffled[:5])[1]
+            and step5.canonical_tasks(shuffled + shuffled[:1])[1])
+        ok &= check(
+            "step-5 driver restates the freeze record and refuses drift",
+            constants_in_plan and not clean_problems
+            and not clean_warnings and all(drifts)
+            and missing_receipt and not fresh_receipt
+            and stale_receipt and partial_gates and no_transcripts
+            and tampered and not_passing and canonical_ok,
+            notes)
+
         ok &= check(
             "macOS wrapper registered (behavior validated on the operator host)",
             mac_help.returncode == 0
@@ -1528,7 +1677,8 @@ def run_preflight():
             and "(deny default)" in wrap_text
             and "build_pinned_gitdir" in wrap_text
             and notmac.returncode != 0
-            and "operator" in (notmac.stdout + notmac.stderr)
+            and (sys.platform == "darwin"
+                 or "operator" in (notmac.stdout + notmac.stderr))
             and rebuild_ok,
             notes)
 
