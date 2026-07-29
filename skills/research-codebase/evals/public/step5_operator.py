@@ -46,6 +46,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import subprocess
 import time
 import sys
@@ -128,9 +129,13 @@ def sandbox_problem(cmd):
             REGISTERED_SANDBOX_TAIL):
         return (f"`sandbox_cmd` must be exactly the registered wrapper "
                 f"invocation {shape}")
-    if not Path(str(cmd[0])).name.startswith("python"):
-        return (f"`sandbox_cmd` must run the wrapper with a python "
-                f"interpreter, got {cmd[0]!r}")
+    # The registered shape is `python3 <wrapper> …`: accept only a
+    # genuine python3 basename (a `python-evil` shim on PATH would
+    # otherwise satisfy a prefix test while ignoring the wrapper and
+    # launching the backend unconfined).
+    if not re.fullmatch(r"python3(\.\d+)?", Path(str(cmd[0])).name):
+        return (f"`sandbox_cmd` must run the wrapper with the "
+                f"registered python3 interpreter, got {cmd[0]!r}")
     if [str(a) for a in cmd[2:]] != REGISTERED_SANDBOX_TAIL:
         return (f"`sandbox_cmd` arguments must be exactly "
                 f"{REGISTERED_SANDBOX_TAIL} — got {list(cmd[2:])}")
@@ -146,6 +151,16 @@ def sandbox_problem(cmd):
         return (f"`sandbox_cmd` wrapper {wrapper} differs in content "
                 f"from the registered {reference} — an edited or "
                 f"substituted wrapper is refused")
+    # Behavioral confirmation that THIS interpreter actually executes
+    # THIS wrapper: a static name/digest pair cannot prove the pair
+    # runs, and the runner would otherwise discover the mismatch only
+    # by launching an unconfined backend.
+    probe = subprocess.run([str(cmd[0]), str(wrapper), "--help"],
+                           capture_output=True, text=True)
+    if probe.returncode != 0 or "--confine-to" not in probe.stdout:
+        return (f"`sandbox_cmd` interpreter {cmd[0]!r} does not run "
+                f"the registered wrapper {wrapper} (its --help did not "
+                f"produce the wrapper's own interface)")
     return None
 
 

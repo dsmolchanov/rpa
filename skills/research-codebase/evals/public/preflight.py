@@ -1586,6 +1586,10 @@ def run_preflight():
             lambda c: c.update(sandbox_cmd=[
                 "env", "TAG=ns_sandbox.py", "W={workdir}",
                 "P={profile}", "--"]),
+            # A `python`-prefixed shim that is not python3 at all.
+            lambda c: c.update(sandbox_cmd=[
+                "python-evil", c["sandbox_cmd"][1], "--confine-to",
+                "{workdir}", "--profile", "{profile}", "--"]),
             lambda c: c.update(backend_cmd=[
                 "claude", "--model", "claude-opus-5", "--effort",
                 "{effort}", "--plugin-dir", "{installation}"]),
