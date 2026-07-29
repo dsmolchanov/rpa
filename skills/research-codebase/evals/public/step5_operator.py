@@ -100,6 +100,13 @@ RECORDED_JUDGE_MODEL = "opus"
 RECORDED_JUDGE_EFFORT = "high"
 
 PHASES = ("gates", "installs", "seal", "schedule", "runs", "next")
+# A receipt must attest exactly these gates, each with its recorded,
+# digest-matching, PASSING transcript on disk.
+REQUIRED_GATES = ("backend-version-pin", "sandbox", "preflight")
+GATE_TRANSCRIPT_MARKERS = {
+    "preflight": "preflight OK:",
+    "macos_sandbox_check": "macos-sandbox-check OK:",
+}
 
 
 def fail(message):
@@ -198,6 +205,32 @@ def gate_receipt_problem(out, config):
     if receipt.get("identity") != current:
         return ("gate receipt was recorded for a different host, config "
                 "or sandbox wrapper — re-run the `gates` phase")
+    # Identity alone is derived from local config/host data, so a
+    # hand-written or truncated receipt would otherwise stand in for
+    # gates that never ran. The recorded gate list and every gate's
+    # transcript — present, digest-matching, and showing a PASS — are
+    # part of the proof.
+    if list(receipt.get("gates") or []) != list(REQUIRED_GATES):
+        return (f"gate receipt does not record the registered gates "
+                f"{list(REQUIRED_GATES)} — re-run the `gates` phase")
+    artifacts = receipt.get("artifacts") or {}
+    required = ["preflight"]
+    if sys.platform == "darwin":
+        required.append("macos_sandbox_check")
+    for name in required:
+        entry = artifacts.get(name) or {}
+        path = Path(str(entry.get("path", "")))
+        if not entry or not path.is_file():
+            return (f"gate receipt carries no {name} transcript on disk "
+                    f"— re-run the `gates` phase")
+        if file_digest(path) != entry.get("sha256"):
+            return (f"{name} transcript {path} differs from the digest "
+                    f"recorded in the gate receipt")
+        marker = GATE_TRANSCRIPT_MARKERS[name]
+        if marker not in path.read_text(encoding="utf-8",
+                                        errors="replace"):
+            return (f"{name} transcript {path} does not show a passing "
+                    f"run ({marker!r} absent)")
     return None
 
 
@@ -482,37 +515,66 @@ def phase_runs(args, config):
 
 def phase_next(args, config):
     runs_out = Path(args.out) / "runs"
-    manifest = runs_out / "schedule-manifest.json"
+    manifest_path = runs_out / "schedule-manifest.json"
     judge_out = Path(args.out) / "judging"
-    print("\nstep5: scoring — run these in the judge session "
-          "(paths from the sealed package):\n")
-    print("# 1. blind scorer (primary axis)")
-    print(f"python3 {HERE / 'runner.py'} --config {args.config} --score \\")
-    print(f"    --docs {runs_out}/run-*-anon.md \\")
-    print("    --judge-prompt <sealed>/judge-scorer.md \\")
-    print(f"    --manifest {manifest} --tasks {' '.join(args.tasks)} \\")
-    print("    --task-contexts holdout-1.md=<sealed>/ctx-1.md ... \\")
-    print("    --seal-manifest <sealed>/seal-manifest.json \\")
-    print(f"    --scoring-seed <recorded> --output {judge_out}\n")
-    print("# 2. verifier (evidence-bound; adds --evidence-repos)")
-    print(f"python3 {HERE / 'runner.py'} --config {args.config} --score \\")
-    print(f"    --docs {runs_out}/run-*-anon.md \\")
-    print("    --judge-prompt <sealed>/judge-verifier.md \\")
-    print(f"    --manifest {manifest} --tasks {' '.join(args.tasks)} \\")
-    print("    --task-contexts ... --seal-manifest <sealed>/seal-manifest.json \\")
-    print(f"    --evidence-repos {' '.join(args.repos)} \\")
-    print(f"    --scoring-seed <recorded> --output {judge_out}\n")
-    print("# 3. diagnostic content axis (registered amendment): the same")
-    print("#    scorer batch PLUS gate-failed replicates' -diag.md copies")
-    print(f"python3 {HERE / 'runner.py'} --config {args.config} --score \\")
-    print(f"    --docs {runs_out}/run-*-anon.md {runs_out}/run-*-diag.md \\")
-    print("    --judge-prompt <sealed>/judge-scorer.md \\")
-    print(f"    --manifest {manifest} --tasks {' '.join(args.tasks)} \\")
-    print("    --task-contexts ... --seal-manifest <sealed>/seal-manifest.json \\")
-    print(f"    --diagnostic-axis --scoring-seed <recorded> "
-          f"--output {judge_out}\n")
-    print("External-context tasks additionally need --task-snapshots and")
-    print("a --drift-report from the harness's own re-fetch.")
+    if not manifest_path.is_file():
+        fail(f"no schedule manifest at {manifest_path} — run the "
+             f"`runs` phase before deriving the scoring commands")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not manifest.get("complete"):
+        fail("the schedule is not complete — scoring covers the whole "
+             "experiment, so finish the `runs` phase first")
+    results = manifest.get("results", [])
+    # Document lists are derived from the MANIFEST, never from shell
+    # globs: an all-gate-passed schedule has no `-diag.md` files at
+    # all, and an unmatched glob would reach the runner as a literal
+    # path and be rejected against the manifest-derived scoreable set.
+    primary = [str(runs_out / f"run-{r['run_id']}-anon.md")
+               for r in results if r.get("status") == "completed"]
+    diagnostic = primary + [
+        str(runs_out / f"run-{r['run_id']}-diag.md")
+        for r in results
+        if r.get("status") == "workflow_failure"
+        and r.get("diagnostic_sha256")]
+    if not primary:
+        fail("the manifest holds no completed replicates — there is "
+             "nothing for the primary scorer batch to score")
+    docs_files = {}
+    for label, docs in (("primary", primary), ("diagnostic", diagnostic)):
+        listing = Path(args.out) / f"docs-{label}.txt"
+        listing.write_text("\n".join(docs) + "\n", encoding="utf-8")
+        docs_files[label] = listing
+
+    def emit(title, docs, extra):
+        print(f"# {title}")
+        print(f"python3 {HERE / 'runner.py'} --config {args.config} "
+              f"--score \\")
+        print(f"    --docs {' '.join(docs)} \\")
+        print(f"    --manifest {manifest_path} \\")
+        print(f"    --tasks {' '.join(args.tasks)} \\")
+        print("    --judge-prompt <sealed>/<judge prompt> \\")
+        print("    --task-contexts "
+              + " ".join(f"{Path(task).name}=<sealed>/<context>"
+                         for task in args.tasks) + " \\")
+        print("    --seal-manifest "
+              + str(config.get("seal_manifest", "<sealed>/seal-manifest.json"))
+              + " \\")
+        for line in extra:
+            print(f"    {line} \\")
+        print(f"    --scoring-seed <recorded> --output {judge_out}\n")
+
+    print("\nstep5: scoring — run these in the judge session; document "
+          "lists are derived from the manifest (also written to "
+          f"{docs_files['primary']} and {docs_files['diagnostic']}):\n")
+    emit(f"1. blind scorer, primary axis ({len(primary)} documents)",
+         primary, [])
+    emit(f"2. verifier, evidence-bound ({len(primary)} documents)",
+         primary, [f"--evidence-repos {' '.join(args.repos)}"])
+    emit(f"3. diagnostic content axis ({len(diagnostic)} documents: "
+         f"{len(primary)} completed + {len(diagnostic) - len(primary)} "
+         f"gate-failed)", diagnostic, ["--diagnostic-axis"])
+    print("External-context tasks additionally need --task-snapshots "
+          "and a --drift-report from the harness's own re-fetch.")
 
 
 def main():

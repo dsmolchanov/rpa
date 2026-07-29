@@ -1601,35 +1601,63 @@ def run_preflight():
             drifts.append(bool(step5.validate_config(cfg)[0]))
         # Scored phases require a durable gate receipt for THIS host
         # and config: `--phases schedule,runs` cannot bypass the
-        # mandatory gates (on macOS, the host-side sandbox check).
+        # mandatory gates (on macOS, the host-side sandbox check), and
+        # a hand-written receipt cannot stand in for gates that never
+        # ran — the recorded gate list and every gate's transcript
+        # (present, digest-matching, PASSING) are part of the proof.
         receipt_dir = ws / "step5-receipt"
         receipt_dir.mkdir(exist_ok=True)
         missing_receipt = step5.gate_receipt_problem(receipt_dir,
                                                      good_cfg)
-        # A real receipt also carries the persisted gate transcripts
-        # (the mandatory macOS sandbox check and the preflight): those
-        # extra fields must not disturb the identity comparison.
-        step5.gate_receipt_path(receipt_dir).write_text(
-            json.dumps({"identity": step5.gate_identity(good_cfg),
-                        "gates": ["backend-version-pin", "sandbox",
-                                  "preflight"],
-                        "artifacts": {"preflight": {
-                            "path": "preflight.txt",
-                            "sha256": "0" * 64,
-                            "summary": "preflight OK"}}}),
-            encoding="utf-8")
+        required_gates = ["preflight"]
+        if sys.platform == "darwin":
+            required_gates.append("macos_sandbox_check")
+        artifacts = {}
+        for gate_name in required_gates:
+            transcript = receipt_dir / f"{gate_name}.txt"
+            transcript.write_text(
+                step5.GATE_TRANSCRIPT_MARKERS[gate_name] + " passed\n",
+                encoding="utf-8")
+            artifacts[gate_name] = {
+                "path": str(transcript),
+                "sha256": step5.file_digest(transcript),
+            }
+
+        def write_receipt(**overrides):
+            body = {"identity": step5.gate_identity(good_cfg),
+                    "gates": list(step5.REQUIRED_GATES),
+                    "artifacts": json.loads(json.dumps(artifacts))}
+            body.update(overrides)
+            step5.gate_receipt_path(receipt_dir).write_text(
+                json.dumps(body), encoding="utf-8")
+
+        write_receipt()
         fresh_receipt = step5.gate_receipt_problem(receipt_dir,
                                                    good_cfg)
         other_cfg = json.loads(json.dumps(good_cfg))
         other_cfg["timeout_seconds"] = 1800
         stale_receipt = step5.gate_receipt_problem(receipt_dir,
                                                    other_cfg)
+        write_receipt(gates=["preflight"])
+        partial_gates = step5.gate_receipt_problem(receipt_dir, good_cfg)
+        write_receipt(artifacts={})
+        no_transcripts = step5.gate_receipt_problem(receipt_dir, good_cfg)
+        write_receipt()
+        (receipt_dir / "preflight.txt").write_text(
+            "preflight FAILED: 1/157\n", encoding="utf-8")
+        tampered = step5.gate_receipt_problem(receipt_dir, good_cfg)
+        forged = json.loads(json.dumps(artifacts))
+        forged["preflight"]["sha256"] = step5.file_digest(
+            receipt_dir / "preflight.txt")
+        write_receipt(artifacts=forged)
+        not_passing = step5.gate_receipt_problem(receipt_dir, good_cfg)
         ok &= check(
             "step-5 driver restates the freeze record and refuses drift",
             constants_in_plan and not clean_problems
             and not clean_warnings and all(drifts)
             and missing_receipt and not fresh_receipt
-            and stale_receipt,
+            and stale_receipt and partial_gates and no_transcripts
+            and tampered and not_passing,
             notes)
 
         ok &= check(
