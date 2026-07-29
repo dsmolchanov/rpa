@@ -47,6 +47,7 @@ import json
 import os
 import platform
 import subprocess
+import time
 import sys
 from pathlib import Path
 
@@ -74,6 +75,21 @@ REGISTERED_MODEL = "claude-opus-5"
 REGISTERED_EFFORT = "high"
 REGISTERED_ENTRYPOINT = "/rpa:research_codebase"
 REGISTERED_BACKEND_VERSION = "2.1.220 (Claude Code)"
+REGISTERED_BACKEND_CMD = [
+    "claude", "--model", "claude-opus-5", "--effort", "{effort}",
+    "--plugin-dir", "{installation}", "--permission-mode",
+    "acceptEdits", "--verbose",
+]
+REGISTERED_BACKEND_VERSION_CMD = ["claude", "--version"]
+REGISTERED_ABORT_EXIT_CODES = []
+# The wrapper invocation is compared as a COMPLETE shape: a lookalike
+# such as `["env", "TAG=ns_sandbox.py", ...]` would satisfy a substring
+# test and the runner's placeholder guard while launching the backend
+# with no confinement at all.
+REGISTERED_SANDBOX_TAIL = ["--confine-to", "{workdir}", "--profile",
+                           "{profile}", "--"]
+PLATFORM_WRAPPER = {"darwin": "macos_sandbox.py"}
+DEFAULT_WRAPPER = "ns_sandbox.py"
 REGISTERED_TIMEOUT_SECONDS = 3600
 REGISTERED_MAX_INFRA_RETRIES = 2
 REGISTERED_REPLICATES = 3
@@ -96,6 +112,78 @@ def ok(message):
 
 def warn(message):
     print(f"step5: WARN {message}")
+
+
+def file_digest(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def sandbox_problem(cmd):
+    """The sandbox invocation must be the registered wrapper, by SHAPE
+    and by CONTENT — not merely a command mentioning its filename."""
+    expected_name = PLATFORM_WRAPPER.get(sys.platform, DEFAULT_WRAPPER)
+    shape = (f'["python3", "<checkout>/…/{expected_name}", '
+             f'{", ".join(json.dumps(a) for a in REGISTERED_SANDBOX_TAIL)}]')
+    if not isinstance(cmd, list) or len(cmd) != 2 + len(
+            REGISTERED_SANDBOX_TAIL):
+        return (f"`sandbox_cmd` must be exactly the registered wrapper "
+                f"invocation {shape}")
+    if not Path(str(cmd[0])).name.startswith("python"):
+        return (f"`sandbox_cmd` must run the wrapper with a python "
+                f"interpreter, got {cmd[0]!r}")
+    if [str(a) for a in cmd[2:]] != REGISTERED_SANDBOX_TAIL:
+        return (f"`sandbox_cmd` arguments must be exactly "
+                f"{REGISTERED_SANDBOX_TAIL} — got {list(cmd[2:])}")
+    wrapper = Path(str(cmd[1]))
+    if not wrapper.is_file():
+        return f"`sandbox_cmd` wrapper not found: {wrapper}"
+    if wrapper.name != expected_name:
+        return (f"`sandbox_cmd` names {wrapper.name}, but this host "
+                f"({sys.platform}) requires the registered "
+                f"{expected_name}")
+    reference = HERE / expected_name
+    if file_digest(wrapper) != file_digest(reference):
+        return (f"`sandbox_cmd` wrapper {wrapper} differs in content "
+                f"from the registered {reference} — an edited or "
+                f"substituted wrapper is refused")
+    return None
+
+
+def gate_identity(config):
+    """What a gate receipt attests: this config, this host, this
+    wrapper build. Any of them changing invalidates the receipt."""
+    sandbox = config.get("sandbox_cmd") or []
+    wrapper = (str(sandbox[1]) if len(sandbox) > 1
+               and Path(str(sandbox[1])).is_file() else None)
+    return {
+        "config_digest": runner.config_digest(config),
+        "host": f"{platform.node()}|{sys.platform}",
+        "wrapper_sha256": file_digest(wrapper) if wrapper else None,
+        "backend_version": REGISTERED_BACKEND_VERSION,
+    }
+
+
+def gate_receipt_path(out):
+    return Path(out) / "step5-gates-receipt.json"
+
+
+def gate_receipt_problem(out, config):
+    """Scored phases require a durable receipt proving the mandatory
+    gates — on macOS including the host-side sandbox check, which the
+    runner never repeats — passed for THIS host and config."""
+    path = gate_receipt_path(out)
+    if not path.is_file():
+        return (f"no gate receipt at {path} — run the `gates` phase on "
+                f"this host before scheduling or running")
+    try:
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return f"gate receipt unreadable: {exc}"
+    current = gate_identity(config)
+    if receipt.get("identity") != current:
+        return ("gate receipt was recorded for a different host, config "
+                "or sandbox wrapper — re-run the `gates` phase")
+    return None
 
 
 def validate_config(config):
@@ -159,19 +247,33 @@ def validate_config(config):
     if config.get("seal_package_sha256") != REGISTERED_SEAL_PACKAGE_SHA256:
         problems.append(
             "seal_package_sha256 does not match the registered seal")
-    sandbox = config.get("sandbox_cmd")
-    if not sandbox:
+    # Execution fields are part of the registered configuration: the
+    # runner binds whatever it is given into a fresh config digest, so
+    # drifted CLI flags or abort-code classification would otherwise
+    # pass unnoticed into the holdout.
+    if [str(a) for a in (config.get("backend_cmd") or [])] != \
+            REGISTERED_BACKEND_CMD:
+        problems.append(
+            f"backend_cmd differs from the registered command "
+            f"{REGISTERED_BACKEND_CMD}")
+    if [str(a) for a in (config.get("backend_version_cmd") or [])] != \
+            REGISTERED_BACKEND_VERSION_CMD:
+        problems.append(
+            f"backend_version_cmd differs from the registered "
+            f"{REGISTERED_BACKEND_VERSION_CMD}")
+    if list(config.get("workflow_abort_exit_codes") or []) != \
+            REGISTERED_ABORT_EXIT_CODES:
+        problems.append(
+            "workflow_abort_exit_codes differs from the registered "
+            "empty list — abort classification is part of the freeze")
+    if not config.get("sandbox_cmd"):
         problems.append(
             "`sandbox_cmd` is unset — scored sessions require the "
             "registered filesystem sandbox")
     else:
-        joined = " ".join(str(p) for p in sandbox)
-        if not ("ns_sandbox.py" in joined
-                or "macos_sandbox.py" in joined):
-            problems.append(
-                "`sandbox_cmd` is neither the registered Linux wrapper "
-                "(ns_sandbox.py) nor the registered macOS wrapper "
-                "(macos_sandbox.py)")
+        sandbox_issue = sandbox_problem(config["sandbox_cmd"])
+        if sandbox_issue:
+            problems.append(sandbox_issue)
     if config.get("judge_model") != RECORDED_JUDGE_MODEL:
         warnings.append(
             f"judge_model {config.get('judge_model')!r} differs from the "
@@ -198,11 +300,9 @@ def phase_gates(args, config):
              f"version or register an amendment before running")
     ok(f"backend CLI pinned version ({actual})")
 
-    sandbox = " ".join(str(p) for p in config.get("sandbox_cmd") or [])
+    # The wrapper's identity (shape + content + platform) is already
+    # enforced by validate_config before any phase runs.
     if sys.platform == "darwin":
-        if "macos_sandbox.py" not in sandbox:
-            fail("running on macOS but `sandbox_cmd` is not the "
-                 "registered macOS wrapper")
         if not args.newer:
             fail("--newer is required on macOS: the mandatory sandbox "
                  "check needs a commit newer than the frozen candidate")
@@ -218,10 +318,7 @@ def phase_gates(args, config):
                  "permitted on this host until every probe passes")
         ok("macOS sandbox validated (record this output with the results)")
     else:
-        if "ns_sandbox.py" not in sandbox:
-            fail("running on Linux but `sandbox_cmd` is not the "
-                 "registered Linux wrapper")
-        ok(f"Linux sandbox wrapper registered ({platform.system()})")
+        ok(f"registered sandbox wrapper verified ({platform.system()})")
 
     pre = subprocess.run([sys.executable, str(HERE / "preflight.py")],
                          capture_output=True, text=True)
@@ -230,6 +327,18 @@ def phase_gates(args, config):
         print(pre.stdout[-2000:], file=sys.stderr)
         fail(f"synthetic harness preflight FAILED ({tail})")
     ok(f"synthetic harness preflight ({tail})")
+
+    # Durable receipt: the scored phases refuse to proceed without one
+    # matching this host, config and wrapper — a later invocation with
+    # `--phases schedule,runs` cannot bypass the mandatory gates.
+    receipt = {
+        "identity": gate_identity(config),
+        "gates": ["backend-version-pin", "sandbox", "preflight"],
+        "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    gate_receipt_path(args.out).write_text(
+        json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+    ok(f"gate receipt recorded ({gate_receipt_path(args.out)})")
 
 
 def phase_installs(args, config):
@@ -287,6 +396,9 @@ def phase_seal(args, config):
 
 
 def phase_schedule(args, config):
+    problem = gate_receipt_problem(args.out, config)
+    if problem:
+        fail(problem)
     sched_path = Path(args.out) / "schedule.json"
     if sched_path.exists():
         ok(f"schedule already written ({sched_path}) — reusing it; "
@@ -305,6 +417,9 @@ def phase_schedule(args, config):
 
 
 def phase_runs(args, config):
+    problem = gate_receipt_problem(args.out, config)
+    if problem:
+        fail(problem)
     sched_path = Path(args.out) / "schedule.json"
     if not sched_path.is_file():
         fail(f"no schedule at {sched_path} — run the `schedule` phase")

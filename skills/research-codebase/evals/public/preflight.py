@@ -1552,8 +1552,14 @@ def run_preflight():
                 }
                 for arm, sha in step5.REGISTERED_INSTALL_SHA256.items()
             },
-            "sandbox_cmd": ["python3", "/x/ns_sandbox.py", "--confine-to",
-                            "{workdir}", "--profile", "{profile}", "--"],
+            "sandbox_cmd": ["python3", str(HERE / "ns_sandbox.py"),
+                            "--confine-to", "{workdir}", "--profile",
+                            "{profile}", "--"],
+            "backend_cmd": list(step5.REGISTERED_BACKEND_CMD),
+            "backend_version_cmd": list(
+                step5.REGISTERED_BACKEND_VERSION_CMD),
+            "workflow_abort_exit_codes": list(
+                step5.REGISTERED_ABORT_EXIT_CODES),
             "seal_package_sha256": step5.REGISTERED_SEAL_PACKAGE_SHA256,
             "backend_version": step5.REGISTERED_BACKEND_VERSION,
             "timeout_seconds": step5.REGISTERED_TIMEOUT_SECONDS,
@@ -1573,14 +1579,42 @@ def run_preflight():
             lambda c: c.update(nonstandard_config=True),
             lambda c: c.pop("sandbox_cmd"),
             lambda c: c.update(sandbox_cmd=["/usr/bin/env"]),
+            # A lookalike that mentions the wrapper's filename but
+            # never runs it — the substring test this replaced.
+            lambda c: c.update(sandbox_cmd=[
+                "env", "TAG=ns_sandbox.py", "W={workdir}",
+                "P={profile}", "--"]),
+            lambda c: c.update(backend_cmd=[
+                "claude", "--model", "claude-opus-5", "--effort",
+                "{effort}", "--plugin-dir", "{installation}"]),
+            lambda c: c.update(backend_version_cmd=["claude", "-v"]),
+            lambda c: c.update(workflow_abort_exit_codes=[2]),
         ):
             cfg = json.loads(json.dumps(good_cfg))
             mutate(cfg)
             drifts.append(bool(step5.validate_config(cfg)[0]))
+        # Scored phases require a durable gate receipt for THIS host
+        # and config: `--phases schedule,runs` cannot bypass the
+        # mandatory gates (on macOS, the host-side sandbox check).
+        receipt_dir = ws / "step5-receipt"
+        receipt_dir.mkdir(exist_ok=True)
+        missing_receipt = step5.gate_receipt_problem(receipt_dir,
+                                                     good_cfg)
+        step5.gate_receipt_path(receipt_dir).write_text(
+            json.dumps({"identity": step5.gate_identity(good_cfg)}),
+            encoding="utf-8")
+        fresh_receipt = step5.gate_receipt_problem(receipt_dir,
+                                                   good_cfg)
+        other_cfg = json.loads(json.dumps(good_cfg))
+        other_cfg["timeout_seconds"] = 1800
+        stale_receipt = step5.gate_receipt_problem(receipt_dir,
+                                                   other_cfg)
         ok &= check(
             "step-5 driver restates the freeze record and refuses drift",
             constants_in_plan and not clean_problems
-            and not clean_warnings and all(drifts),
+            and not clean_warnings and all(drifts)
+            and missing_receipt and not fresh_receipt
+            and stale_receipt,
             notes)
 
         ok &= check(
