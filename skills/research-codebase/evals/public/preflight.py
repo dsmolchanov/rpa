@@ -1602,8 +1602,17 @@ def run_preflight():
         receipt_dir.mkdir(exist_ok=True)
         missing_receipt = step5.gate_receipt_problem(receipt_dir,
                                                      good_cfg)
+        # A real receipt also carries the persisted gate transcripts
+        # (the mandatory macOS sandbox check and the preflight): those
+        # extra fields must not disturb the identity comparison.
         step5.gate_receipt_path(receipt_dir).write_text(
-            json.dumps({"identity": step5.gate_identity(good_cfg)}),
+            json.dumps({"identity": step5.gate_identity(good_cfg),
+                        "gates": ["backend-version-pin", "sandbox",
+                                  "preflight"],
+                        "artifacts": {"preflight": {
+                            "path": "preflight.txt",
+                            "sha256": "0" * 64,
+                            "summary": "preflight OK"}}}),
             encoding="utf-8")
         fresh_receipt = step5.gate_receipt_problem(receipt_dir,
                                                    good_cfg)

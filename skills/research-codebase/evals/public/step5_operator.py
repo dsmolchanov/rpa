@@ -288,6 +288,7 @@ def validate_config(config):
 
 
 def phase_gates(args, config):
+    gate_artifacts = {}
     version = subprocess.run(config.get("backend_version_cmd")
                              or ["claude", "--version"],
                              capture_output=True, text=True)
@@ -312,11 +313,23 @@ def phase_gates(args, config):
              "--newer", args.newer],
             capture_output=True, text=True)
         print(check.stdout, end="")
+        # The registered plan requires the check's full PASS output to
+        # be recorded WITH the results: a terminal-only transcript
+        # leaves the holdout with no auditable proof that the
+        # mandatory sandbox gate passed on this host.
+        transcript = Path(args.out) / "macos-sandbox-check.txt"
+        transcript.write_text(check.stdout + check.stderr,
+                              encoding="utf-8")
         if check.returncode != 0:
             print(check.stderr, end="", file=sys.stderr)
-            fail("macos_sandbox_check FAILED — scored runs are not "
-                 "permitted on this host until every probe passes")
-        ok("macOS sandbox validated (record this output with the results)")
+            fail(f"macos_sandbox_check FAILED — scored runs are not "
+                 f"permitted on this host until every probe passes "
+                 f"(transcript: {transcript})")
+        gate_artifacts["macos_sandbox_check"] = {
+            "path": str(transcript),
+            "sha256": file_digest(transcript),
+        }
+        ok(f"macOS sandbox validated (transcript recorded: {transcript})")
     else:
         ok(f"registered sandbox wrapper verified ({platform.system()})")
 
@@ -329,14 +342,26 @@ def phase_gates(args, config):
              f"preflight is host-agnostic by design, so a check "
              f"failing for host-specific reasons is a defect to "
              f"report, not to bypass")
-    ok(f"synthetic harness preflight ({tail})")
+    preflight_transcript = Path(args.out) / "preflight.txt"
+    preflight_transcript.write_text(pre.stdout, encoding="utf-8")
+    gate_artifacts["preflight"] = {
+        "path": str(preflight_transcript),
+        "sha256": file_digest(preflight_transcript),
+        "summary": tail,
+    }
+    ok(f"synthetic harness preflight ({tail}; transcript recorded: "
+       f"{preflight_transcript})")
 
     # Durable receipt: the scored phases refuse to proceed without one
     # matching this host, config and wrapper — a later invocation with
-    # `--phases schedule,runs` cannot bypass the mandatory gates.
+    # `--phases schedule,runs` cannot bypass the mandatory gates. The
+    # receipt points at the persisted gate transcripts, so the results
+    # carry auditable proof of every mandatory gate.
     receipt = {
         "identity": gate_identity(config),
         "gates": ["backend-version-pin", "sandbox", "preflight"],
+        "backend_version_observed": actual,
+        "artifacts": gate_artifacts,
         "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
     }
     gate_receipt_path(args.out).write_text(
