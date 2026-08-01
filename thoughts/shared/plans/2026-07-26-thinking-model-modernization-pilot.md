@@ -683,6 +683,23 @@ macOS host.
    Extension to planning / TDD / refactoring families and the Codex skill
    adapter each get their own representative gate.
 
+**Sequence step 7 status (2026-08-01): complete.** The sanitized results are
+recorded in
+`thoughts/shared/research/2026-08-01-thinking-model-modernization-pilot-results.md`.
+The candidate's primary pass is **not established**: artifact-gate failures
+and malformed judge responses leave the pre-registered quality, evidence,
+and critical-error aggregates mathematically undefined, while the diagnostic
+axis is explicitly barred from backfilling primary cells. The formal verdict
+is therefore indeterminate and rollout remains an operational no-go pending a
+protocol decision and fresh sealed round. A descriptive calculation that
+includes all final gate-failed runs gives 20.169% mean token savings and
+11.608% wall-time savings, but the binding efficiency verdict is also
+indeterminate because that population treatment was not registered;
+candidate ritual stops and timeout/abort failures are zero. The fleet-ablation
+redundancy criterion is not satisfied because its clean T3 cell fails the
+efficiency condition. No post-hoc imputation or judge-response repair was
+applied.
+
 ## Owner decisions (2026-07-26)
 
 1. **Eval repos**: rpa, livekit-voice-agent (confirmed 2026-07-26, replacing
