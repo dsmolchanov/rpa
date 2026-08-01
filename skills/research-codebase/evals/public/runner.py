@@ -147,7 +147,7 @@ DEFAULT_MAX_INFRA_RETRIES = 2
 # schedules that deviate must be explicitly marked nonstandard (dev-set
 # tuning only, never holdout).
 REGISTERED_REPLICATES = 3
-REGISTERED_HOLDOUT_TASKS = 6
+REGISTERED_HOLDOUT_TASKS = len(seal_package.HOLDOUT_TASKS)
 # The plan fixes the fleet-ablation arm to these two archetypes; a standard
 # schedule validates the scoped tasks' `archetype` frontmatter against them.
 REGISTERED_ABLATION_ARCHETYPES = ("subsystem-explanation", "narrow where-is")
@@ -166,6 +166,9 @@ REGISTERED_HOLDOUT_ARCHETYPE_KEYWORDS = {
 }
 PILOT_V2_PROTOCOL_VERSION = 2
 PILOT_V2_MAX_JUDGE_ATTEMPTS = 3
+PILOT_V2_SCHEDULE_SEED = 20260801
+PILOT_V2_SCORER_SEED = 20260802
+PILOT_V2_VERIFIER_SEED = 20260803
 # Judge responses are capped at 1 MiB by judge_contract; 4 MiB leaves room
 # for stream-json envelopes and accounting nodes. An oversized stream is
 # preserved verbatim in a sidecar and consumes one invalid attempt, so bounded
@@ -395,7 +398,74 @@ def hash_tree(root):
     return digest.hexdigest()
 
 
-def atomic_write_text(path, text):
+def _open_parent_directory(path):
+    """Open and bind the destination directory without following its final
+    component.  All durable state mutations use the returned descriptor so a
+    path swap cannot redirect an already-authorized write to another tree."""
+    path = Path(path)
+    flags = (os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+             | getattr(os, "O_DIRECTORY", 0)
+             | getattr(os, "O_NOFOLLOW", 0))
+    fd = os.open(path.parent, flags)
+    opened = os.fstat(fd)
+    if not stat.S_ISDIR(opened.st_mode):
+        os.close(fd)
+        raise InfraFailure(
+            f"destination parent is not an ordinary directory: {path.parent}"
+        )
+    return fd
+
+
+def _fsync_directory(fd, label):
+    """Make a directory-entry mutation durable before it authorizes work."""
+    try:
+        os.fsync(fd)
+    except OSError as exc:
+        raise InfraFailure(
+            f"cannot durably persist {label} directory entry"
+        ) from exc
+
+
+def _target_stat(dir_fd, name):
+    try:
+        return os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+
+
+def _validate_replace_target(target, path):
+    if target is None:
+        return
+    if not stat.S_ISREG(target.st_mode) or target.st_nlink != 1:
+        raise InfraFailure(
+            f"refusing unsafe output target {path}: expected a single-link "
+            "ordinary file"
+        )
+
+
+def durable_unlink(path, missing_ok=False):
+    """Unlink one state marker and fsync its parent directory.
+
+    Claims and pending journals govern whether a nondeterministic backend may
+    be called again.  Merely unlinking them is not enough: after a crash the
+    deletion must not disappear while a later record survives.
+    """
+    path = Path(path)
+    dir_fd = _open_parent_directory(path)
+    try:
+        try:
+            os.unlink(path.name, dir_fd=dir_fd)
+        except FileNotFoundError:
+            if missing_ok:
+                return False
+            raise
+        _fsync_directory(dir_fd, f"unlink of {path.name}")
+        return True
+    finally:
+        os.close(dir_fd)
+
+
+def atomic_write_bytes(path, data):
     """Crash-safe persistence for manifests and run records: the content is
     written to a temp file in the same directory, flushed to disk, and
     atomically swapped into place with os.replace — a crash mid-write can
@@ -403,21 +473,55 @@ def atomic_write_text(path, text):
     entries (and deleting a corrupt manifest to recover would rerun them,
     which the protocol forbids)."""
     path = Path(path)
-    fd, tmp_name = tempfile.mkstemp(
-        dir=str(path.parent), prefix=path.name + ".", suffix=".tmp"
-    )
+    dir_fd = _open_parent_directory(path)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_name, path)
-    except BaseException:
+        target_before = _target_stat(dir_fd, path.name)
+        _validate_replace_target(target_before, path)
+        tmp_name = f".{path.name}.{uuid.uuid4().hex}.tmp"
+        flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                 | getattr(os, "O_CLOEXEC", 0)
+                 | getattr(os, "O_NOFOLLOW", 0))
+        fd = -1
+        created = False
         try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
+            fd = os.open(tmp_name, flags, 0o600, dir_fd=dir_fd)
+            created = True
+            with os.fdopen(fd, "wb") as handle:
+                fd = -1
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            target_now = _target_stat(dir_fd, path.name)
+            _validate_replace_target(target_now, path)
+            if ((target_before is None) != (target_now is None)
+                    or (target_before is not None
+                        and (target_before.st_dev, target_before.st_ino,
+                             target_before.st_nlink)
+                        != (target_now.st_dev, target_now.st_ino,
+                            target_now.st_nlink))):
+                raise InfraFailure(
+                    f"output target changed during atomic write: {path}")
+            os.replace(
+                tmp_name, path.name, src_dir_fd=dir_fd,
+                dst_dir_fd=dir_fd)
+            created = False
+            _fsync_directory(dir_fd, f"replacement of {path.name}")
+        except BaseException:
+            if fd >= 0:
+                os.close(fd)
+            try:
+                if created:
+                    os.unlink(tmp_name, dir_fd=dir_fd)
+                    _fsync_directory(dir_fd, f"cleanup of {tmp_name}")
+            except OSError:
+                pass
+            raise
+    finally:
+        os.close(dir_fd)
+
+
+def atomic_write_text(path, text):
+    return atomic_write_bytes(path, text.encode("utf-8"))
 
 
 def _path_present(path):
@@ -435,6 +539,49 @@ def _safe_regular_file(path):
         return stat.S_ISREG(Path(path).lstat().st_mode)
     except OSError:
         return False
+
+
+def _safe_single_link_regular_file(path):
+    try:
+        info = Path(path).lstat()
+        return stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+    except OSError:
+        return False
+
+
+def bind_output_directory(path):
+    """Resolve an output root once and bind its directory identity.
+
+    The lock and every nested state-machine operation must name this exact
+    directory. Re-resolving the caller's original path after the lock is held
+    would let a symlink swap split the lock from the state it is meant to
+    serialize.
+    """
+    root = Path(path).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    try:
+        opened = root.lstat()
+    except OSError as exc:
+        raise InfraFailure(f"cannot bind output directory {root}") from exc
+    if not stat.S_ISDIR(opened.st_mode):
+        raise InfraFailure(f"output root is not a directory: {root}")
+    return root, (opened.st_dev, opened.st_ino)
+
+
+def verify_output_directory(root, identity, label="output directory"):
+    """Fail if a canonical output root was renamed or replaced."""
+    root = Path(root)
+    try:
+        current = root.lstat()
+    except OSError as exc:
+        raise InfraFailure(f"{label} disappeared after it was bound") from exc
+    if (not stat.S_ISDIR(current.st_mode)
+            or (current.st_dev, current.st_ino) != identity):
+        raise InfraFailure(
+            f"{label} changed identity after its state-machine lock was "
+            "acquired"
+        )
+    return root
 
 
 def _evidence_descriptor(path):
@@ -508,24 +655,34 @@ def exclusive_write_text(path, text):
     cross the launch boundary; every loser stops before spawning a backend.
     """
     path = Path(path)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    fd = os.open(path, flags, 0o600)
-    created = True
+    dir_fd = _open_parent_directory(path)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            fd = -1
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
-    except BaseException:
-        if fd >= 0:
-            os.close(fd)
-        if created:
-            try:
-                path.unlink()
-            except OSError:
-                pass
-        raise
+        flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                 | getattr(os, "O_CLOEXEC", 0)
+                 | getattr(os, "O_NOFOLLOW", 0))
+        fd = -1
+        created = False
+        try:
+            fd = os.open(path.name, flags, 0o600, dir_fd=dir_fd)
+            created = True
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                fd = -1
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+            _fsync_directory(dir_fd, f"creation of {path.name}")
+        except BaseException:
+            if fd >= 0:
+                os.close(fd)
+            if created:
+                try:
+                    os.unlink(path.name, dir_fd=dir_fd)
+                    _fsync_directory(dir_fd, f"cleanup of {path.name}")
+                except OSError:
+                    pass
+            raise
+    finally:
+        os.close(dir_fd)
 
 
 def process_is_alive(pid):
@@ -545,6 +702,23 @@ def process_is_alive(pid):
     return True
 
 
+def _verify_lock_identity(fd, path, label):
+    """Prove an opened lock fd is the sole ordinary file at its pathname."""
+    try:
+        opened = os.fstat(fd)
+        named = Path(path).lstat()
+    except OSError as exc:
+        raise InfraFailure(
+            f"cannot verify {label} lock identity: {exc}") from exc
+    if (not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1
+            or not stat.S_ISREG(named.st_mode)
+            or (opened.st_dev, opened.st_ino)
+            != (named.st_dev, named.st_ino)):
+        raise InfraFailure(
+            f"{label} lock must be one ordinary, unlinked-to-elsewhere "
+            f"regular file")
+
+
 def acquire_advisory_lock(path, label):
     """Acquire one process-scoped, nonblocking exclusive advisory lock.
 
@@ -554,10 +728,25 @@ def acquire_advisory_lock(path, label):
     process exits, never on deleting a stale pathname or PID claim.
     """
     path = Path(path)
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
     try:
-        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        fd = os.open(path, flags, 0o600)
     except OSError as exc:
         raise InfraFailure(f"cannot open {label} lock {path}: {exc}") from exc
+    try:
+        _verify_lock_identity(fd, path, label)
+        parent_fd = _open_parent_directory(path)
+        try:
+            _fsync_directory(parent_fd, f"creation of {path.name} lock")
+        finally:
+            os.close(parent_fd)
+    except BaseException:
+        os.close(fd)
+        raise
     handle = os.fdopen(fd, "r+", encoding="utf-8")
     try:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -571,6 +760,11 @@ def acquire_advisory_lock(path, label):
         handle.close()
         raise InfraFailure(f"cannot acquire {label} lock: {exc}") from exc
     try:
+        # Recheck after flock and immediately before mutation.  This catches
+        # a fallback-platform symlink swap, rename replacement, or hardlink
+        # created across the open/lock window without ever truncating the
+        # foreign target.
+        _verify_lock_identity(handle.fileno(), path, label)
         handle.seek(0)
         handle.truncate()
         handle.write(json.dumps({"pid": os.getpid(), "label": label}) + "\n")
@@ -583,6 +777,34 @@ def acquire_advisory_lock(path, label):
             handle.close()
         raise
     return handle
+
+
+def refuse_missing_persistent_lock_with_state(root, lock_path, patterns,
+                                              label):
+    """Never recreate a lock inode after its protected state exists.
+
+    A held ``flock`` protects an inode, not a pathname.  If an operator or
+    concurrent process unlinks the persistent lock while state remains,
+    opening the pathname with ``O_CREAT`` would silently elect a second lock
+    domain and permit duplicate nondeterministic observations.
+    """
+    root = Path(root)
+    lock_path = Path(lock_path)
+    if _path_present(lock_path):
+        return
+    material = {
+        path.name
+        for pattern in patterns
+        for path in root.glob(pattern)
+        if _path_present(path)
+    }
+    if material:
+        shown = ", ".join(sorted(material)[:5])
+        suffix = " ..." if len(material) > 5 else ""
+        raise InfraFailure(
+            f"{label} persistent lock is missing while protected state "
+            f"exists ({shown}{suffix}); refusing to create a second lock "
+            f"inode or launch a backend")
 
 
 def release_advisory_lock(handle):
@@ -883,15 +1105,51 @@ def read_input_text(path, what):
     prompts, seal manifests, drift copies) are CLI input: a missing,
     unreadable, or non-UTF-8 file is an infrastructure fault reported
     through the structured infra_failure contract, never a raw traceback."""
+    data = read_input_bytes(path, what)
     try:
-        return Path(path).read_text(encoding="utf-8")
-    except (OSError, ValueError) as exc:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as exc:
         raise InfraFailure(f"cannot read {what} {path}: {exc}") from exc
 
 
 def read_input_bytes(path, what):
+    """Read one stable, ordinary, single-link input through O_NOFOLLOW.
+
+    Callers retain and use the returned bytes; they never authenticate one
+    version and later reopen the pathname for routing or model input.
+    """
+    path = Path(path)
+    flags = (os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+             | getattr(os, "O_NOFOLLOW", 0))
     try:
-        return Path(path).read_bytes()
+        before = path.lstat()
+        if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1):
+            raise OSError("input is not a single-link ordinary file")
+        fd = os.open(path, flags)
+        try:
+            opened = os.fstat(fd)
+            if (not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1
+                    or (opened.st_dev, opened.st_ino)
+                    != (before.st_dev, before.st_ino)):
+                raise OSError("input changed identity while opening")
+            chunks = []
+            while True:
+                chunk = os.read(fd, 1024 * 1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            after = os.fstat(fd)
+        finally:
+            os.close(fd)
+        current = path.lstat()
+        stable_fields = ("st_dev", "st_ino", "st_nlink", "st_size",
+                         "st_mtime_ns", "st_ctime_ns")
+        if (not stat.S_ISREG(current.st_mode)
+                or any(getattr(opened, field) != getattr(after, field)
+                       or getattr(after, field) != getattr(current, field)
+                       for field in stable_fields)):
+            raise OSError("input changed while it was being read")
+        return b"".join(chunks)
     except OSError as exc:
         raise InfraFailure(f"cannot read {what} {path}: {exc}") from exc
 
@@ -1094,11 +1352,18 @@ def read_task_bytes(task_path):
     return read_input_bytes(task_path, "task file")
 
 
-def extract_task_prompt(task_path):
+def decode_task_bytes(task_bytes, task_path):
+    try:
+        return task_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise InfraFailure(
+            f"cannot decode task file {task_path} as UTF-8") from exc
+
+
+def extract_task_prompt_text(text, task_path):
     """Only the `## Task prompt` section may reach an evaluated session.
     The marker is required unconditionally: a malformed task must fail the
     run, never silently alter the experiment by sending the whole file."""
-    text = read_task_text(task_path)
     match = re.search(
         r"^## Task prompt\s*\n(.*?)(?=^## |\Z)", text, re.MULTILINE | re.DOTALL
     )
@@ -1108,6 +1373,12 @@ def extract_task_prompt(task_path):
             f"the file to an evaluated run"
         )
     return match.group(1).strip(), text
+
+
+def extract_task_prompt(task_path):
+    task_bytes = read_task_bytes(task_path)
+    return extract_task_prompt_text(
+        decode_task_bytes(task_bytes, task_path), task_path)
 
 
 def task_target_sha(task_text, task_path):
@@ -1421,7 +1692,7 @@ def spawn_judge_session_capped(cmd, prompt, cwd, env, timeout,
         # the attempt as invalid; tolerant replacement would be repair.
         launch_defects.append("judge raw stream is not UTF-8")
         return None, byte_count, digest.hexdigest(), launch_defects, True
-    raw_stream_path.unlink(missing_ok=True)
+    durable_unlink(raw_stream_path, missing_ok=True)
     return text, byte_count, digest.hexdigest(), launch_defects, False
 
 
@@ -1663,6 +1934,10 @@ def account(nodes):
         for field in ("input_tokens", "output_tokens", "tool_calls"):
             _nonnegative_event_int(
                 node.get(field), f"accounting node {field}")
+        if node["input_tokens"] + node["output_tokens"] <= 0:
+            raise InfraFailure(
+                "every model-bearing accounting node must carry positive "
+                "token usage")
         _nonnegative_event_int(
             node.get("subagent_launches", 0),
             "accounting node subagent_launches")
@@ -1813,6 +2088,42 @@ def classify_stop(response, answered=True):
     else:
         kind = "statement"
     return {"response": text, "classification": kind, "answered": answered}
+
+
+def validate_intervention_log(record):
+    """Strictly recompute the complete ritual-stop evidence for one run."""
+    log = record.get("interventions_log")
+    if not isinstance(log, list):
+        raise InfraFailure("run interventions_log must be an array")
+    answered = 0
+    unanswered_positions = []
+    for position, item in enumerate(log):
+        if (not isinstance(item, dict)
+                or item.get("classification") not in {
+                    "empty", "question", "statement"}
+                or not isinstance(item.get("answered"), bool)
+                or not isinstance(item.get("response"), str)
+                or item != classify_stop(
+                    item.get("response"), answered=item.get("answered"))):
+            raise InfraFailure(
+                "run intervention evidence differs from strict "
+                "recomputation")
+        if item["answered"]:
+            answered += 1
+        else:
+            unanswered_positions.append(position)
+    intervention_count = record.get("interventions")
+    if (not isinstance(intervention_count, int)
+            or isinstance(intervention_count, bool)
+            or intervention_count < 0
+            or intervention_count != answered
+            or len(unanswered_positions) > 1
+            or (unanswered_positions
+                and unanswered_positions[0] != len(log) - 1)):
+        raise InfraFailure(
+            "run intervention counts or unanswered-stop placement are "
+            "invalid")
+    return len(log)
 
 
 def snapshot_research(worktree):
@@ -1975,7 +2286,8 @@ def anonymize(text, run_id):
 
 
 def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
-             scheduled=False, schedule_binding=None):
+             scheduled=False, schedule_binding=None, output_binding=None,
+             task_snapshot=None):
     arms = config.get("arms", {})
     if arm_name not in arms:
         # No record can be attributed to an unknown arm; fail with a
@@ -1986,7 +2298,11 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
     arm = arms[arm_name]
     # Absolute from the start: relative paths would resolve differently for
     # git (under the repo) and for this process (under the caller's cwd).
-    output_dir = Path(output_dir).resolve()
+    if output_binding is None:
+        output_dir, output_binding = bind_output_directory(output_dir)
+    else:
+        output_dir = verify_output_directory(
+            Path(output_dir), output_binding, "run output directory")
     repo_dir = Path(repo_dir).resolve()
     run_id = uuid.uuid4().hex[:12]
     record = {
@@ -2008,6 +2324,7 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
             "environment_policy_id": PILOT_V2_ENVIRONMENT_POLICY_ID,
             "failure_kind": None,
             "artifact_gate": "not_evaluated",
+            "raw_sha256": None,
             "telemetry_policy_id": PILOT_V2_AGGREGATION_POLICY["telemetry"],
             "telemetry_eligible": False,
             "telemetry_exclusion_reason": "run_not_terminal",
@@ -2034,7 +2351,6 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
                 "schedule_index": binding_index,
             })
     out = Path(output_dir)
-    out.mkdir(parents=True, exist_ok=True)
     worktree = None
     all_nodes = []
     effort_modes = set()
@@ -2051,9 +2367,15 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
         # current schedule's registered digests — a record produced under
         # an earlier task revision or runtime configuration is stale, not
         # adoptable.
+        if task_snapshot is None:
+            task_bytes = read_task_bytes(task_path)
+        elif isinstance(task_snapshot, bytes):
+            task_bytes = task_snapshot
+        else:
+            raise InfraFailure("task snapshot must contain exact bytes")
+        task_text = decode_task_bytes(task_bytes, task_path)
         record["config_digest"] = config_digest(config)
-        record["task_sha256"] = hashlib.sha256(
-            read_task_bytes(task_path)).hexdigest()
+        record["task_sha256"] = hashlib.sha256(task_bytes).hexdigest()
         validate_arm_parity(config)
         record["standard_topology"] = validate_arm_topology(config)
         if record["standard_topology"] and not scheduled \
@@ -2075,7 +2397,7 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
             digest = verify_installation(other_name, other_arm)
             if other_name == arm_name:
                 record["installation_sha256"] = digest
-        prompt, task_text = extract_task_prompt(task_path)
+        prompt, _task_text = extract_task_prompt_text(task_text, task_path)
         entrypoint = arm.get("entrypoint")
         if entrypoint:
             # The evaluated workflow must actually be invoked: a bare
@@ -2114,6 +2436,8 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
         deadline = started + config["timeout_seconds"]
 
         def _spawn(prompt_text, resume=None):
+            verify_output_directory(
+                out, output_binding, "run output directory")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise WorkflowFailure(
@@ -2198,7 +2522,9 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
                 for index, (_path, content, item) in enumerate(nonempty, 1):
                     evidence_path = out / (
                         f"run-{run_id}-extra-{index}.md")
-                    evidence_path.write_bytes(content)
+                    verify_output_directory(
+                        out, output_binding, "run output directory")
+                    atomic_write_bytes(evidence_path, content)
                     preserved.append({
                         **item,
                         "evidence_file": evidence_path.name,
@@ -2218,6 +2544,7 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
         # written, the schedule finds this in-progress marker (with its
         # digest bindings) and blocks instead of silently executing an
         # extra observed replicate.
+        verify_output_directory(out, output_binding, "run output directory")
         record["status"] = "in_progress"
         atomic_write_text(out / f"run-{run_id}.json",
                           json.dumps(record, indent=2) + "\n")
@@ -2345,8 +2672,8 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
                 failure_kind="missing_document",
             )
         try:
-            raw_bytes = artifact.read_bytes()
-        except OSError as exc:
+            raw_bytes = read_input_bytes(artifact, "produced artifact")
+        except InfraFailure as exc:
             if terminal_workflow_failure is not None:
                 raise BlockingInfraFailure(
                     "produced artifact became unreadable after a counted "
@@ -2360,7 +2687,10 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
         # Preserve byte-exact raw evidence even when the document is not
         # UTF-8.  The diagnostic judge copy uses deterministic replacement
         # characters; the validator's UTF-8 defect keeps it gate-failed.
-        (out / f"run-{run_id}-raw.md").write_bytes(raw_bytes)
+        verify_output_directory(out, output_binding, "run output directory")
+        atomic_write_bytes(out / f"run-{run_id}-raw.md", raw_bytes)
+        if v2:
+            record["raw_sha256"] = hashlib.sha256(raw_bytes).hexdigest()
         raw = raw_bytes.decode("utf-8", "replace")
         # The artifact contract is enforced by the harness itself, not by
         # trusting the session to have followed its instructions: a fresh
@@ -2369,12 +2699,21 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
         # completed, scoreable replicate. The raw copy above is preserved
         # as evidence.
         try:
-            contract_defects = artifact_validator.validate(
-                artifact,
-                expected_git_commit=_git(worktree, "rev-parse", "HEAD"),
-                expected_repository=task_target_repo(task_text, task_path),
-                enforce_filename=True,
-            )
+            # Validate the exact captured bytes, not the live workflow path:
+            # a model process (or local adversary) must not swap the artifact
+            # between raw hashing and the contract parser's later open.
+            with tempfile.TemporaryDirectory(
+                    prefix="rpa-artifact-validate-") as validate_root:
+                captured_artifact = Path(validate_root) / artifact.name
+                captured_artifact.write_bytes(raw_bytes)
+                contract_defects = artifact_validator.validate(
+                    captured_artifact,
+                    expected_git_commit=_git(
+                        worktree, "rev-parse", "HEAD"),
+                    expected_repository=task_target_repo(
+                        task_text, task_path),
+                    enforce_filename=True,
+                )
         except BaseException as exc:
             if terminal_workflow_failure is not None:
                 raise BlockingInfraFailure(
@@ -2408,8 +2747,7 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
             # anonymized diagnostic copy and its digest are preserved
             # alongside the raw evidence.
             diag_text = anonymize(raw, run_id)
-            (out / f"run-{run_id}-diag.md").write_text(diag_text,
-                                                       encoding="utf-8")
+            atomic_write_text(out / f"run-{run_id}-diag.md", diag_text)
             record["diagnostic_sha256"] = hashlib.sha256(
                 diag_text.encode("utf-8")
             ).hexdigest()
@@ -2434,7 +2772,7 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
         if v2:
             record["artifact_gate"] = "passed"
         anon_text = anonymize(raw, run_id)
-        (out / f"run-{run_id}-anon.md").write_text(anon_text, encoding="utf-8")
+        atomic_write_text(out / f"run-{run_id}-anon.md", anon_text)
         # The digest recorded here is what scoring later verifies: a scored
         # document must be the exact artifact this run produced.
         record["artifact_sha256"] = hashlib.sha256(
@@ -2498,6 +2836,7 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
                     "missing_accounting_or_wall_seconds")
         if worktree is not None:
             remove_worktree(repo_dir, worktree)
+    verify_output_directory(out, output_binding, "run output directory")
     atomic_write_text(out / f"run-{run_id}.json",
                       json.dumps(record, indent=2) + "\n")
     return record
@@ -2505,7 +2844,8 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
 
 def run_task_with_retries(config, arm_name, task_path, repo_dir, output_dir,
                           scheduled=False, starting_attempt=1,
-                          schedule_binding=None):
+                          schedule_binding=None, output_binding=None,
+                          task_snapshot=None):
     """Registered protocol: an infrastructure failure invalidates the run and
     the run is re-executed, automatically and bounded — workflow failures are
     counted, never replaced. Every attempt's record is written to disk."""
@@ -2532,7 +2872,9 @@ def run_task_with_retries(config, arm_name, task_path, repo_dir, output_dir,
     for attempt in range(starting_attempt, max_retries + 2):
         record = run_task(config, arm_name, task_path, repo_dir, output_dir,
                           attempt=attempt, scheduled=scheduled,
-                          schedule_binding=schedule_binding)
+                          schedule_binding=schedule_binding,
+                          output_binding=output_binding,
+                          task_snapshot=task_snapshot)
         attempts.append(record)
         if record["status"] != "infra_failure":
             break
@@ -2553,6 +2895,11 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
     mark. A no-subagent (ablation) arm must be EXPLICITLY scoped to its two
     designated tasks via `schedule_tasks` — defaulting it to the full task
     list would silently widen the pre-registered third-arm comparison."""
+    if (config.get("protocol_version") == PILOT_V2_PROTOCOL_VERSION
+            and seed != PILOT_V2_SCHEDULE_SEED):
+        raise InfraFailure(
+            f"protocol v2 requires the registered schedule seed "
+            f"{PILOT_V2_SCHEDULE_SEED}")
     if (isinstance(replicates, bool) or not isinstance(replicates, int)
             or replicates < 1):
         raise InfraFailure(
@@ -2562,12 +2909,42 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
     tasks = [str(Path(t)) for t in task_paths]
     if len(set(tasks)) != len(tasks):
         raise InfraFailure("duplicate task paths in the schedule task list")
+    tasks_by_basename = {}
+    for task in tasks:
+        basename = Path(task).name
+        if basename in tasks_by_basename:
+            raise InfraFailure(
+                "schedule task basenames must be unique so portable arm "
+                "scope registrations cannot resolve ambiguously")
+        tasks_by_basename[basename] = task
+    # Protocol-v2 randomization starts from one registered base order.  CLI
+    # callers may supply the exact sealed set in any order, but that order
+    # must never become an unregistered second randomization input: the same
+    # registered seed would otherwise produce several self-consistent run
+    # schedules.  Canonicalize before hashing, coverage checks, arm expansion,
+    # and shuffling so every entry point reconstructs the identical schedule.
+    if (config.get("protocol_version") == PILOT_V2_PROTOCOL_VERSION
+            and not allow_nonstandard
+            and not config.get("nonstandard_config")):
+        registered_names = list(seal_package.HOLDOUT_TASKS)
+        if set(tasks_by_basename) != set(registered_names):
+            raise InfraFailure(
+                "a standard protocol-v2 schedule requires the exact sealed "
+                f"holdout task names {registered_names!r}"
+            )
+        tasks = [tasks_by_basename[name] for name in registered_names]
     # The schedule binds task CONTENTS, not just paths: an edited prompt or
     # re-pinned target-sha after registration must break reconstruction,
     # never silently mix revisions inside one experimental cell.
-    task_digests = {}
-    for task in tasks:
-        task_digests[task] = hashlib.sha256(read_task_bytes(task)).hexdigest()
+    task_bytes_by_path = {task: read_task_bytes(task) for task in tasks}
+    task_text_by_path = {
+        task: decode_task_bytes(task_bytes_by_path[task], task)
+        for task in tasks
+    }
+    task_digests = {
+        task: hashlib.sha256(task_bytes_by_path[task]).hexdigest()
+        for task in tasks
+    }
     standard_topology = _standard_topology(config)
     if not allow_nonstandard:
         if config.get("protocol_version", 1) == PILOT_V2_PROTOCOL_VERSION:
@@ -2614,7 +2991,7 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
         seen_numbers = {}
         seen_repos = set()
         for task in tasks:
-            cov_text = read_task_text(task)
+            cov_text = task_text_by_path[task]
             cov_match = re.search(
                 r"^archetype:\s*\"?([^\"\n]+?)\"?\s*$",
                 cov_text, re.MULTILINE)
@@ -2739,20 +3116,29 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
                     f"explicit `schedule_tasks` — the plan scopes the third "
                     f"arm to its two designated tasks"
                 )
-            if (len(arm["schedule_tasks"]) != 2
-                    or len(set(arm["schedule_tasks"])) != 2):
+            scoped_names = [Path(value).name
+                            for value in arm["schedule_tasks"]]
+            if (len(scoped_names) != 2
+                    or len(set(scoped_names)) != 2):
                 raise InfraFailure(
                     f"arm `{arm_name}` (no-subagent ablation) must be scoped "
                     f"to exactly 2 DISTINCT designated tasks, got "
                     f"{arm['schedule_tasks']!r}"
                 )
+            unknown_scoped = [name for name in scoped_names
+                              if name not in tasks_by_basename]
+            if unknown_scoped:
+                raise InfraFailure(
+                    f"arm `{arm_name}` schedule_tasks names are not in the "
+                    f"registered task list: {unknown_scoped}")
+            scoped_paths = [tasks_by_basename[name] for name in scoped_names]
             if not allow_nonstandard:
                 # The designation is not free: the plan fixes the third arm
                 # to specific archetypes, validated from the tasks' own
                 # `archetype` frontmatter.
                 found = []
-                for scoped in arm["schedule_tasks"]:
-                    scoped_text = read_task_text(scoped)
+                for scoped in scoped_paths:
+                    scoped_text = task_text_by_path[scoped]
                     match = re.search(
                         r"^archetype:\s*\"?([^\"\n]+?)\"?\s*$",
                         scoped_text, re.MULTILINE)
@@ -2770,7 +3156,7 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
                             f"archetypes {REGISTERED_ABLATION_ARCHETYPES}, "
                             f"got {found!r}"
                         )
-        arm_tasks = [str(Path(t)) for t in arm.get("schedule_tasks", tasks)]
+        arm_tasks = (scoped_paths if arm.get("forbid_subagents") else tasks)
         unknown = [t for t in arm_tasks if t not in tasks]
         if unknown:
             raise InfraFailure(
@@ -2825,6 +3211,11 @@ def verify_results_against_records(results, entries, out_dir, require_all):
     manifest (invented run_ids, flipped statuses, forged digests, deleted
     results) is refused. `require_all` additionally demands one result per
     schedule entry (complete-experiment coverage for scoring)."""
+    if (not isinstance(results, list) or not isinstance(entries, list)
+            or not all(isinstance(item, dict) for item in results)
+            or not all(isinstance(item, dict) for item in entries)):
+        raise InfraFailure(
+            "schedule entries and manifest results must be arrays of objects")
     if require_all and len(results) != len(entries):
         raise InfraFailure(
             "manifest results do not cover every schedule entry — a "
@@ -2861,6 +3252,7 @@ def verify_results_against_records(results, entries, out_dir, require_all):
             for field in (
                     "protocol_version", "environment_policy_id",
                     "failure_kind", "artifact_gate",
+                    "raw_sha256",
                     "telemetry_policy_id", "telemetry_eligible",
                     "telemetry_exclusion_reason"):
                 if run_record.get(field) != done.get(field):
@@ -2878,6 +3270,393 @@ def verify_results_against_records(results, entries, out_dir, require_all):
                 )
 
 
+def validate_v2_final_record_semantics(config, entry, final_record,
+                                       task_text):
+    """Validate every invariant that makes one terminal v2 observation
+    countable.  Run-schedule resume, scorer prelaunch, step-5 handoff, and
+    aggregation all call this before another nondeterministic backend can be
+    authorized."""
+    arm = config.get("arms", {}).get(entry.get("arm"))
+    if not isinstance(arm, dict):
+        raise InfraFailure("final run refers to an unknown arm")
+    status = final_record.get("status")
+    failure_kind = final_record.get("failure_kind")
+    gate = final_record.get("artifact_gate")
+    defects = final_record.get("artifact_defects")
+    if status not in {"completed", "workflow_failure"}:
+        raise InfraFailure("final run is not a countable terminal outcome")
+    if (status == "completed"
+            and (failure_kind is not None or gate != "passed")):
+        raise InfraFailure(
+            "completed run has an invalid failure/artifact-gate state")
+    if (status == "workflow_failure"
+            and failure_kind not in PILOT_V2_FAILURE_KINDS):
+        raise InfraFailure("workflow failure has an unregistered failure kind")
+    if failure_kind == "artifact_contract" and gate != "failed":
+        raise InfraFailure(
+            "artifact-contract failure must have a failed artifact gate")
+    if failure_kind == "missing_document" and (
+            gate != "not_evaluated"
+            or final_record.get("raw_sha256") is not None
+            or final_record.get("artifact_sha256") is not None
+            or final_record.get("diagnostic_sha256") is not None):
+        raise InfraFailure(
+            "missing-document failure cannot carry produced document material")
+    if gate == "passed" and (
+            not isinstance(final_record.get("artifact_sha256"), str)
+            or final_record.get("diagnostic_sha256") is not None
+            or defects not in (None, [])):
+        raise InfraFailure("passed artifact gate has invalid digests")
+    if gate == "failed" and (
+            not isinstance(final_record.get("diagnostic_sha256"), str)
+            or final_record.get("artifact_sha256") is not None
+            or not isinstance(defects, list) or not defects
+            or not all(isinstance(item, str) and item for item in defects)):
+        raise InfraFailure("failed artifact gate has invalid digests")
+    if gate == "not_evaluated" and (
+            final_record.get("raw_sha256") is not None
+            or final_record.get("artifact_sha256") is not None
+            or final_record.get("diagnostic_sha256") is not None):
+        raise InfraFailure("not-evaluated artifact gate carries document material")
+    if gate not in {"passed", "failed", "not_evaluated"}:
+        raise InfraFailure("final run has an invalid artifact-gate value")
+    validate_intervention_log(final_record)
+    nodes = final_record.get("nodes")
+    accounting = final_record.get("accounting")
+    if (not isinstance(nodes, list) or not nodes
+            or not isinstance(accounting, dict)):
+        raise InfraFailure("final run lacks complete model-bearing accounting")
+    try:
+        recomputed = account(nodes)
+        validate_models(nodes, arm.get("model"))
+        effort_capture = validate_efforts(
+            nodes, arm.get("effort", "default"))
+    except (InfraFailure, KeyError, TypeError, ValueError) as exc:
+        raise InfraFailure(
+            "final run runtime/accounting evidence is invalid") from exc
+    if (recomputed != accounting
+            or final_record.get("effort_capture") != effort_capture
+            or final_record.get("registered_model") != arm.get("model")
+            or final_record.get("effort") != arm.get("effort", "default")
+            or final_record.get("installation_sha256") != arm.get("sha256")
+            or final_record.get("backend_version")
+            != config.get("backend_version")
+            or final_record.get("entrypoint") != arm.get("entrypoint")
+            or final_record.get("standard_topology")
+            is not validate_arm_topology(config)
+            or final_record.get("target_sha") != task_target_sha(
+                task_text, entry["task"])
+            or final_record.get("telemetry_policy_id")
+            != PILOT_V2_AGGREGATION_POLICY["telemetry"]
+            or not isinstance(final_record.get("wall_seconds"), (int, float))
+            or isinstance(final_record.get("wall_seconds"), bool)
+            or final_record.get("wall_seconds") < 0
+            or final_record.get("telemetry_eligible") is not True
+            or final_record.get("telemetry_exclusion_reason") is not None):
+        raise InfraFailure(
+            "final run runtime, telemetry, or accounting bindings differ "
+            "from the registered configuration")
+    launches = recomputed.get("subagent_launches")
+    children = recomputed.get("subagent_children")
+    spawned = recomputed.get("subagents_spawned")
+    if (not all(isinstance(value, int) and not isinstance(value, bool)
+                and value >= 0 for value in (launches, children, spawned))
+            or launches > children):
+        raise InfraFailure(
+            "final run subagent accounting is incomplete or invalid")
+    forbidden = arm.get("forbid_subagents") is True
+    if failure_kind == "subagent_policy" and (
+            not forbidden or spawned <= 0):
+        raise InfraFailure("subagent-policy failure lacks a forbidden spawn")
+    if forbidden and spawned > 0 and (
+            status != "workflow_failure" or failure_kind != "subagent_policy"):
+        raise InfraFailure(
+            "forbidden subagent spawn was not classified as a counted "
+            "subagent-policy failure")
+
+
+def validate_v2_record_artifacts(root, record):
+    """Require every digest-bound run artifact and forbid alternates.
+
+    This applies to terminal records and retained infrastructure attempts:
+    a validator crash can legitimately leave raw evidence, but a missing or
+    changed bound file can never be ignored before a retry/next slot.
+    """
+    root = Path(root)
+    run_id = record.get("run_id")
+    if (not isinstance(run_id, str)
+            or re.fullmatch(r"[0-9a-f]{12}", run_id) is None):
+        raise InfraFailure("run artifact audit has an invalid run id")
+    paths = {
+        "raw": root / f"run-{run_id}-raw.md",
+        "anon": root / f"run-{run_id}-anon.md",
+        "diag": root / f"run-{run_id}-diag.md",
+    }
+
+    def require_digest(kind, field):
+        expected = record.get(field)
+        if (not isinstance(expected, str)
+                or re.fullmatch(r"[0-9a-f]{64}", expected) is None
+                or not _safe_single_link_regular_file(paths[kind])):
+            raise InfraFailure(
+                f"run {run_id} lacks its bound {kind} artifact")
+        actual = hashlib.sha256(read_input_bytes(
+            paths[kind], f"{kind} run artifact")).hexdigest()
+        if actual != expected:
+            raise InfraFailure(f"{kind} run artifact digest mismatch")
+
+    raw_digest = record.get("raw_sha256")
+    artifact_digest = record.get("artifact_sha256")
+    diagnostic_digest = record.get("diagnostic_sha256")
+    if raw_digest is None:
+        if _path_present(paths["raw"]):
+            raise InfraFailure("run carries unbound raw artifact material")
+    else:
+        require_digest("raw", "raw_sha256")
+    gate = record.get("artifact_gate")
+    if gate == "passed":
+        if raw_digest is None or diagnostic_digest is not None:
+            raise InfraFailure(
+                "gate-passed run has inconsistent artifact bindings")
+        require_digest("anon", "artifact_sha256")
+        if _path_present(paths["diag"]):
+            raise InfraFailure("gate-passed run carries diagnostic material")
+    elif gate == "failed":
+        if raw_digest is None or artifact_digest is not None:
+            raise InfraFailure(
+                "gate-failed run has inconsistent artifact bindings")
+        require_digest("diag", "diagnostic_sha256")
+        if _path_present(paths["anon"]):
+            raise InfraFailure("gate-failed run carries passing material")
+    elif gate == "not_evaluated":
+        if artifact_digest is not None or diagnostic_digest is not None:
+            raise InfraFailure(
+                "not-evaluated run carries scored artifact bindings")
+        if _path_present(paths["anon"]) or _path_present(paths["diag"]):
+            raise InfraFailure("no-document run carries scored material")
+    else:
+        raise InfraFailure("run artifact audit has an invalid gate value")
+
+
+def audit_completed_v2_run_material(config, manifest_path, schedule,
+                                    results, entries):
+    """Strictly reconcile the complete protocol-v2 run namespace.
+
+    Scoring must not launch a judge merely because expected final records
+    still match a manifest while foreign runs, superseded observations,
+    orphan artifacts, claims, or terminal-invalid markers also exist.  This
+    read-only audit is shared with final aggregation.
+    """
+    root = Path(manifest_path).resolve().parent
+    if schedule.get("protocol_version") != PILOT_V2_PROTOCOL_VERSION:
+        raise InfraFailure(
+            "completed protocol-v2 run audit requires a v2 schedule")
+    if sorted(root.glob("schedule-entry-*"), key=lambda path: path.name):
+        raise InfraFailure(
+            "completed run directory retains claim, terminal-invalid, or "
+            "foreign schedule-entry material")
+    run_lock = root / ".run-schedule.lock"
+    if not _safe_single_link_regular_file(run_lock):
+        raise InfraFailure(
+            "completed v2 run directory lacks its persistent ordinary "
+            "run-schedule lock")
+
+    expected_schedule_digest = schedule_digest(schedule)
+    expected_config_digest = config_digest(config)
+    task_digests = schedule.get("task_digests")
+    if not isinstance(task_digests, dict):
+        raise InfraFailure("schedule task digests must be an object")
+    task_texts = {}
+    for task, expected_digest in task_digests.items():
+        task_bytes = read_task_bytes(task)
+        if hashlib.sha256(task_bytes).hexdigest() != expected_digest:
+            raise InfraFailure(
+                f"{task}: completed-run task bytes differ from the schedule")
+        task_texts[task] = decode_task_bytes(task_bytes, task)
+    max_retries = config.get("max_infra_retries", DEFAULT_MAX_INFRA_RETRIES)
+    if (not isinstance(max_retries, int) or isinstance(max_retries, bool)
+            or max_retries < 0):
+        raise InfraFailure("runtime infrastructure retry bound is invalid")
+    max_attempt = max_retries + 1
+
+    entries_by_index = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise InfraFailure("schedule entries must contain objects")
+        index = entry.get("index")
+        if (not isinstance(index, int) or isinstance(index, bool)
+                or index < 0 or index in entries_by_index):
+            raise InfraFailure(
+                "schedule entries have invalid or duplicate indices")
+        entries_by_index[index] = entry
+
+    material_by_run = {}
+    grouped = {index: [] for index in entries_by_index}
+    for record_path in sorted(root.glob("run-*.json"),
+                              key=lambda path: path.name):
+        match = re.fullmatch(r"run-([0-9a-f]{12})\.json", record_path.name)
+        if match is None or not _safe_regular_file(record_path):
+            raise InfraFailure(
+                "run directory contains a malformed or foreign run record")
+        record_bytes = read_input_bytes(record_path, "run material record")
+        record = _json_without_duplicate_keys(
+            record_bytes, f"run material record {record_path}")
+        if not isinstance(record, dict):
+            raise InfraFailure("run material record must be a JSON object")
+        run_id = record.get("run_id")
+        if run_id != match.group(1) or run_id in material_by_run:
+            raise InfraFailure(
+                "run material record identity differs from its filename")
+        index = record.get("schedule_index")
+        if (record.get("protocol_version") != PILOT_V2_PROTOCOL_VERSION
+                or record.get("environment_policy_id")
+                != PILOT_V2_ENVIRONMENT_POLICY_ID
+                or record.get("schedule_digest")
+                != expected_schedule_digest
+                or record.get("config_digest") != expected_config_digest
+                or not isinstance(index, int) or isinstance(index, bool)
+                or index not in entries_by_index):
+            raise InfraFailure(
+                "run directory contains material outside the registered "
+                "protocol, configuration, schedule, or slot namespace")
+        entry = entries_by_index[index]
+        if (record.get("arm") != entry.get("arm")
+                or record.get("task") != entry.get("task")
+                or record.get("task_sha256")
+                != task_digests.get(entry.get("task"))):
+            raise InfraFailure("run record immutable slot binding mismatch")
+        attempt = record.get("attempt")
+        if (not isinstance(attempt, int) or isinstance(attempt, bool)
+                or not 1 <= attempt <= max_attempt):
+            raise InfraFailure("run material has an invalid attempt number")
+        status = record.get("status")
+        if status not in {"completed", "workflow_failure", "infra_failure"}:
+            raise InfraFailure(
+                "run directory contains ambiguous or nonterminal material")
+        if status == "infra_failure" and record.get("blocking") is True:
+            raise InfraFailure(
+                "blocking infrastructure material invalidates the round")
+        material_by_run[run_id] = (record_bytes, record)
+        grouped[index].append((attempt, run_id, record_bytes, record))
+
+    if len(results) != len(entries):
+        raise InfraFailure(
+            "schedule manifest is not a complete final population")
+    record_hashes = []
+    for summary, entry in zip(results, entries):
+        if not isinstance(summary, dict):
+            raise InfraFailure(
+                "schedule manifest results must contain objects")
+        index = entry["index"]
+        final_run_id = summary.get("run_id")
+        final_attempt = summary.get("attempts")
+        if (summary.get("index") != index
+                or not isinstance(final_run_id, str)
+                or re.fullmatch(r"[0-9a-f]{12}", final_run_id) is None
+                or not isinstance(final_attempt, int)
+                or isinstance(final_attempt, bool)
+                or not 1 <= final_attempt <= max_attempt):
+            raise InfraFailure(
+                "schedule result has an invalid slot, run, or attempt id")
+        attempts = {}
+        for attempt, run_id, record_bytes, record in grouped[index]:
+            if attempt in attempts:
+                raise InfraFailure(
+                    "run slot contains duplicate attempt records")
+            attempts[attempt] = run_id
+            if attempt < final_attempt:
+                if record.get("status") != "infra_failure":
+                    raise InfraFailure(
+                        "run slot contains an extra terminal observation")
+            elif attempt == final_attempt:
+                if (run_id != final_run_id or record.get("status")
+                        not in {"completed", "workflow_failure"}):
+                    raise InfraFailure(
+                        "run slot final material differs from its manifest")
+            else:
+                raise InfraFailure(
+                    "run slot contains material after its final attempt")
+            record_hashes.append({
+                "schedule_index": index, "attempt": attempt,
+                "kind": "record", "file": f"run-{run_id}.json",
+                "sha256": hashlib.sha256(record_bytes).hexdigest(),
+            })
+        if set(attempts) != set(range(1, final_attempt + 1)):
+            raise InfraFailure(
+                "run slot infrastructure attempt history is not contiguous")
+        if final_run_id not in material_by_run:
+            raise InfraFailure(
+                "schedule result has no canonical final run record")
+        final_record = material_by_run[final_run_id][1]
+        validate_v2_final_record_semantics(
+            config, entry, final_record, task_texts[entry["task"]])
+
+    allowed_artifacts = {}
+    for run_id, (_record_bytes, record) in material_by_run.items():
+        status = record.get("status")
+        gate = record.get("artifact_gate")
+        raw_path = root / f"run-{run_id}-raw.md"
+        anon_path = root / f"run-{run_id}-anon.md"
+        diag_path = root / f"run-{run_id}-diag.md"
+        if gate in {"passed", "failed"}:
+            if not _safe_regular_file(raw_path):
+                raise InfraFailure(
+                    "document-producing run has no byte-exact raw artifact")
+            allowed_artifacts[raw_path.name] = raw_path
+        elif _path_present(raw_path):
+            if status != "infra_failure" or not _safe_regular_file(raw_path):
+                raise InfraFailure(
+                    "no-document run carries unexpected raw artifact")
+            allowed_artifacts[raw_path.name] = raw_path
+        if _path_present(raw_path):
+            raw_bytes = read_input_bytes(raw_path, "raw run artifact")
+            if hashlib.sha256(raw_bytes).hexdigest() != record.get(
+                    "raw_sha256"):
+                raise InfraFailure("raw run artifact digest mismatch")
+        elif record.get("raw_sha256") is not None:
+            raise InfraFailure(
+                "run record binds raw artifact bytes that are absent")
+        if gate == "passed":
+            if not _safe_regular_file(anon_path):
+                raise InfraFailure(
+                    "gate-passed run has no anonymized artifact")
+            anon_bytes = read_input_bytes(anon_path, "anonymized run artifact")
+            if hashlib.sha256(anon_bytes).hexdigest() != record.get(
+                    "artifact_sha256"):
+                raise InfraFailure("anonymized run artifact digest mismatch")
+            allowed_artifacts[anon_path.name] = anon_path
+        if gate == "failed":
+            if not _safe_regular_file(diag_path):
+                raise InfraFailure(
+                    "gate-failed run has no diagnostic artifact")
+            diag_bytes = read_input_bytes(diag_path, "diagnostic run artifact")
+            if hashlib.sha256(diag_bytes).hexdigest() != record.get(
+                    "diagnostic_sha256"):
+                raise InfraFailure("diagnostic run artifact digest mismatch")
+            allowed_artifacts[diag_path.name] = diag_path
+
+    discovered_artifacts = {
+        path.name: path for path in root.glob("run-*")
+        if path.suffix != ".json"
+    }
+    if set(discovered_artifacts) != set(allowed_artifacts):
+        raise InfraFailure(
+            "run directory contains missing, foreign, or orphan artifact "
+            "material")
+    for name, path in sorted(allowed_artifacts.items()):
+        if not _safe_regular_file(path):
+            raise InfraFailure("run artifact material must be a regular file")
+        record_hashes.append({
+            "kind": "artifact", "file": name,
+            "sha256": hashlib.sha256(read_input_bytes(
+                path, "run artifact material")).hexdigest(),
+        })
+    record_hashes.sort(key=lambda item: (
+        item.get("schedule_index", -1), item.get("attempt", -1),
+        item["kind"], item["file"]))
+    return material_by_run, record_hashes
+
+
 def run_schedule(config, schedule_path, repos, output_dir, task_paths):
     """Serialize one schedule output from state scan through final manifest.
 
@@ -2887,18 +3666,24 @@ def run_schedule(config, schedule_path, repos, output_dir, task_paths):
     covers the complete output state machine and is released automatically on
     process death.
     """
-    out = Path(output_dir).resolve()
-    out.mkdir(parents=True, exist_ok=True)
-    lock = acquire_advisory_lock(
-        out / ".run-schedule.lock", "run-schedule output")
+    out, output_binding = bind_output_directory(output_dir)
+    lock_path = out / ".run-schedule.lock"
+    refuse_missing_persistent_lock_with_state(
+        out, lock_path,
+        ("schedule-manifest.json", "run-*", "schedule-entry-*"),
+        "run-schedule output",
+    )
+    lock = acquire_advisory_lock(lock_path, "run-schedule output")
     try:
         return _run_schedule_locked(
-            config, schedule_path, repos, output_dir, task_paths)
+            config, schedule_path, repos, out, task_paths,
+            output_binding=output_binding)
     finally:
         release_advisory_lock(lock)
 
 
-def _run_schedule_locked(config, schedule_path, repos, output_dir, task_paths):
+def _run_schedule_locked(config, schedule_path, repos, output_dir, task_paths,
+                         output_binding=None):
     """Execute a pre-registered schedule in its recorded order. The expected
     schedule is RECONSTRUCTED from the registered config, the operator-
     supplied task set, and the recorded seed/replicates — the schedule
@@ -2908,6 +3693,11 @@ def _run_schedule_locked(config, schedule_path, repos, output_dir, task_paths):
     an interrupted schedule resumes at the first unfinished entry — never
     from index 0, so no extra runs are created after outcomes were
     observed."""
+    if output_binding is None:
+        output_dir, output_binding = bind_output_directory(output_dir)
+    else:
+        output_dir = verify_output_directory(
+            Path(output_dir), output_binding, "run-schedule output")
     schedule = load_json_object(schedule_path, "schedule")
     if schedule.get("config_digest") != config_digest(config):
         raise InfraFailure(
@@ -2927,10 +3717,23 @@ def _run_schedule_locked(config, schedule_path, repos, output_dir, task_paths):
             "edited/tampered schedules are refused; regenerate with "
             "--make-schedule"
         )
+    # Re-open each task exactly once at the execution boundary, prove those
+    # bytes against the registered schedule digest, then retain the snapshot
+    # for repository routing, target pinning, and the model prompt.  No later
+    # pathname read may select different task bytes.
+    task_snapshots = {}
+    task_texts = {}
+    for task in schedule["tasks"]:
+        task_bytes = read_task_bytes(task)
+        if hashlib.sha256(task_bytes).hexdigest() != schedule[
+                "task_digests"].get(task):
+            raise InfraFailure(
+                f"{task}: task changed after schedule reconstruction")
+        task_snapshots[task] = task_bytes
+        task_texts[task] = decode_task_bytes(task_bytes, task)
     entries = schedule["entries"]
     sched_digest = schedule_digest(schedule)
-    out = Path(output_dir).resolve()
-    out.mkdir(parents=True, exist_ok=True)
+    out = Path(output_dir)
     manifest_path = out / "schedule-manifest.json"
     results = []
     if manifest_path.exists():
@@ -2997,9 +3800,11 @@ def _run_schedule_locked(config, schedule_path, repos, output_dir, task_paths):
             "ambiguous_post_launch",
             "blocking_infrastructure_failure",
             "duplicate_terminal_outcomes",
+            "foreign_schedule_material",
             "infrastructure_retries_exhausted",
             "invalid_attempt_history",
             "orphan_artifact_material",
+            "out_of_order_future_material",
         }
         terminal_core = terminal_core_for(entry)
         if (any(terminal.get(key) != value
@@ -3066,6 +3871,25 @@ def _run_schedule_locked(config, schedule_path, repos, output_dir, task_paths):
             r"^run-([0-9a-f]{12})-(raw|anon|diag|extra-[1-9][0-9]*)\.md$")
         record_re = re.compile(r"^run-([0-9a-f]{12})\.json$")
         entry_by_index = {entry["index"]: entry for entry in entries}
+
+        # Scan the WHOLE schedule-entry namespace, not only the registered
+        # filenames queried later.  An out-of-range/unknown claim or terminal
+        # marker is launch evidence too and must block slot zero rather than
+        # being ignored until final aggregation.
+        schedule_material_re = re.compile(
+            r"^schedule-entry-(\d+)(?:\.claim|-terminal-invalid\.json)$")
+        foreign_schedule_paths = []
+        for path in sorted(out.glob("schedule-entry-*"),
+                           key=lambda item: item.name):
+            match = schedule_material_re.fullmatch(path.name)
+            if (match is None or int(match.group(1)) not in entry_by_index
+                    or not _safe_regular_file(path)):
+                foreign_schedule_paths.append(path)
+        if foreign_schedule_paths:
+            terminally_invalidate(
+                entries[0], "foreign_schedule_material",
+                foreign_schedule_paths)
+
         for path in sorted(out.glob("run-*"), key=lambda item: item.name):
             if not _safe_regular_file(path):
                 bad_paths.append(path)
@@ -3114,8 +3938,11 @@ def _run_schedule_locked(config, schedule_path, repos, output_dir, task_paths):
             if record.get("run_id") != run_id:
                 bad_paths.extend((record_path, path))
                 continue
-            digest = hashlib.sha256(path.read_bytes()).hexdigest()
-            if kind == "anon" and not (
+            digest = hashlib.sha256(
+                read_input_bytes(path, "schedule run artifact")).hexdigest()
+            if kind == "raw" and record.get("raw_sha256") != digest:
+                bad_paths.append(path)
+            elif kind == "anon" and not (
                     record.get("artifact_gate") == "passed"
                     and record.get("artifact_sha256") == digest):
                 bad_paths.append(path)
@@ -3155,14 +3982,29 @@ def _run_schedule_locked(config, schedule_path, repos, output_dir, task_paths):
                 refuse_terminal_invalid(entry)
             matched = bound_run_records(entry)
             expected_path = out / f"run-{summary.get('run_id')}.json"
+            expected_record = load_json_object(
+                expected_path, "completed-prefix run record")
             final_attempt = summary.get("attempts")
+            max_final_attempt = config.get(
+                "max_infra_retries", DEFAULT_MAX_INFRA_RETRIES) + 1
+            if (not isinstance(final_attempt, int)
+                    or isinstance(final_attempt, bool)
+                    or not 1 <= final_attempt <= max_final_attempt
+                    or expected_record.get("attempt") != final_attempt):
+                raise InfraFailure(
+                    "completed-prefix final attempt differs from its "
+                    "immutable run record")
+            validate_v2_final_record_semantics(
+                config, entry, expected_record, task_texts[entry["task"]])
             bad_paths = []
             prior_attempts = set()
             duplicate_terminal = False
             for record_path, record in matched:
+                validate_v2_record_artifacts(out, record)
                 if record_path == expected_path:
                     continue
                 if (record.get("status") == "infra_failure"
+                        and record.get("blocking") is not True
                         and isinstance(record.get("attempt"), int)
                         and not isinstance(record.get("attempt"), bool)
                         and isinstance(final_attempt, int)
@@ -3201,8 +4043,24 @@ def _run_schedule_locked(config, schedule_path, repos, output_dir, task_paths):
                     bad_paths,
                 )
 
+        # Global pre-launch ordering gate.  Only the single first unfinished
+        # slot may carry crash-window material for adoption/retry.  Material
+        # for any later slot proves an out-of-order observation and is
+        # terminal before the backend for the earlier slot can launch.
+        first_unfinished = len(results)
+        for entry in entries[first_unfinished + 1:]:
+            future_paths = [path for path, _record
+                            in bound_run_records(entry)]
+            claim_path = claim_path_for(entry)
+            if _path_present(claim_path):
+                future_paths.append(claim_path)
+            if future_paths:
+                terminally_invalidate(
+                    entry, "out_of_order_future_material", future_paths)
+
     referenced_runs = {r.get("run_id") for r in results}
     for entry in entries[len(results):]:
+        verify_output_directory(out, output_binding, "run-schedule output")
         terminal_path = terminal_path_for(entry)
         claim_path = claim_path_for(entry)
         stale_claim = False
@@ -3235,7 +4093,10 @@ def _run_schedule_locked(config, schedule_path, repos, output_dir, task_paths):
             stale_claim = True
         # The registered holdout spans several repositories: each task is
         # routed to the clone registered for its own `target-repo`.
-        entry_repo = resolve_repo(entry["task"], repos)
+        entry_task_text = task_texts[entry["task"]]
+        entry_repo = resolve_repo_mapping(
+            task_target_repo(entry_task_text, entry["task"]),
+            repos, "--repos")
         # Crash window: run_task_with_retries atomically wrote a terminal
         # run record, but the process died before the manifest update. The
         # backend already ran for this entry — re-executing it would add an
@@ -3258,6 +4119,12 @@ def _run_schedule_locked(config, schedule_path, repos, output_dir, task_paths):
                 if (orphan.get("schedule_digest") != sched_digest
                         or orphan.get("schedule_index") != entry["index"]):
                     continue
+                if orphan.get("status") in {
+                        "completed", "workflow_failure", "infra_failure"}:
+                    validate_v2_record_artifacts(out, orphan)
+                elif orphan.get("status") != "in_progress":
+                    terminally_invalidate(
+                        entry, "invalid_attempt_history", [record_path])
                 observed_bound_state[record_path.name] = hashlib.sha256(
                     record_path.read_bytes()).hexdigest()
             if (orphan.get("run_id") in referenced_runs
@@ -3371,12 +4238,16 @@ def _run_schedule_locked(config, schedule_path, repos, output_dir, task_paths):
                     + [out / f"run-{final['run_id']}.json"]
                     + ([claim_path] if claim_path.exists() else []),
                 )
+            if protocol_v2:
+                validate_v2_final_record_semantics(
+                    config, entry, final, task_texts[entry["task"]])
+                validate_v2_record_artifacts(out, final)
             if stale_claim:
-                claim_path.unlink()
+                durable_unlink(claim_path)
         else:
             if protocol_v2:
                 if stale_claim:
-                    claim_path.unlink()
+                    durable_unlink(claim_path)
                 claim = {
                     "status": "claimed",
                     "protocol_version": PILOT_V2_PROTOCOL_VERSION,
@@ -3403,10 +4274,10 @@ def _run_schedule_locked(config, schedule_path, repos, output_dir, task_paths):
                 try:
                     current_bound_state = bound_run_state(entry)
                 except BaseException:
-                    claim_path.unlink(missing_ok=True)
+                    durable_unlink(claim_path, missing_ok=True)
                     raise
                 if current_bound_state != observed_bound_state:
-                    claim_path.unlink(missing_ok=True)
+                    durable_unlink(claim_path, missing_ok=True)
                     raise InfraFailure(
                         f"schedule entry {entry['index']} changed while "
                         f"its exclusive launch claim was acquired; no "
@@ -3416,16 +4287,21 @@ def _run_schedule_locked(config, schedule_path, repos, output_dir, task_paths):
             try:
                 new_attempts = run_task_with_retries(
                     config, entry["arm"], entry["task"], entry_repo,
-                    output_dir, scheduled=True,
+                    out, scheduled=True,
                     starting_attempt=starting_attempt,
                     schedule_binding={
                         "schedule_digest": sched_digest,
                         "schedule_index": entry["index"],
                     },
+                    output_binding=output_binding,
+                    task_snapshot=task_snapshots[entry["task"]],
                 )
+                if protocol_v2:
+                    for new_record in new_attempts:
+                        validate_v2_record_artifacts(out, new_record)
             finally:
                 if protocol_v2:
-                    claim_path.unlink(missing_ok=True)
+                    durable_unlink(claim_path, missing_ok=True)
             final = new_attempts[-1]
         if final["status"] == "infra_failure":
             # Entry unfinished: persist progress so a re-run resumes HERE.
@@ -3451,6 +4327,10 @@ def _run_schedule_locked(config, schedule_path, repos, output_dir, task_paths):
                 f"({entry['arm']} / {entry['task']}): {reason}; progress "
                 f"persisted — re-run --run-schedule to resume at this entry"
             )
+        if protocol_v2:
+            validate_v2_final_record_semantics(
+                config, entry, final, task_texts[entry["task"]])
+            validate_v2_record_artifacts(out, final)
         manifest_result = {
             "index": entry["index"],
             "arm": entry["arm"],
@@ -3463,6 +4343,7 @@ def _run_schedule_locked(config, schedule_path, repos, output_dir, task_paths):
             # gate-failed replicate's anonymized diagnostic copy — the
             # scoring side derives the diagnostic batch from this.
             "diagnostic_sha256": final.get("diagnostic_sha256"),
+            "raw_sha256": final.get("raw_sha256"),
             "task_sha256": schedule["task_digests"][entry["task"]],
         }
         if final.get("protocol_version") == PILOT_V2_PROTOCOL_VERSION:
@@ -3621,7 +4502,7 @@ def _sealed_snapshot_items(snap_root, seal_files):
     return [(local[k][0], local[k][1], k) for k in sealed_keys]
 
 
-def assert_blind_scorable(doc_path):
+def assert_blind_scorable_bytes(doc_path, data):
     """Blinding is enforced at the score boundary itself: a raw runner
     artifact or any document whose fingerprint fields are not masked is
     refused, so a CLI input mistake cannot leak identity to the judge."""
@@ -3631,7 +4512,11 @@ def assert_blind_scorable(doc_path):
             f"{doc_path}: raw runner artifact — blind scoring requires the "
             f"anonymized copy (`run-<id>-anon.md`)"
         )
-    text = read_input_text(path, "scoring document")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise InfraFailure(
+            f"{doc_path}: scoring document is not UTF-8") from exc
     # Fingerprint keys are scanned across the WHOLE document, not only a
     # frontmatter block assumed at line 0: a BOM or blank line before the
     # opening `---` must not smuggle researcher/commit/branch identity
@@ -3659,6 +4544,11 @@ def assert_blind_scorable(doc_path):
                 f"anonymized — blind scoring refused"
             )
     return text
+
+
+def assert_blind_scorable(doc_path):
+    return assert_blind_scorable_bytes(
+        doc_path, read_input_bytes(doc_path, "scoring document"))
 
 
 def _parse_judge_stream_tolerant(stdout):
@@ -3931,15 +4821,17 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             if config.get("protocol_version", 1)
             == PILOT_V2_PROTOCOL_VERSION
             else ("diagnostic" if diagnostic_axis else "primary"))
-    out = Path(output_dir).resolve()
-    out.mkdir(parents=True, exist_ok=True)
-    lock = acquire_advisory_lock(
-        out / f".scoring-{role}-{axis}.lock",
+    out, output_binding = bind_output_directory(output_dir)
+    lock_path = out / f".scoring-{role}-{axis}.lock"
+    refuse_missing_persistent_lock_with_state(
+        out, lock_path, (f"scoring-{role}-{axis}-*",),
         f"scoring {role}/{axis} batch",
     )
+    lock = acquire_advisory_lock(
+        lock_path, f"scoring {role}/{axis} batch")
     try:
         return _score_locked(
-            config, doc_paths, judge_prompt_path, output_dir,
+            config, doc_paths, judge_prompt_path, out,
             evidence_repo=evidence_repo, evidence_sha=evidence_sha,
             scoring_seed=scoring_seed, manifest_path=manifest_path,
             allow_unscheduled=allow_unscheduled,
@@ -3949,6 +4841,7 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             drift_report_path=drift_report_path,
             score_task_paths=score_task_paths,
             diagnostic_axis=diagnostic_axis,
+            output_binding=output_binding,
         )
     finally:
         release_advisory_lock(lock)
@@ -3960,7 +4853,7 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
                   evidence_repos=None, task_contexts=None,
                   seal_manifest_path=None, task_snapshots=None,
                   drift_report_path=None, score_task_paths=None,
-                  diagnostic_axis=False):
+                  diagnostic_axis=False, output_binding=None):
     """One fresh pinned backend session per document. The judge's full
     response text is preserved on disk — it IS the scoring artifact. Judge
     prompts live in the sealed package and are passed in at runtime.
@@ -3974,13 +4867,23 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
     verification uses `evidence_repos` to route each task to its own pinned
     checkout. The single-repo arguments are all-or-nothing: one without the
     other is an operator mistake, never a silent role choice."""
+    if output_binding is None:
+        output_dir, output_binding = bind_output_directory(output_dir)
+    else:
+        output_dir = verify_output_directory(
+            Path(output_dir), output_binding, "scoring output directory")
     protocol_version = config.get("protocol_version", 1)
     v2 = protocol_version == PILOT_V2_PROTOCOL_VERSION
+    if not doc_paths and not (v2 and manifest_path is not None):
+        raise InfraFailure(
+            "an empty judge population is valid only for manifest-bound "
+            "protocol-v2 scoring")
     v2_schema_digests = {}
     v2_schema_texts = {}
     quality_rubric_text = None
     quality_rubric_sha256 = None
     judge_prompt_sha256 = None
+    doc_texts = None
     if v2 and diagnostic_axis:
         raise InfraFailure(
             "protocol v2 has one `all-docs` axis for both judge roles; "
@@ -4016,6 +4919,14 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
         )
     doc_evidence = None
     role = "verifier" if (evidence_repo or evidence_repos is not None) else "scorer"
+    if v2:
+        expected_scoring_seed = (
+            PILOT_V2_VERIFIER_SEED
+            if role == "verifier" else PILOT_V2_SCORER_SEED)
+        if scoring_seed != expected_scoring_seed:
+            raise InfraFailure(
+                f"protocol v2 {role} requires the registered scoring seed "
+                f"{expected_scoring_seed}")
     if diagnostic_axis and role == "verifier":
         raise InfraFailure(
             "`diagnostic_axis` is defined only for the blind SCORER — the "
@@ -4052,6 +4963,14 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
             manifest.get("results", []), sched_obj.get("entries", []),
             Path(manifest_path).parent, require_all=True
         )
+        if v2:
+            # Complete-population handoff gate: refuse every extra, foreign,
+            # orphan, claimed, or terminal-invalid run artifact before a
+            # judge backend can observe even the first document.
+            audit_completed_v2_run_material(
+                config, manifest_path, sched_obj,
+                manifest.get("results", []), sched_obj.get("entries", []),
+            )
         # Judges run under the SAME sealed configuration the schedule
         # bound: judge command/model/effort, backend version, and policy
         # fields are all in the digest.
@@ -4105,18 +5024,6 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
                 if r.get("status") == "workflow_failure"
                 and r.get("diagnostic_sha256")
             ]
-        for r, _, _ in scoreable:
-            recorded_task = r.get("task_sha256")
-            if recorded_task is not None:
-                actual_task = hashlib.sha256(
-                    read_task_bytes(r["task"])
-                ).hexdigest()
-                if actual_task != recorded_task:
-                    raise InfraFailure(
-                        f"{r['task']}: task file changed since the "
-                        f"scheduled run — evidence selection and protocol "
-                        f"binding would use a different task"
-                    )
         # The schedule file is mutable: trimming it TOGETHER with the
         # manifest and recomputing the digest would otherwise pass. The
         # expected schedule is therefore reconstructed from the registered
@@ -4137,27 +5044,44 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
                 "registered configuration and task set — trimmed or edited "
                 "schedules are refused at scoring time"
             )
-        expected_names = sorted(name for _, name, _ in scoreable)
-        supplied_names = sorted(Path(d).name for d in doc_paths)
+        task_text_by_path = {}
+        for registered_task in sched_obj["tasks"]:
+            task_bytes = read_task_bytes(registered_task)
+            if hashlib.sha256(task_bytes).hexdigest() != sched_obj[
+                    "task_digests"].get(registered_task):
+                raise InfraFailure(
+                    f"{registered_task}: task file changed since the "
+                    "scheduled run")
+            task_text_by_path[registered_task] = decode_task_bytes(
+                task_bytes, registered_task)
+        # The seeded presentation shuffle also has one registered base order:
+        # the produced-document order in the completed run manifest.  A set
+        # comparison would let a caller permute the same documents and obtain
+        # a different, yet apparently seed-valid, judge presentation.
+        expected_names = [name for _, name, _ in scoreable]
+        supplied_names = [Path(d).name for d in doc_paths]
         if supplied_names != expected_names:
             raise InfraFailure(
-                f"scoring inputs must cover every scoreable scheduled "
-                f"replicate exactly once — expected {expected_names}, "
+                f"scoring inputs must contain every produced scheduled "
+                f"document exactly once in canonical manifest order — "
+                f"expected {expected_names}, "
                 f"got {supplied_names}"
             )
         # Identity by name is not enough: the contents must be the exact
         # artifact the run produced, or an edited/substituted file with the
         # right name would be scored as that replicate.
         digest_by_name = {name: digest for _, name, digest in scoreable}
+        doc_texts = []
         for doc in doc_paths:
-            actual = hashlib.sha256(
-                read_input_bytes(doc, "scoring document")).hexdigest()
+            doc_bytes = read_input_bytes(doc, "scoring document")
+            actual = hashlib.sha256(doc_bytes).hexdigest()
             if actual != digest_by_name.get(Path(doc).name):
                 raise InfraFailure(
                     f"{doc}: contents differ from the artifact digest "
                     f"recorded at run time — scored documents must be the "
                     f"exact run artifacts"
                 )
+            doc_texts.append(assert_blind_scorable_bytes(doc, doc_bytes))
         # An artifact is not required to restate its question: each judge
         # gets ITS document's task-specific sealed context (task prompt +
         # ground-truth note), routed via the manifest's run→task mapping.
@@ -4186,15 +5110,30 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
             )
         snapshot_by_doc = {}
         snap_task_by_doc = {}
+        snapshot_by_task = {}
         inconclusive_docs = set()
         drift_notes = {}
+        task_drift_notes = {}
         drift_report = None
         if drift_report_path is not None:
             drift_report = load_json_object(drift_report_path,
                                             "drift report")
         doc_evidence = {} if evidence_repos is not None else None
+        for registered_task in sched_obj["tasks"]:
+            registered_text = task_text_by_path[registered_task]
+            if re.search(r"^external-snapshots:\s*true\s*$",
+                         registered_text, re.MULTILINE):
+                registered_name = Path(registered_task).name
+                if (not task_snapshots
+                        or registered_name not in task_snapshots):
+                    raise InfraFailure(
+                        f"{registered_task}: task requires sealed external "
+                        f"snapshots — supply --task-snapshots "
+                        f"{registered_name}=<sealed snapshot file/dir>")
+                snapshot_by_task[registered_name] = task_snapshots[
+                    registered_name]
         for r, doc_name, _ in scoreable:
-            task_text = read_task_text(r["task"])
+            task_text = task_text_by_path[r["task"]]
             if evidence_repos is not None:
                 # A holdout batch spans several target repositories: every
                 # document is verified against the worktree of its own
@@ -4210,23 +5149,18 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
             # verifier checks claims against the frozen snapshots, and the
             # source-drift gate excludes drifted tasks from scorer and
             # verifier alike.
-            if re.search(r"^external-snapshots:\s*true\s*$", task_text,
-                         re.MULTILINE):
-                task_name = Path(r["task"]).name
-                if not task_snapshots or task_name not in task_snapshots:
-                    raise InfraFailure(
-                        f"{r['task']}: task requires sealed external "
-                        f"snapshots — supply --task-snapshots "
-                        f"{task_name}=<sealed snapshot file/dir>"
-                    )
-                snapshot_by_doc[doc_name] = task_snapshots[task_name]
+            task_name = Path(r["task"]).name
+            if task_name in snapshot_by_task:
+                snapshot_by_doc[doc_name] = snapshot_by_task[task_name]
                 snap_task_by_doc[doc_name] = task_name
     else:
         context_by_doc = None
         task_by_doc = None
         snapshot_by_doc = {}
+        snapshot_by_task = {}
         inconclusive_docs = set()
         drift_notes = {}
+        task_drift_notes = {}
         if evidence_repos is not None:
             raise InfraFailure(
                 "`evidence_repos` requires manifest-bound scoring — for "
@@ -4322,7 +5256,7 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
         # supplies the re-fetched copies; the harness diffs them against
         # the SEALED snapshot digests — any mismatch makes the task
         # inconclusive for scorer and verifier alike.
-        if snapshot_by_doc:
+        if snapshot_by_task:
             if drift_report is None:
                 raise InfraFailure(
                     "external-context tasks require the pre-score source-"
@@ -4355,10 +5289,13 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
             # excluded replicates of the same cell. Each sealed source is
             # also fetched exactly once per invocation (keyed cache).
             fetched_digests = {}
-            task_docs = {}
+            task_docs = {
+                task_name: (snap_path, [])
+                for task_name, snap_path in snapshot_by_task.items()
+            }
             for doc_name, snap_path in snapshot_by_doc.items():
                 task_name = snap_task_by_doc[doc_name]
-                entry = task_docs.setdefault(task_name, (snap_path, []))
+                entry = task_docs[task_name]
                 if entry[0] != snap_path:
                     raise InfraFailure(
                         f"{task_name}: replicate documents reference "
@@ -4375,14 +5312,18 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
                         f"for this task (adjudications for any changed "
                         f"source) — the pre-score gate is explicit"
                     )
-                if drift_entry.get("refetched"):
-                    # The gate never trusts operator-supplied bytes: a
-                    # local path could be the sealed snapshot itself.
+                if set(drift_entry) != {"changed"} or not isinstance(
+                        drift_entry.get("changed"), dict):
+                    # The gate never trusts operator-supplied bytes or
+                    # loosely typed status claims: a local path could be the
+                    # sealed snapshot itself, while a malformed/extra field
+                    # must not become meaningful only after live drift.
                     raise InfraFailure(
-                        f"{task_name}: drift report `refetched` paths are "
-                        f"not accepted — the harness fetches the sealed "
-                        f"source URLs itself"
+                        f"{task_name}: drift report entry must contain "
+                        "exactly one `changed` object — the harness fetches "
+                        "the sealed source URLs itself"
                     )
+                adjudications = drift_entry["changed"]
                 snap_root = Path(snap_path)
                 snap_items = _sealed_snapshot_items(snap_root, seal_files)
                 changed_keys = []
@@ -4401,6 +5342,12 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
                             fetched).hexdigest()
                     if fetched_digests[seal_key] != seal_files[seal_key]:
                         changed_keys.append(seal_key)
+                if set(adjudications) != set(changed_keys):
+                    raise InfraFailure(
+                        f"{task_name}: drift report must adjudicate exactly "
+                        "the sources whose live bytes differ from the seal"
+                    )
+                material = False
                 if changed_keys:
                     # The registered gate is about MATERIAL drift in a
                     # relevant section, not cosmetic churn: every changed
@@ -4408,43 +5355,58 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
                     # (verdict + rationale). Material change -> task
                     # inconclusive; adjudicated-cosmetic change -> still
                     # scoreable, adjudication kept in the record.
-                    adjudications = drift_entry.get("changed", {})
-                    material = False
                     for key in changed_keys:
                         adj = adjudications.get(key)
                         if (not isinstance(adj, dict)
+                                or set(adj) != {
+                                    "material", "rationale",
+                                    "observed_sha256"}
                                 or not isinstance(adj.get("material"), bool)
-                                or not adj.get("rationale")):
+                                or not isinstance(adj.get("rationale"), str)
+                                or not adj["rationale"].strip()
+                                or not isinstance(
+                                    adj.get("observed_sha256"), str)
+                                or not re.fullmatch(
+                                    r"[0-9a-f]{64}",
+                                    adj["observed_sha256"])
+                                or adj["observed_sha256"]
+                                != fetched_digests[key]):
                             raise InfraFailure(
                                 f"{task_name}: re-fetched source `{key}` "
                                 f"changed but carries no recorded "
-                                f"materiality adjudication (material: "
-                                f"true/false + rationale) — a byte change "
-                                f"alone is not conclusive drift"
+                                f"digest-bound materiality adjudication "
+                                f"(observed_sha256 + material: true/false "
+                                f"+ rationale) — a verdict for different "
+                                f"live bytes is not accepted"
                             )
                         if adj["material"]:
                             material = True
-                    # The full adjudication basis (changed keys, verdicts,
-                    # rationales) is preserved for BOTH outcomes: it lands
-                    # in the result record and, via the drift-notes digest,
-                    # in the batch identity — a corrected material-drift
-                    # report between interruption and resume is a different
-                    # batch even when the same task stays inconclusive.
-                    note = {
-                        "changed": changed_keys,
-                        "material": material,
-                        "adjudications": {
-                            key: adjudications[key]
-                            for key in changed_keys
-                        },
-                    }
-                    # One verdict for the whole task: every replicate
-                    # document carries the same note and the same
-                    # inconclusive outcome.
-                    for doc_name in doc_names:
-                        drift_notes[doc_name] = note
-                        if material:
-                            inconclusive_docs.add(doc_name)
+                # The per-document decision is exactly the projection of the
+                # role-level live-byte receipt, including the unchanged case.
+                # This prevents two independently plausible but inconsistent
+                # drift stories inside one judge manifest.
+                note = {
+                    "changed": changed_keys,
+                    "material": material,
+                    "adjudications": {
+                        key: adjudications[key] for key in changed_keys
+                    },
+                }
+                for doc_name in doc_names:
+                    drift_notes[doc_name] = note
+                    if material:
+                        inconclusive_docs.add(doc_name)
+                task_drift_notes[task_name] = {
+                    "observed_sha256": {
+                        seal_key: fetched_digests[seal_key]
+                        for _snap, _rel, seal_key in snap_items
+                    },
+                    "changed": changed_keys,
+                    "material": material,
+                    "adjudications": {
+                        key: adjudications[key] for key in changed_keys
+                    },
+                }
     else:
         judge_prompt = read_input_text(judge_prompt_path, "judge prompt")
         sealed_context_texts = None
@@ -4461,7 +5423,8 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
     validate_timeout(config)
     require_effort_pin(judge_cmd, "judge command")
     judge_cmd = expand_backend_cmd(judge_cmd, None, judge_effort)
-    doc_texts = [assert_blind_scorable(doc) for doc in doc_paths]
+    if doc_texts is None:
+        doc_texts = [assert_blind_scorable(doc) for doc in doc_paths]
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     order = list(range(len(doc_paths)))
@@ -4497,6 +5460,7 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
             "notes_digest": hashlib.sha256(
                 json.dumps(drift_notes, sort_keys=True).encode("utf-8")
             ).hexdigest(),
+            "tasks": task_drift_notes,
         },
     }
     if v2:
@@ -4515,6 +5479,10 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
     # interrupted one as a different identity).
     scoring_manifest_path = out / f"scoring-{role}-{axis}-manifest.json"
     def resume_batch(prior_batch):
+        if set(prior_batch) != {"scoring_id", "identity", "results",
+                                "complete"}:
+            raise InfraFailure(
+                "existing scoring batch manifest has an invalid shape")
         if prior_batch.get("complete"):
             raise InfraFailure(
                 "the scoring batch in this output directory is already "
@@ -4528,10 +5496,15 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
                 "mixed"
             )
         prior_scoring_id = prior_batch.get("scoring_id")
-        if (not isinstance(prior_scoring_id, str) or not prior_scoring_id
-                or "/" in prior_scoring_id or "\\" in prior_scoring_id):
+        if (not isinstance(prior_scoring_id, str)
+                or re.fullmatch(r"[0-9a-f]{8}", prior_scoring_id) is None):
             raise InfraFailure("existing scoring batch has an invalid id")
-        return prior_scoring_id, list(prior_batch.get("results", []))
+        prior_results = prior_batch.get("results")
+        if (not isinstance(prior_results, list)
+                or len(prior_results) > len(doc_paths)):
+            raise InfraFailure(
+                "existing scoring batch has an invalid result prefix")
+        return prior_scoring_id, list(prior_results)
 
     if scoring_manifest_path.exists():
         prior_batch = load_json_object(scoring_manifest_path,
@@ -4626,59 +5599,93 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
         write_scoring_manifest(False)
         v2_refuse_batch_invalid()
 
-    def v2_audit_material_names():
-        """Reject any same-batch judge material outside registered slots."""
-        allowed = re.compile(
+    def v2_audit_scoring_namespace():
+        """Allow only the two registered v2 role manifests and locks."""
+        required = {
+            f"scoring-{role}-all-docs-manifest.json",
+            f".scoring-{role}-all-docs.lock",
+        }
+        if role == "verifier":
+            required.add("scoring-scorer-all-docs-manifest.json")
+            required.add(".scoring-scorer-all-docs.lock")
+        unexpected = []
+        candidates = {
+            path for pattern in ("scoring-*", ".scoring-*")
+            for path in out.glob(pattern)
+        }
+        for path in sorted(candidates, key=lambda item: item.name):
+            if (path.name not in required
+                    or not _safe_single_link_regular_file(path)):
+                unexpected.append(path)
+        if unexpected or {path.name for path in candidates} != required:
+            v2_terminally_invalidate_batch(unexpected)
+
+    def v2_audit_judge_namespace(registered_ids):
+        """Reject unknown ids/types and return current-role material by slot."""
+        current_allowed = re.compile(
             rf"^judge-{re.escape(scoring_id)}-(\d+)(?:\.json|"
             rf"-exhausted\.json|-terminal-invalid\.json|"
             rf"-attempt-(\d+)(?:\.json|\.pending|-raw-stream\.txt))$")
+        namespace = re.compile(r"^judge-([0-9a-f]{8})-(.+)$")
         unexpected = []
-        for path in out.glob(f"judge-{scoring_id}-*"):
-            if not _safe_regular_file(path):
+        current_by_slot = {}
+        for path in sorted(out.glob("judge-*"), key=lambda item: item.name):
+            match = namespace.fullmatch(path.name)
+            if (not _safe_regular_file(path) or match is None
+                    or match.group(1) not in registered_ids):
                 unexpected.append(path)
                 continue
-            match = allowed.fullmatch(path.name)
-            if not match:
+            if match.group(1) != scoring_id:
+                continue
+            current_match = current_allowed.fullmatch(path.name)
+            if current_match is None:
                 unexpected.append(path)
                 continue
-            slot = int(match.group(1))
-            attempt = match.group(2)
-            if not 0 <= slot < len(doc_paths):
+            slot = int(current_match.group(1))
+            attempt = current_match.group(2)
+            if (not 0 <= slot < len(doc_paths)
+                    or attempt is not None and not (
+                        1 <= int(attempt)
+                        <= PILOT_V2_MAX_JUDGE_ATTEMPTS)):
                 unexpected.append(path)
-            elif attempt is not None and not (
-                    1 <= int(attempt) <= PILOT_V2_MAX_JUDGE_ATTEMPTS):
-                unexpected.append(path)
+                continue
+            current_by_slot.setdefault(slot, []).append(path)
         if unexpected:
             v2_terminally_invalidate_batch(unexpected)
+        return current_by_slot
 
     # The scoring id was persisted by the exclusive batch-id election before
     # the first judge record can be written. Existing incomplete manifests
     # are never rewritten merely by opening them: a concurrent resume must
     # not clobber progress written after its read.
 
-    def v2_attempt_expected(doc, slot, attempt):
+    def v2_attempt_expected_for(batch_role, batch_id, batch_seed,
+                                doc, slot, attempt):
         doc_name = Path(doc).name
+        prompt_ref = seal_doc.get("judge_prompts", {}).get(batch_role)
+        prompt_digest = seal_files.get(prompt_ref)
         expected = {
             "doc": str(doc),
             "presentation_index": slot,
-            "scoring_id": scoring_id,
-            "role": role,
+            "scoring_id": batch_id,
+            "role": batch_role,
             "axis": "all-docs",
             "attempt": attempt,
             "protocol_version": PILOT_V2_PROTOCOL_VERSION,
             "environment_policy_id": PILOT_V2_ENVIRONMENT_POLICY_ID,
             "response_schema_version": judge_contract.RESPONSE_SCHEMA_VERSION,
-            "schema_sha256": v2_schema_digests[role],
-            "judge_prompt_sha256": judge_prompt_sha256,
+            "schema_sha256": v2_schema_digests[batch_role],
+            "judge_prompt_sha256": prompt_digest,
             "quality_rubric_sha256": quality_rubric_sha256,
             "config_digest": config_digest(config),
             "backend_version": config.get("backend_version"),
-            "scoring_seed": scoring_seed,
+            "scoring_seed": batch_seed,
             "scheduled": manifest_path is not None,
             "judge_model": judge_model,
             "judge_effort": judge_effort,
             "profile_settings": (
-                VERIFIER_SETTINGS if role == "verifier" else JUDGE_SETTINGS),
+                VERIFIER_SETTINGS
+                if batch_role == "verifier" else JUDGE_SETTINGS),
             "task": (task_by_doc.get(doc_name)
                      if task_by_doc is not None else None),
             "task_context": (str(context_by_doc[doc_name])
@@ -4689,19 +5696,25 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
             "source_drift": drift_notes.get(doc_name),
             "raw_stream_limit_bytes": PILOT_V2_MAX_RAW_STREAM_BYTES,
             "raw_stream_sidecar": str(
-                out / f"judge-{scoring_id}-{slot}-attempt-{attempt}-"
+                out / f"judge-{batch_id}-{slot}-attempt-{attempt}-"
                 f"raw-stream.txt"),
         }
-        if doc_evidence is not None:
+        if batch_role == "verifier" and doc_evidence is not None:
             expected["evidence_sha"] = doc_evidence[doc_name][1]
-        elif evidence_repo is not None:
+        elif batch_role == "verifier" and evidence_repo is not None:
             expected["evidence_sha"] = evidence_sha
         return expected
+
+    def v2_attempt_expected(doc, slot, attempt):
+        return v2_attempt_expected_for(
+            role, scoring_id, scoring_seed, doc, slot, attempt)
 
     def v2_launch_attempt(doc, doc_text, slot, attempt, ev_repo, ev_sha):
         """Launch and durably record one fresh v2 judge attempt. Known
         transport/runtime/contract defects consume the attempt and are
         retained; an unexpected harness crash leaves the pending journal."""
+        verify_output_directory(
+            out, output_binding, "scoring output directory")
         attempt_path = out / (
             f"judge-{scoring_id}-{slot}-attempt-{attempt}.json")
         pending_path = out / (
@@ -4742,6 +5755,8 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
                 sealed_context_texts[Path(doc).name],
                 doc_text,
             )
+            verify_output_directory(
+                out, output_binding, "scoring output directory")
             try:
                 exclusive_write_text(pending_path, json.dumps({
                     **v2_attempt_expected(doc, slot, attempt),
@@ -4853,11 +5868,11 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
                     f"collision-{uuid.uuid4().hex[:8]}.json")
                 exclusive_write_text(
                     collision_path, json.dumps(result, indent=2) + "\n")
-                pending_path.unlink(missing_ok=True)
+                durable_unlink(pending_path, missing_ok=True)
                 v2_terminally_invalidate(
                     doc, slot, "invalid_attempt_history",
                     [attempt_path, collision_path])
-            pending_path.unlink(missing_ok=True)
+            durable_unlink(pending_path, missing_ok=True)
             return result
         finally:
             if ev_repo and workdir is not None:
@@ -4972,7 +5987,7 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
                     v2_terminally_invalidate(
                         doc, slot, "invalid_attempt_history",
                         v2_attempt_material(slot))
-                pending_path.unlink()
+                durable_unlink(pending_path)
             if valid:
                 if first_valid is not None:
                     v2_terminally_invalidate(
@@ -5142,12 +6157,210 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
             shutil.rmtree(judge_root, ignore_errors=True)
             raise
 
+    def v2_validate_complete_scorer_counterpart():
+        """Recompute the scorer batch before verifier launch.
+
+        Protocol v2 deliberately sequences the two independent judge roles:
+        the scorer completes first; only then may a fresh verifier session
+        begin.  This prevents an incomplete/corrupt counterpart namespace
+        from becoming meaningful only after verifier observations exist.
+        """
+        counterpart_path = out / "scoring-scorer-all-docs-manifest.json"
+        if not _safe_regular_file(counterpart_path):
+            raise InfraFailure(
+                "verifier requires a complete regular-file scorer manifest")
+        counterpart = load_json_object(
+            counterpart_path, "scorer counterpart manifest")
+        if (set(counterpart) != {"scoring_id", "identity", "results",
+                                 "complete"}
+                or counterpart.get("complete") is not True):
+            raise InfraFailure(
+                "verifier requires a complete structurally valid scorer batch")
+        counterpart_id = counterpart.get("scoring_id")
+        if (not isinstance(counterpart_id, str)
+                or re.fullmatch(r"[0-9a-f]{8}", counterpart_id) is None
+                or counterpart_id == scoring_id):
+            raise InfraFailure("scorer counterpart has an invalid batch id")
+        identity = counterpart.get("identity")
+        if (not isinstance(identity, dict)
+                or set(identity) != set(batch_identity)
+                or identity.get("role") != "scorer"
+                or identity.get("axis") != "all-docs"
+                or identity.get("protocol_version")
+                != PILOT_V2_PROTOCOL_VERSION
+                or identity.get("environment_policy_id")
+                != PILOT_V2_ENVIRONMENT_POLICY_ID
+                or identity.get("response_schema_version")
+                != judge_contract.RESPONSE_SCHEMA_VERSION
+                or identity.get("schema_sha256")
+                != v2_schema_digests["scorer"]
+                or identity.get("judge_prompt_sha256")
+                != seal_files.get(
+                    seal_doc.get("judge_prompts", {}).get("scorer"))
+                or identity.get("quality_rubric_sha256")
+                != quality_rubric_sha256
+                or identity.get("config_digest") != config_digest(config)
+                or identity.get("manifest") != str(manifest_path)
+                or identity.get("docs") != batch_identity["docs"]
+                or identity.get("drift_decisions")
+                != batch_identity["drift_decisions"]
+                or identity.get("scoring_seed")
+                != PILOT_V2_SCORER_SEED):
+            raise InfraFailure("scorer counterpart identity is invalid")
+        counterpart_seed = identity["scoring_seed"]
+        counterpart_results = counterpart.get("results")
+        if (not isinstance(counterpart_results, list)
+                or len(counterpart_results) != len(doc_paths)):
+            raise InfraFailure(
+                "scorer counterpart does not cover the complete population")
+
+        counterpart_order = list(range(len(doc_paths)))
+        random.Random(counterpart_seed).shuffle(counterpart_order)
+        allowed_material = set()
+        seen_profiles = set()
+        seen_sessions = set()
+        for slot, doc_index in enumerate(counterpart_order):
+            doc = doc_paths[doc_index]
+            doc_name = Path(doc).name
+            result = counterpart_results[slot]
+            canonical_path = out / f"judge-{counterpart_id}-{slot}.json"
+            if not isinstance(result, dict) or not _safe_regular_file(
+                    canonical_path):
+                raise InfraFailure(
+                    "scorer counterpart has a missing canonical record")
+            canonical = load_json_object(
+                canonical_path, "scorer counterpart canonical record")
+            if canonical != result:
+                raise InfraFailure(
+                    "scorer counterpart manifest differs from its canonical "
+                    "record")
+            allowed_material.add(canonical_path.name)
+            if (result.get("presentation_index") != slot
+                    or result.get("doc") != str(doc)
+                    or result.get("role") != "scorer"
+                    or result.get("axis") != "all-docs"
+                    or result.get("protocol_version")
+                    != PILOT_V2_PROTOCOL_VERSION
+                    or result.get("environment_policy_id")
+                    != PILOT_V2_ENVIRONMENT_POLICY_ID
+                    or result.get("response_schema_version")
+                    != judge_contract.RESPONSE_SCHEMA_VERSION
+                    or result.get("schema_sha256")
+                    != v2_schema_digests["scorer"]
+                    or result.get("judge_prompt_sha256")
+                    != identity["judge_prompt_sha256"]
+                    or result.get("quality_rubric_sha256")
+                    != quality_rubric_sha256
+                    or result.get("scoring_seed") != counterpart_seed
+                    or result.get("scheduled") is not True
+                    or result.get("task") != task_by_doc.get(doc_name)
+                    or result.get("source_drift")
+                    != drift_notes.get(doc_name)):
+                raise InfraFailure(
+                    "scorer counterpart canonical binding is invalid")
+
+            attempt_material = sorted(out.glob(
+                f"judge-{counterpart_id}-{slot}-attempt-*"),
+                key=lambda path: path.name)
+            if result.get("inconclusive") is True:
+                if (doc_name not in inconclusive_docs or attempt_material
+                        or _path_present(out / (
+                            f"judge-{counterpart_id}-{slot}-exhausted.json"))
+                        or _path_present(out / (
+                            f"judge-{counterpart_id}-{slot}-"
+                            "terminal-invalid.json"))):
+                    raise InfraFailure(
+                        "scorer counterpart inconclusive slot is invalid")
+                continue
+
+            attempt = result.get("attempt")
+            if (not isinstance(attempt, int) or isinstance(attempt, bool)
+                    or not 1 <= attempt <= PILOT_V2_MAX_JUDGE_ATTEMPTS):
+                raise InfraFailure(
+                    "scorer counterpart accepted attempt is invalid")
+            accepted = None
+            for attempt_number in range(1, attempt + 1):
+                attempt_path = out / (
+                    f"judge-{counterpart_id}-{slot}-attempt-"
+                    f"{attempt_number}.json")
+                pending_path = out / (
+                    f"judge-{counterpart_id}-{slot}-attempt-"
+                    f"{attempt_number}.pending")
+                if (not _safe_regular_file(attempt_path)
+                        or _path_present(pending_path)):
+                    raise InfraFailure(
+                        "scorer counterpart attempt history is incomplete")
+                attempt_record = load_json_object(
+                    attempt_path, "scorer counterpart attempt record")
+                expected = v2_attempt_expected_for(
+                    "scorer", counterpart_id, counterpart_seed,
+                    doc, slot, attempt_number)
+                valid = _validate_v2_attempt_record(attempt_record, expected)
+                if valid is (attempt_number < attempt):
+                    raise InfraFailure(
+                        "scorer counterpart attempts continue after a valid "
+                        "response or accept an invalid response")
+                allowed_material.add(attempt_path.name)
+                if attempt_record.get("raw_stream_external") is True:
+                    sidecar_path = Path(attempt_record["raw_stream_sidecar"])
+                    allowed_material.add(sidecar_path.name)
+                profile = attempt_record.get("profile")
+                session = attempt_record.get("session_id")
+                if (not isinstance(profile, str) or not profile
+                        or profile in seen_profiles
+                        or isinstance(session, str) and session
+                        and session in seen_sessions):
+                    raise InfraFailure(
+                        "scorer counterpart did not use fresh isolation")
+                seen_profiles.add(profile)
+                if isinstance(session, str) and session:
+                    seen_sessions.add(session)
+                accepted = attempt_record
+            if accepted != result:
+                raise InfraFailure(
+                    "scorer counterpart canonical record is not its first "
+                    "valid contiguous attempt")
+            if (_path_present(out / (
+                    f"judge-{counterpart_id}-{slot}-exhausted.json"))
+                    or _path_present(out / (
+                        f"judge-{counterpart_id}-{slot}-"
+                        "terminal-invalid.json"))):
+                raise InfraFailure(
+                    "scorer counterpart retains terminal failure material")
+        discovered = {
+            path.name for path in out.glob(f"judge-{counterpart_id}-*")
+        }
+        if discovered != allowed_material or any(
+                not _safe_regular_file(out / name)
+                for name in discovered):
+            raise InfraFailure(
+                "scorer counterpart contains foreign judge material")
+        return counterpart_id
+
     if v2:
         if v2_batch_invalid_path().exists():
             v2_refuse_batch_invalid()
-        v2_audit_material_names()
+        v2_audit_scoring_namespace()
+        registered_ids = {scoring_id}
+        if role == "verifier":
+            try:
+                registered_ids.add(v2_validate_complete_scorer_counterpart())
+            except (InfraFailure, OSError, ValueError, TypeError, KeyError):
+                v2_terminally_invalidate_batch([
+                    out / "scoring-scorer-all-docs-manifest.json",
+                ])
+        current_material = v2_audit_judge_namespace(registered_ids)
+        next_slot = len(results)
+        future_material = [
+            path for slot, paths in current_material.items()
+            if slot > next_slot for path in paths
+        ]
+        if future_material:
+            v2_terminally_invalidate_batch(future_material)
 
     for i, doc_index in enumerate(order):
+        verify_output_directory(
+            out, output_binding, "scoring output directory")
         if v2:
             doc, doc_text = doc_paths[doc_index], doc_texts[doc_index]
             canonical_path = out / f"judge-{scoring_id}-{i}.json"
@@ -5318,7 +6531,8 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
                 )
             results.append(orphan)
             write_scoring_manifest(False)
-            (out / f"judge-{scoring_id}-{i}.pending").unlink(missing_ok=True)
+            durable_unlink(
+                out / f"judge-{scoring_id}-{i}.pending", missing_ok=True)
             continue
         pending_path = out / f"judge-{scoring_id}-{i}.pending"
         if pending_path.exists():
@@ -5404,7 +6618,7 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
         except BaseException:
             # Workspace preparation happens before the backend can launch;
             # retiring this journal cannot authorize a duplicate session.
-            pending_path.unlink(missing_ok=True)
+            durable_unlink(pending_path, missing_ok=True)
             raise
         try:
             try:
@@ -5426,7 +6640,7 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
                     remove_worktree(ev_repo, workdir)
                 shutil.rmtree(judge_root, ignore_errors=True)
         except InfraFailure:
-            pending_path.unlink(missing_ok=True)
+            durable_unlink(pending_path, missing_ok=True)
             raise
         try:
             session_id, nodes, response = parse_transcript(stdout)
@@ -5439,7 +6653,7 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
             # Post-spawn validation failed in-process: the outcome is
             # known (invalid judge session), so the journal is retired and
             # resume re-executes this slot cleanly.
-            pending_path.unlink(missing_ok=True)
+            durable_unlink(pending_path, missing_ok=True)
             raise
         result = {
             "doc": str(doc),
@@ -5472,7 +6686,7 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
                           json.dumps(result, indent=2) + "\n")
         results.append(result)
         write_scoring_manifest(False)
-        pending_path.unlink(missing_ok=True)
+        durable_unlink(pending_path, missing_ok=True)
     judged = [r for r in results if not r.get("inconclusive")]
     judged_sessions = [r.get("session_id") for r in judged]
     judged_profiles = [r.get("profile") for r in judged]
@@ -5482,7 +6696,8 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
             or len(set(judged_profiles)) != len(judged_profiles)):
         raise InfraFailure("judge sessions were not fresh/isolated")
     if v2:
-        v2_audit_material_names()
+        v2_audit_scoring_namespace()
+        v2_audit_judge_namespace(registered_ids)
         attempts = [
             load_json_object(path, "judge attempt record")
             for path in sorted(out.glob(
@@ -5513,7 +6728,10 @@ def main():
     parser.add_argument("--repo", help="target repo clone for run mode")
     parser.add_argument("--score", action="store_true",
                         help="judge mode: score documents in fresh sessions")
-    parser.add_argument("--docs", nargs="+", help="documents to score")
+    parser.add_argument(
+        "--docs", nargs="*",
+        help="documents to score; protocol-v2 manifest batches may pass an "
+             "explicit empty population, while v1/unscheduled scoring may not")
     parser.add_argument("--judge-prompt", help="judge prompt file (from the sealed package)")
     parser.add_argument("--evidence-repo",
                         help="score mode, verifier role: frozen evidence repo; "
@@ -5537,8 +6755,9 @@ def main():
                              "to completed scheduled replicates (exactly "
                              "one anonymized artifact per replicate)")
     parser.add_argument("--unscheduled-docs", action="store_true",
-                        help="score mode: explicitly allow ad-hoc/dev "
-                             "scoring without a schedule manifest")
+                        help="historical protocol-v1 score mode: explicitly "
+                             "allow ad-hoc/dev scoring without a schedule "
+                             "manifest; protocol v2 always refuses it")
     parser.add_argument("--diagnostic-axis", action="store_true",
                         help="historical protocol-v1 score mode with "
                              "--manifest: the registered "
@@ -5559,14 +6778,17 @@ def main():
                              "package; the manifest file itself must match "
                              "the config's registered seal_package_sha256")
     parser.add_argument("--task-snapshots", nargs="+",
-                        help="score mode, verifier role: TASKFILE=PATH "
+                        help="manifest-bound score mode: TASKFILE=PATH "
                              "mapping to sealed frozen external-source "
-                             "snapshots for external-context tasks")
+                             "snapshots for external-context tasks; both "
+                             "judge roles apply the same drift gate")
     parser.add_argument("--drift-report",
                         help="score mode: JSON drift report from the "
                              "pre-score re-fetch of sealed external "
                              "sources ({taskfile: {changed: {seal_key: "
-                             "{material: bool, rationale: str}}}}); "
+                             "{observed_sha256: hex, material: bool, "
+                             "rationale: str}}}}); each adjudication is "
+                             "bound to the exact live bytes; "
                              "materially drifted tasks are recorded "
                              "inconclusive, never judged")
     parser.add_argument("--output", default="runs", help="output directory")
@@ -5611,9 +6833,15 @@ def main():
         except InfraFailure as exc:
             print(json.dumps({"status": "infra_failure", "failure": str(exc)}))
             sys.exit(1)
-        Path(args.schedule_out).write_text(
-            json.dumps(schedule, indent=2) + "\n", encoding="utf-8"
-        )
+        try:
+            atomic_write_text(
+                args.schedule_out, json.dumps(schedule, indent=2) + "\n")
+        except (InfraFailure, OSError) as exc:
+            print(json.dumps({
+                "status": "infra_failure",
+                "failure": f"cannot safely write schedule: {exc}",
+            }))
+            sys.exit(1)
         print(json.dumps({"schedule": args.schedule_out,
                           "entries": len(schedule["entries"]),
                           "seed": args.seed}))
@@ -5638,7 +6866,7 @@ def main():
         sys.exit(0)
 
     if args.score:
-        if not (args.config and args.docs and args.judge_prompt):
+        if not (args.config and args.docs is not None and args.judge_prompt):
             parser.error("score mode requires --config, --docs, --judge-prompt")
         if bool(args.evidence_repo) != bool(args.evidence_sha):
             parser.error("--evidence-repo and --evidence-sha must be "
@@ -5652,6 +6880,12 @@ def main():
                          "verify the schedule)")
         try:
             config = load_config(args.config)
+            if (not args.docs and not (
+                    config.get("protocol_version")
+                    == PILOT_V2_PROTOCOL_VERSION and args.manifest)):
+                parser.error(
+                    "an empty --docs population is valid only for "
+                    "manifest-bound protocol-v2 scoring")
             evidence_repos = (parse_repo_mapping(args.evidence_repos,
                                                  "--evidence-repos")
                               if args.evidence_repos else None)

@@ -772,6 +772,14 @@ ablation remain fixed unless this section expressly replaces a rule.
    timeout/abort kind and detail are retained as secondary evidence. This
    preserves both observations while keeping the ablation gate internally
    consistent.
+7. A materiality adjudication for changed external context is valid only for
+   the exact live bytes it reviewed. Each changed sealed source therefore
+   records `observed_sha256`, boolean `material`, and a nonempty `rationale`;
+   the harness re-fetches the source itself and refuses a digest mismatch.
+   Scorer and verifier re-fetch independently, preserve that digest in their
+   immutable drift decision, and aggregation requires identical decisions.
+   A source version change between the two role batches invalidates the round
+   instead of silently reusing a verdict prepared for earlier bytes.
 
 ### Registered v2 judge contract
 
@@ -862,6 +870,27 @@ harness and proven with a secret-canary preflight before sealing.
   positively useful.
 
 ### V2 freeze, seal, execution, and proof
+
+**Prospective execution registration (2026-08-01; recorded before schedule
+creation and before any holdout outcome):** task basenames are fixed as
+`holdout-v2-1.md`, `holdout-v2-2.md`, `holdout-v2-3.md`,
+`holdout-v2-4.md`, `holdout-v2-5.md`, and `holdout-v2-6.md`; the ablation
+designation remains exactly tasks 1 and 3. Randomization seeds are fixed as
+`20260801` for the 42-run schedule, `20260802` for the all-document scorer,
+and `20260803` for the all-document verifier. The runtime remains Claude Code
+`2.1.220 (Claude Code)`, model `claude-opus-5`, effort `high`, two
+infrastructure retries, three judge attempts, and timeout 3,600 seconds. The
+operator must mechanically revalidate a real-backend throwaway preflight for
+all three arms before it will create or execute the registered schedule.
+
+The first uncontaminated package returned digest
+`eeae650b905ff3ea84b7df77672dc9d51e702dfaab77676ea85a32b8f50161c0`,
+but it was withdrawn unused before schedule creation when the prelaunch audit
+found that materiality decisions were not bound to the exact re-fetched live
+bytes. No holdout outcome was observed. The frozen operator intentionally
+keeps its all-zero seal sentinel until the same clean sealing boundary updates
+the package policy with `observed_sha256` binding and returns the replacement
+digest; only that replacement may be registered or executed.
 
 1. Implement strict role validation, bounded crash-safe judge attempts,
    all-document role coverage, immutable policy bindings, and deterministic

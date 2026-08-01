@@ -26,7 +26,7 @@
       "effort": "high",
       "entrypoint": "/rpa:research_codebase",
       "forbid_subagents": true,
-      "schedule_tasks": ["<designated-holdout-task-A>.md", "<designated-holdout-task-B>.md"],
+      "schedule_tasks": ["holdout-v2-1.md", "holdout-v2-3.md"],
       "_schedule_tasks_note": "The third arm runs on exactly its two pre-registered designated tasks; --make-schedule refuses a no-subagent arm without this explicit two-task scope.",
       "_forbid_subagents_note": "Pre-registered third-arm policy: a fleet-ablation run that spawns any subagent is a counted workflow failure."
     }
@@ -34,7 +34,7 @@
   "backend_cmd": ["claude", "--model", "claude-opus-5", "--effort", "{effort}", "--plugin-dir", "{installation}", "--permission-mode", "acceptEdits", "--verbose"],
   "_entrypoint_note": "Plugin commands are namespaced: the real CLI resolves /rpa:research_codebase, while a bare /research_codebase yields a client-side Unknown-command notice (synthetic event) and no workflow — established in the 2026-07-27 real-backend shakedown. The command file's own `model:` pin overrides the CLI --model for the invoked turn, so each arm's registered `model` must equal the full id that PIN resolves to (e.g. claude-opus-5), confirmed from stream events at the real-backend preflight.",
   "_backend_cmd_note": "{installation} expands per run to the verified installation copy mounted inside the run's clean profile; {effort} expands to the arm's registered effort so it is pinned on the command line, not inherited. Adjust flags to whatever the pinned Claude Code version uses for local plugin loading and effort control — validated during the real-backend preflight. The arm's `entrypoint` is prefixed to the task prompt so the session actually enters the evaluated workflow.",
-  "judge_backend_cmd": ["claude", "--model", "opus", "--effort", "{effort}"],
+  "judge_backend_cmd": ["claude", "--model", "claude-opus-5", "--effort", "{effort}"],
   "_judge_backend_cmd_note": "Judge sessions must be mount-free: no {installation} placeholder, no plugin flags. The runner refuses to score if the resolved judge command still contains {installation}. {effort} expands to judge_effort.",
   "judge_model": "claude-opus-5",
   "judge_effort": "high",
@@ -48,7 +48,7 @@
   "sandbox_cmd": ["<sandbox-wrapper>", "--confine-to", "{workdir}", "--profile", "{profile}", "--"],
   "_sandbox_cmd_note": "REQUIRED for production configs: a filesystem sandbox (e.g. bwrap or sandbox-exec invocation) confining every evaluated and judge session to its {workdir} and {profile}; exact wrapper validated during the real-backend preflight.",
   "drift_fetch_cmd": ["curl", "-fsSL", "{url}", "-o", "{dest}"],
-  "_drift_fetch_cmd_note": "REQUIRED to score external-context tasks: the harness itself re-fetches every sealed live source URL (from the seal's snapshot_sources) through this registered command and diffs the bytes against the sealed digests. Operator-supplied local copies are never accepted as drift evidence.",
+  "_drift_fetch_cmd_note": "REQUIRED to score external-context tasks: the harness itself re-fetches every sealed live source URL (from the seal's snapshot_sources) through this registered command and diffs the bytes against the sealed digests. Each changed-file adjudication is exactly {observed_sha256, material, rationale}; observed_sha256 must equal the harness's own live fetch, so a verdict cannot be reused for different bytes. Operator-supplied local copies are never accepted as drift evidence.",
   "seal_manifest": "/private-eval-workspace/sealed/seal-manifest.json",
   "_seal_manifest_note": "Path to the protocol-v2 package manifest (complete file map; task→distinct context and role→prompt/schema associations; quality rubric; coverage matrix; exact ablation_tasks; HTTPS snapshot provenance; retry/aggregation policy; judge_config). Its own SHA-256 must equal seal_package_sha256, and the complete package is re-verified for missing, extra, changed, symlink, or special-file entries before scheduling, scoring, and aggregation.",
   "seal_package_sha256": "<single package SHA-256 recorded at sealing>",

@@ -286,6 +286,9 @@ def _load_and_verify_schedule(config, manifest, manifest_path):
     basenames = [Path(task).name for task in tasks]
     _require(len(set(basenames)) == len(basenames),
              "schedule task basenames must be unique")
+    _require(basenames == list(seal_package.HOLDOUT_TASKS),
+             "pilot-v2 schedule tasks are not in the canonical registered "
+             "holdout order")
 
     rebuilt = runner.make_schedule(
         config, tasks, schedule.get("replicates"), schedule.get("seed"),
@@ -297,41 +300,7 @@ def _load_and_verify_schedule(config, manifest, manifest_path):
 
 
 def _ritual_stops(record):
-    log = record.get("interventions_log", [])
-    _require(isinstance(log, list), "run interventions_log must be an array")
-    total = 0
-    answered_count = 0
-    unanswered_positions = []
-    for position, item in enumerate(log):
-        _require(isinstance(item, dict),
-                 "run interventions_log entries must be objects")
-        _require(item.get("classification") in {
-            "empty", "question", "statement",
-        }, "run intervention has an unregistered classification")
-        _require(isinstance(item.get("answered"), bool),
-                 "run intervention must record whether it was answered")
-        _require(isinstance(item.get("response"), str),
-                 "run intervention response must be text")
-        _require(item == runner.classify_stop(
-            item["response"], answered=item["answered"]),
-            "run intervention classification differs from recomputation")
-        # Every pre-artifact stop is a ritual stop for the registered gate.
-        # Punctuation/classification is retained as audit evidence only: a
-        # statement-shaped greeting, request for the query, or confirmation
-        # prompt must not evade the zero-stop rule merely by omitting `?`.
-        total += 1
-        if item["answered"]:
-            answered_count += 1
-        else:
-            unanswered_positions.append(position)
-    _require(_nonnegative_int(
-        record.get("interventions"), "run interventions") == answered_count,
-        "run interventions differ from the recomputed answered stops")
-    _require(len(unanswered_positions) <= 1
-             and (not unanswered_positions
-                  or unanswered_positions[0] == len(log) - 1),
-             "run has invalid unanswered-stop placement")
-    return total
+    return runner.validate_intervention_log(record)
 
 
 def _accounting_metrics(accounting):
@@ -367,6 +336,12 @@ def _audit_run_material(config, manifest_path, schedule, results, entries):
     directory.  A final attempt N therefore has exactly one record for every
     attempt 1..N, with attempts before N classified only as infrastructure.
     """
+    return runner.audit_completed_v2_run_material(
+        config, manifest_path, schedule, results, entries)
+
+    # Kept below temporarily as a line-for-line reference for the stricter
+    # metric-level validation in `_verify_runs`; the authoritative namespace
+    # reconciliation above is shared with the pre-judge handoff.
     root = Path(manifest_path).resolve().parent
     claims = sorted(item.name for item in root.glob("schedule-entry-*.claim"))
     terminal_markers = sorted(
@@ -762,15 +737,135 @@ def _verify_runs(config, manifest, manifest_path, schedule, task_names):
     return run_rows, docs, record_hashes
 
 
+def _validate_source_drift_decision(
+        drift, task, seal_doc, seal_files, expected_material):
+    """Recompute the semantic shape shared by both role manifests.
+
+    A copied materiality verdict is meaningful only for one sealed external
+    task and one exact re-fetched digest.  The aggregate cannot fetch history
+    retroactively, but it can prove that both batches preserved the same
+    sealed-key/digest/adjudication tuple and that changed bytes differ from
+    the sealed snapshot.
+    """
+    _require(isinstance(drift, dict)
+             and drift.get("material") is expected_material,
+             "judge result has an invalid source-drift materiality verdict")
+    task_text = runner.read_task_text(task)
+    task_frontmatter = re.match(
+        r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|\Z)",
+        task_text, re.DOTALL)
+    _require(Path(task).name == seal_package.HOLDOUT_TASKS[4]
+             and task_frontmatter is not None
+             and bool(re.search(
+                 r"^external-snapshots:\s*true\s*$",
+                 task_frontmatter.group(1), re.MULTILINE)),
+             "only a sealed external-context task may carry source drift")
+    _require(set(drift) == {"changed", "material", "adjudications"},
+             "source-drift decision has an invalid shape")
+    changed = drift.get("changed")
+    adjudications = drift.get("adjudications")
+    _require(isinstance(changed, list)
+             and all(isinstance(key, str) and key for key in changed)
+             and len(set(changed)) == len(changed),
+             "source drift must name changed sealed sources")
+    _require(isinstance(adjudications, dict)
+             and set(adjudications) == set(changed),
+             "source-drift adjudications must cover exactly the changed "
+             "sealed sources")
+    snapshot_sources = seal_doc.get("snapshot_sources")
+    _require(isinstance(snapshot_sources, dict),
+             "sealed snapshot provenance is unavailable")
+    material_flags = []
+    for key in changed:
+        _require(key in seal_files and key in snapshot_sources,
+                 "source-drift decision names an unsealed source")
+        adjudication = adjudications[key]
+        _require(isinstance(adjudication, dict)
+                 and set(adjudication) == {
+                     "material", "rationale", "observed_sha256"}
+                 and isinstance(adjudication.get("material"), bool)
+                 and isinstance(adjudication.get("rationale"), str)
+                 and adjudication["rationale"].strip()
+                 and isinstance(
+                     adjudication.get("observed_sha256"), str)
+                 and re.fullmatch(
+                     r"[0-9a-f]{64}", adjudication["observed_sha256"])
+                 and adjudication["observed_sha256"] != seal_files[key],
+                 "source-drift adjudication has an invalid verdict or "
+                 "live-byte binding")
+        material_flags.append(adjudication["material"])
+    _require(any(material_flags) is expected_material,
+             "source-drift decision does not reconcile its adjudications")
+
+
+def _validate_task_drift_decisions(decisions, schedule_tasks,
+                                   seal_doc, seal_files):
+    """Validate role-level live-source receipts even for zero-doc tasks."""
+    external_tasks = {
+        Path(task).name: task for task in schedule_tasks
+        if re.search(r"^external-snapshots:\s*true\s*$",
+                     runner.read_task_text(task), re.MULTILINE)
+    }
+    _require(isinstance(decisions, dict)
+             and set(decisions) == set(external_tasks),
+             "role manifest task-level drift receipts do not cover exactly "
+             "the registered external-context tasks")
+    snapshot_sources = seal_doc.get("snapshot_sources")
+    _require(isinstance(snapshot_sources, dict) and snapshot_sources,
+             "sealed snapshot provenance is unavailable")
+    source_keys = set(snapshot_sources)
+    material_tasks = set()
+    for task_name, note in decisions.items():
+        _require(isinstance(note, dict) and set(note) == {
+            "observed_sha256", "changed", "material", "adjudications",
+        }, "task-level source-drift receipt has an invalid shape")
+        observed = note["observed_sha256"]
+        changed = note["changed"]
+        adjudications = note["adjudications"]
+        _require(isinstance(observed, dict) and set(observed) == source_keys
+                 and all(isinstance(value, str)
+                         and re.fullmatch(r"[0-9a-f]{64}", value)
+                         for value in observed.values()),
+                 "task-level drift receipt has invalid observed digests")
+        expected_changed = {
+            key for key, digest in observed.items()
+            if digest != seal_files.get(key)
+        }
+        _require(isinstance(changed, list)
+                 and len(changed) == len(set(changed))
+                 and set(changed) == expected_changed,
+                 "task-level changed sources do not match observed bytes")
+        _require(isinstance(adjudications, dict)
+                 and set(adjudications) == expected_changed,
+                 "task-level adjudications do not cover changed sources")
+        flags = []
+        for key in changed:
+            adjudication = adjudications[key]
+            _require(isinstance(adjudication, dict)
+                     and set(adjudication) == {
+                         "material", "rationale", "observed_sha256"}
+                     and isinstance(adjudication.get("material"), bool)
+                     and isinstance(adjudication.get("rationale"), str)
+                     and adjudication["rationale"].strip()
+                     and adjudication.get("observed_sha256") == observed[key],
+                     "task-level drift adjudication is not digest-bound")
+            flags.append(adjudication["material"])
+        _require(note.get("material") is any(flags),
+                 "task-level materiality does not reconcile adjudications")
+        if note["material"]:
+            material_tasks.add(external_tasks[task_name])
+    return material_tasks
+
+
 def _verify_judge_manifest(path, role, config, schedule_manifest_path,
                            expected_docs, schema_sha, seal_doc, seal_files,
-                           seal_manifest_path):
+                           seal_manifest_path, schedule_tasks):
     manifest = _strict_json_path(path, f"{role} scoring manifest")
     _require(manifest.get("complete") is True,
              f"{role} scoring manifest is incomplete")
     scoring_id = manifest.get("scoring_id")
-    _require(isinstance(scoring_id, str) and scoring_id
-             and "/" not in scoring_id and "\\" not in scoring_id,
+    _require(isinstance(scoring_id, str)
+             and re.fullmatch(r"[0-9a-f]{8}", scoring_id) is not None,
              f"{role} scoring manifest has an invalid scoring_id")
     identity = manifest.get("identity")
     _require(isinstance(identity, dict),
@@ -805,6 +900,11 @@ def _verify_judge_manifest(path, role, config, schedule_manifest_path,
     _require(isinstance(scoring_seed, int)
              and not isinstance(scoring_seed, bool),
              f"{role} batch scoring seed must be an integer")
+    expected_seed = (runner.PILOT_V2_SCORER_SEED
+                     if role == "scorer"
+                     else runner.PILOT_V2_VERIFIER_SEED)
+    _require(scoring_seed == expected_seed,
+             f"{role} batch scoring seed differs from the registered seed")
     identity_docs = identity.get("docs")
     _require(isinstance(identity_docs, list)
              and all(isinstance(item, str) and item for item in identity_docs),
@@ -814,8 +914,16 @@ def _verify_judge_manifest(path, role, config, schedule_manifest_path,
              f"{role} batch docs must use canonical document names")
     _require(len(identity_names) == len(set(identity_names)),
              f"{role} batch contains duplicate documents")
-    _require(set(identity_names) == set(expected_docs),
-             f"{role} batch documents are not exactly the all-docs population")
+    _require(identity_names == list(expected_docs),
+             f"{role} batch documents are not the canonical ordered "
+             "all-docs population")
+    drift_identity = identity.get("drift_decisions")
+    _require(isinstance(drift_identity, dict)
+             and set(drift_identity) == {
+                 "inconclusive", "notes_digest", "tasks"},
+             f"{role} batch drift identity has an invalid shape")
+    _validate_task_drift_decisions(
+        drift_identity["tasks"], schedule_tasks, seal_doc, seal_files)
     presentation_order = list(range(len(identity_names)))
     random.Random(scoring_seed).shuffle(presentation_order)
     expected_doc_by_slot = {
@@ -905,14 +1013,25 @@ def _verify_judge_manifest(path, role, config, schedule_manifest_path,
         _require(result.get("scheduled") is True,
                  f"{role} all-docs result must be schedule-bound")
 
+        task = expected_docs[doc_name]["task"]
+        task_receipt = drift_identity["tasks"].get(Path(task).name)
+        expected_doc_drift = (None if task_receipt is None else {
+            "changed": task_receipt["changed"],
+            "material": task_receipt["material"],
+            "adjudications": task_receipt["adjudications"],
+        })
+        _require(result.get("source_drift") == expected_doc_drift,
+                 f"{role} document drift decision differs from its "
+                 "task-level live-byte receipt")
+
         if result.get("inconclusive") is True:
             _require(result.get("schema_valid") in (None, False),
                      "source-drift placeholder must not claim a valid schema")
             _require(result.get("parsed_response") in (None, {}),
                      "source-drift placeholder must not contain a score")
             drift = result.get("source_drift")
-            _require(isinstance(drift, dict) and drift.get("material") is True,
-                     "inconclusive judge result lacks material source drift")
+            _validate_source_drift_decision(
+                drift, task, seal_doc, seal_files, True)
             _require(result.get("scoring_seed") == scoring_seed,
                      "source-drift placeholder scoring seed mismatch")
             _require(not list(root.glob(
@@ -928,7 +1047,10 @@ def _verify_judge_manifest(path, role, config, schedule_manifest_path,
             _require(isinstance(attempt, int) and not isinstance(attempt, bool)
                      and 1 <= attempt <= JUDGE_RETRY_POLICY["max_attempts"],
                      f"{role} accepted result has an invalid attempt number")
-            task = expected_docs[doc_name]["task"]
+            if result.get("source_drift") is not None:
+                _validate_source_drift_decision(
+                    result["source_drift"], task, seal_doc, seal_files,
+                    False)
             task_name = Path(task).name
             context_assoc = seal_doc.get("task_contexts", {}).get(task_name)
             context_value = result.get("task_context")
@@ -1146,6 +1268,7 @@ def _verify_judge_manifest(path, role, config, schedule_manifest_path,
         ),
         "notes_digest": _sha256(json.dumps(
             drift_notes, sort_keys=True).encode("utf-8")),
+        "tasks": drift_identity["tasks"],
     }
     _require(identity.get("drift_decisions") == expected_drift_decisions,
              f"{role} drift decisions differ from judge records")
@@ -1277,12 +1400,12 @@ def aggregate(config_path, manifest_path, scorer_manifest_path,
     scorer, scorer_hashes, scorer_attempt_hashes = _verify_judge_manifest(
         scorer_manifest_path, "scorer", config,
         manifest_path, expected_docs, schema_digests["scorer"],
-        seal_doc, seal_files, seal_manifest_path,
+        seal_doc, seal_files, seal_manifest_path, schedule["tasks"],
     )
     verifier, verifier_hashes, verifier_attempt_hashes = _verify_judge_manifest(
         verifier_manifest_path, "verifier", config,
         manifest_path, expected_docs, schema_digests["verifier"],
-        seal_doc, seal_files, seal_manifest_path,
+        seal_doc, seal_files, seal_manifest_path, schedule["tasks"],
     )
     scorer_state = _strict_json_path(
         scorer_manifest_path, "scorer scoring manifest")
@@ -1296,24 +1419,39 @@ def aggregate(config_path, manifest_path, scorer_manifest_path,
         Path(scorer_manifest_path).resolve(),
         Path(verifier_manifest_path).resolve(),
     }
-    discovered_batch_manifests = {
-        path.resolve() for path in scorer_root.glob(
-            "scoring-*-all-docs-manifest.json")
+    allowed_scoring_names = {
+        path.name for path in supplied_batch_manifests
+    } | {
+        ".scoring-scorer-all-docs.lock",
+        ".scoring-verifier-all-docs.lock",
     }
-    _require(discovered_batch_manifests == supplied_batch_manifests,
-             "judging directory must contain exactly the supplied scorer "
-             "and verifier all-docs manifests")
+    discovered_scoring_material = {
+        path for pattern in ("scoring-*", ".scoring-*")
+        for path in scorer_root.glob(pattern)
+    }
+    _require(
+        {path.name for path in discovered_scoring_material}
+        == allowed_scoring_names
+        and {path.resolve() for path in discovered_scoring_material
+             if path.name.endswith("-manifest.json")}
+        == supplied_batch_manifests
+        and all(runner._safe_single_link_regular_file(path)
+                for path in discovered_scoring_material),
+        "judging directory must contain exactly the supplied v2 scorer/"
+        "verifier manifests and their expected role locks",
+    )
     registered_judge_ids = {
         scorer_state.get("scoring_id"), verifier_state.get("scoring_id")}
     _require(len(registered_judge_ids) == 2
              and all(isinstance(item, str) and item
                      for item in registered_judge_ids),
              "scorer and verifier must have two distinct registered batch ids")
-    foreign_judge_material = {
-        item.name for item in scorer_root.glob("judge-*")
-        if not any(item.name.startswith(f"judge-{scoring_id}-")
-                   for scoring_id in registered_judge_ids)
-    }
+    foreign_judge_material = set()
+    for item in scorer_root.glob("judge-*"):
+        match = re.match(r"^judge-([0-9a-f]{8})-", item.name)
+        if (not item.is_file() or item.is_symlink() or match is None
+                or match.group(1) not in registered_judge_ids):
+            foreign_judge_material.add(item.name)
     _require(not foreign_judge_material,
              "judging directory contains material from an unregistered "
              "scoring batch")
@@ -1325,6 +1463,18 @@ def aggregate(config_path, manifest_path, scorer_manifest_path,
                               "snapshots", "source_drift", "inconclusive")),
             "scorer and verifier immutable document bindings differ",
         )
+    scorer_task_drift = scorer_state["identity"]["drift_decisions"]["tasks"]
+    verifier_task_drift = verifier_state["identity"]["drift_decisions"]["tasks"]
+    _require(scorer_task_drift == verifier_task_drift,
+             "scorer and verifier task-level live-source receipts differ")
+    scheduled_by_basename = {
+        Path(task).name: task for task in schedule["tasks"]
+    }
+    drift_tasks = {
+        scheduled_by_basename[name]
+        for name, note in scorer_task_drift.items()
+        if note.get("material") is True
+    }
     for task in schedule["tasks"]:
         task_docs = [
             name for name, row in expected_docs.items()
@@ -1338,7 +1488,7 @@ def aggregate(config_path, manifest_path, scorer_manifest_path,
             }, sort_keys=True, allow_nan=False)
             for name in task_docs
         }
-        _require(len(task_bindings) == 1,
+        _require(not task_docs or len(task_bindings) == 1,
                  "judge source bindings differ within one task")
 
     scorer_inconclusive = {
@@ -1349,7 +1499,6 @@ def aggregate(config_path, manifest_path, scorer_manifest_path,
     }
     _require(scorer_inconclusive == verifier_inconclusive,
              "scorer and verifier disagree on source-drift exclusions")
-    drift_tasks = set()
     for doc in scorer_inconclusive:
         drift_tasks.add(expected_docs[doc]["task"])
     for task in drift_tasks:
@@ -1369,6 +1518,29 @@ def aggregate(config_path, manifest_path, scorer_manifest_path,
     _require(len(ablations) == 1,
              "pilot-v2 requires exactly one no-subagent ablation arm")
     ablation = ablations[0]
+    tasks_by_basename = {}
+    for task in tasks:
+        basename = Path(task).name
+        _require(basename not in tasks_by_basename,
+                 "schedule task basenames must be unique")
+        tasks_by_basename[basename] = task
+    configured_ablation_tasks = config["arms"][ablation].get(
+        "schedule_tasks")
+    _require(isinstance(configured_ablation_tasks, list)
+             and len(configured_ablation_tasks) == 2
+             and len({Path(task).name
+                      for task in configured_ablation_tasks}) == 2,
+             "ablation must configure exactly two distinct tasks")
+    configured_ablation_basenames = [
+        Path(task).name for task in configured_ablation_tasks
+    ]
+    _require(all(name in tasks_by_basename
+                 for name in configured_ablation_basenames),
+             "configured ablation tasks are outside the schedule")
+    resolved_ablation_tasks = [
+        tasks_by_basename[name] for name in configured_ablation_basenames
+    ]
+    resolved_ablation_task_set = set(resolved_ablation_tasks)
 
     excluded = {}
     for task in tasks:
@@ -1400,7 +1572,7 @@ def aggregate(config_path, manifest_path, scorer_manifest_path,
         for arm in arms:
             cell = _task_arm_rows(rows, task, arm)
             expected_count = (REPLICATES if arm != ablation
-                              or task in config["arms"][ablation]["schedule_tasks"]
+                              or task in resolved_ablation_task_set
                               else 0)
             _require(len(cell) == expected_count,
                      "schedule does not contain exactly three final runs per cell")
@@ -1610,25 +1782,15 @@ def aggregate(config_path, manifest_path, scorer_manifest_path,
     else:
         verdict = "indeterminate"
 
-    configured_ablation_tasks = config["arms"][ablation].get("schedule_tasks")
-    _require(isinstance(configured_ablation_tasks, list)
-             and len(configured_ablation_tasks) == 2
-             and len(set(configured_ablation_tasks)) == 2,
-             "ablation must configure exactly two distinct tasks")
-    _require(set(configured_ablation_tasks) <= set(tasks),
-             "configured ablation tasks are outside the schedule")
-    configured_ablation_basenames = [
-        Path(task).name for task in configured_ablation_tasks
-    ]
     _require(seal_doc.get("ablation_tasks")
              == configured_ablation_basenames,
              "sealed ablation tasks differ from runtime config")
     ablation_failures = _arm_failures(
-        rows, ablation, set(configured_ablation_tasks), verifier
+        rows, ablation, resolved_ablation_task_set, verifier
     )
     ablation_task_output = {}
     ablation_task_passes = []
-    for task in configured_ablation_tasks:
+    for task in resolved_ablation_tasks:
         passed = False
         metrics_doc = None
         if task not in excluded:

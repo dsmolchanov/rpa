@@ -18,6 +18,7 @@ import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
@@ -149,7 +150,7 @@ def check(name, condition, notes, detail=""):
 
 def make_v2_fixture(workspace, label, repo, target_sha,
                     run_mode="normal", judge_mode="judge-auto",
-                    execute_run=True, timeout=20):
+                    execute_run=True, timeout=20, task_numbers=(1,)):
     """Create one private-shaped, nonstandard v2 schedule in a temp tree.
 
     Task, context, and prompt contents remain synthetic.  The fixture still
@@ -191,8 +192,14 @@ def make_v2_fixture(workspace, label, repo, target_sha,
         )
         tasks[number] = task_path
         contexts[number] = context_path
-    task = tasks[1]
-    context = contexts[1]
+    selected_numbers = list(task_numbers)
+    if (not selected_numbers or len(set(selected_numbers))
+            != len(selected_numbers)
+            or any(number not in tasks for number in selected_numbers)):
+        raise ValueError("task_numbers must name distinct fixture tasks")
+    selected_tasks = [tasks[number] for number in selected_numbers]
+    task = selected_tasks[0]
+    context = contexts[selected_numbers[0]]
     prompts = {
         "scorer": sealed / f"scorer-prompt-v2-{label}.md",
         "verifier": sealed / f"verifier-prompt-v2-{label}.md",
@@ -281,9 +288,9 @@ def make_v2_fixture(workspace, label, repo, target_sha,
             for number in range(1, 7)
         },
         "ablation_tasks": ["holdout-v2-1.md", "holdout-v2-3.md"],
-        "snapshot_sources": {
-            "snapshots/reference.txt":
-                "https://example.invalid/reference.txt",
+            "snapshot_sources": {
+                "snapshots/reference.txt":
+                "https://example.invalid/live/reference.txt",
         },
         "judge_config": {
             "judge_backend_cmd": config["judge_backend_cmd"],
@@ -297,7 +304,9 @@ def make_v2_fixture(workspace, label, repo, target_sha,
         seal.read_bytes()).hexdigest()
 
     schedule = runner.make_schedule(
-        config, [str(task)], 1, seed=31, allow_nonstandard=True)
+        config, [str(path) for path in selected_tasks], 1,
+        seed=runner.PILOT_V2_SCHEDULE_SEED,
+        allow_nonstandard=True)
     schedule_path = root / "schedule.json"
     schedule_path.write_text(
         json.dumps(schedule, indent=2) + "\n", encoding="utf-8")
@@ -308,7 +317,7 @@ def make_v2_fixture(workspace, label, repo, target_sha,
     if execute_run:
         manifest = runner.run_schedule(
             config, schedule_path, {"mock-repo": str(repo)}, run_output,
-            [str(task)],
+            [str(path) for path in selected_tasks],
         )
         for result in manifest["results"]:
             gate = result.get("artifact_gate")
@@ -323,7 +332,12 @@ def make_v2_fixture(workspace, label, repo, target_sha,
         "root": root,
         "config": config,
         "task": task,
+        "tasks": selected_tasks,
         "context": context,
+        "contexts": {
+            tasks[number].name: contexts[number]
+            for number in selected_numbers
+        },
         "prompts": prompts,
         "schemas": schemas,
         "rubric": rubric,
@@ -340,11 +354,13 @@ def make_v2_fixture(workspace, label, repo, target_sha,
 
 def score_v2_fixture(fixture, role, output_dir):
     kwargs = {
-        "scoring_seed": 37,
+        "scoring_seed": (runner.PILOT_V2_VERIFIER_SEED
+                         if role == "verifier"
+                         else runner.PILOT_V2_SCORER_SEED),
         "manifest_path": fixture["manifest_path"],
-        "score_task_paths": [str(fixture["task"])],
+        "score_task_paths": [str(task) for task in fixture["tasks"]],
         "task_contexts": {
-            fixture["task"].name: str(fixture["context"]),
+            name: str(path) for name, path in fixture["contexts"].items()
         },
         "seal_manifest_path": fixture["seal"],
     }
@@ -356,18 +372,22 @@ def score_v2_fixture(fixture, role, output_dir):
     )
 
 
-def make_v2_aggregation_fixture(workspace, target_sha):
+def make_v2_aggregation_fixture(workspace, target_sha, label="golden"):
     """Build the complete standard 42-run/84-judge aggregation population.
 
     No backend is launched: deterministic immutable records stand in for the
     already-completed private round.  The topology, seal, schedule, all-docs
     judge manifests, and every aggregation binding are production-shaped.
     """
-    root = Path(workspace) / "v2-aggregate-golden"
+    root = Path(workspace) / f"v2-aggregate-{label}"
     sealed = root / "sealed"
     output = root / "output"
     sealed.mkdir(parents=True)
     output.mkdir()
+    (output / ".run-schedule.lock").write_text("", encoding="utf-8")
+    for role in ("scorer", "verifier"):
+        (output / f".scoring-{role}-all-docs.lock").write_text(
+            "", encoding="utf-8")
 
     task_meta = (
         (1, "1 — subsystem-explanation", "dsmolchanov/rpa"),
@@ -487,7 +507,7 @@ def make_v2_aggregation_fixture(workspace, target_sha):
         }
     config["arms"]["ablation"].update({
         "forbid_subagents": True,
-        "schedule_tasks": [str(tasks[0]), str(tasks[2])],
+        "schedule_tasks": [tasks[0].name, tasks[2].name],
     })
 
     materials = [*tasks, *contexts.values(), *prompts.values(),
@@ -512,7 +532,7 @@ def make_v2_aggregation_fixture(workspace, target_sha):
         "ablation_tasks": [tasks[0].name, tasks[2].name],
         "snapshot_sources": {
             "snapshots/reference.txt":
-                "https://example.invalid/reference.txt",
+                "https://example.invalid/live/reference.txt",
         },
         "judge_config": {
             "judge_backend_cmd": judge_cmd,
@@ -535,7 +555,8 @@ def make_v2_aggregation_fixture(workspace, target_sha):
     )
 
     task_paths = [str(task) for task in tasks]
-    schedule = runner.make_schedule(config, task_paths, 3, seed=7301)
+    schedule = runner.make_schedule(
+        config, task_paths, 3, seed=runner.PILOT_V2_SCHEDULE_SEED)
     schedule_path = root / "schedule.json"
     schedule_path.write_text(
         json.dumps(schedule, indent=2, sort_keys=True) + "\n",
@@ -583,6 +604,7 @@ def make_v2_aggregation_fixture(workspace, target_sha):
             "schedule_index": entry["index"],
             "failure_kind": None,
             "artifact_gate": "passed",
+            "raw_sha256": hashlib.sha256(doc_bytes).hexdigest(),
             "artifact_sha256": hashlib.sha256(doc_bytes).hexdigest(),
             "config_digest": runner.config_digest(config),
             "task_sha256": schedule["task_digests"][entry["task"]],
@@ -611,6 +633,7 @@ def make_v2_aggregation_fixture(workspace, target_sha):
             "attempts": 1,
             "artifact_sha256": record["artifact_sha256"],
             "diagnostic_sha256": None,
+            "raw_sha256": record["raw_sha256"],
             "task_sha256": record["task_sha256"],
             "protocol_version": runner.PILOT_V2_PROTOCOL_VERSION,
             "environment_policy_id": (
@@ -643,6 +666,16 @@ def make_v2_aggregation_fixture(workspace, target_sha):
     )
 
     docs = [f"run-{summary['run_id']}-anon.md" for summary in summaries]
+    unchanged_drift = {
+        "changed": [],
+        "material": False,
+        "adjudications": {},
+    }
+    drift_by_doc = {
+        doc_name: unchanged_drift
+        for doc_name in docs
+        if Path(doc_task[doc_name]).name == "holdout-v2-5.md"
+    }
     judge_manifests = {}
     parsed_by_role = {
         "scorer": judge_contract.validate_response(
@@ -652,11 +685,14 @@ def make_v2_aggregation_fixture(workspace, target_sha):
     }
     for role in ("scorer", "verifier"):
         scoring_id = "5c0ae001" if role == "scorer" else "5c0ae002"
+        scoring_seed = (runner.PILOT_V2_SCORER_SEED
+                        if role == "scorer"
+                        else runner.PILOT_V2_VERIFIER_SEED)
         schema_sha = hashlib.sha256(schemas[role].read_bytes()).hexdigest()
         response = json.dumps(parsed_by_role[role], sort_keys=True)
         results = []
         presentation_order = list(range(len(docs)))
-        random.Random(991).shuffle(presentation_order)
+        random.Random(scoring_seed).shuffle(presentation_order)
         for presentation_index, doc_index in enumerate(presentation_order):
             doc_name = docs[doc_index]
             session_id = f"aggregate-{role}-{presentation_index:02d}"
@@ -704,7 +740,7 @@ def make_v2_aggregation_fixture(workspace, target_sha):
                 "cwd": str(
                     root / f"isolated-{role}-{presentation_index}-workdir"),
                 "backend_version": config["backend_version"],
-                "scoring_seed": 991,
+                "scoring_seed": scoring_seed,
                 "scheduled": True,
                 "judge_model": config["judge_model"],
                 "judge_effort": config["judge_effort"],
@@ -720,7 +756,7 @@ def make_v2_aggregation_fixture(workspace, target_sha):
                     str(snapshot.parent)
                     if Path(doc_task[doc_name]).name
                     == "holdout-v2-5.md" else None),
-                "source_drift": None,
+                "source_drift": drift_by_doc.get(doc_name),
                 "raw_stream_limit_bytes": (
                     runner.PILOT_V2_MAX_RAW_STREAM_BYTES),
                 "raw_stream_sidecar": str(
@@ -769,7 +805,7 @@ def make_v2_aggregation_fixture(workspace, target_sha):
             )).write_bytes(canonical_path.read_bytes())
             results.append(result)
         identity = {
-            "scoring_seed": 991,
+            "scoring_seed": scoring_seed,
             "manifest": str(manifest_path),
             "config_digest": runner.config_digest(config),
             "role": role,
@@ -777,7 +813,19 @@ def make_v2_aggregation_fixture(workspace, target_sha):
             "docs": docs,
             "drift_decisions": {
                 "inconclusive": [],
-                "notes_digest": hashlib.sha256(b"{}").hexdigest(),
+                "notes_digest": hashlib.sha256(json.dumps(
+                    drift_by_doc, sort_keys=True).encode("utf-8")).hexdigest(),
+                "tasks": {
+                    "holdout-v2-5.md": {
+                        "observed_sha256": {
+                            "snapshots/reference.txt": hashlib.sha256(
+                                snapshot.read_bytes()).hexdigest(),
+                        },
+                        "changed": [],
+                        "material": False,
+                        "adjudications": {},
+                    },
+                },
             },
             "protocol_version": runner.PILOT_V2_PROTOCOL_VERSION,
             "environment_policy_id": (
@@ -2320,11 +2368,13 @@ def run_preflight():
             fixture = make_v2_fixture(
                 ws, f"wrong-run-{material_kind}", artifact_repo,
                 artifact_sha, execute_run=False)
+            fixture["run_output"].mkdir(parents=True, exist_ok=True)
+            (fixture["run_output"] / ".run-schedule.lock").write_text(
+                "", encoding="utf-8")
             if material_kind == "directory-record":
                 wrong_path = fixture["run_output"] / "run-deadbeefcafe.json"
-                wrong_path.mkdir(parents=True)
+                wrong_path.mkdir()
             else:
-                fixture["run_output"].mkdir(parents=True)
                 wrong_path = (
                     fixture["run_output"] / "run-deadbeefcafe-raw.md")
                 wrong_path.symlink_to(
@@ -2801,13 +2851,18 @@ def run_preflight():
         plan_text = (HERE.parents[3] / "thoughts" / "shared" / "plans"
                      / "2026-07-26-thinking-model-modernization-pilot.md"
                      ).read_text(encoding="utf-8")
+        seal_registration_recorded = (
+            step5.REGISTERED_SEAL_PACKAGE_SHA256
+            == step5.PENDING_SEAL_PACKAGE_SHA256
+            or step5.REGISTERED_SEAL_PACKAGE_SHA256 in plan_text)
         constants_in_plan = (
             step5.FROZEN_CANDIDATE_SHA in plan_text
-            and step5.REGISTERED_SEAL_PACKAGE_SHA256 in plan_text
+            and seal_registration_recorded
             and all(h in plan_text
                     for h in step5.REGISTERED_INSTALL_SHA256.values())
             and step5.REGISTERED_BACKEND_VERSION in plan_text)
         good_cfg = {
+            "protocol_version": step5.REGISTERED_PROTOCOL_VERSION,
             "nonstandard_config": False,
             "arms": {
                 arm: {
@@ -2817,7 +2872,8 @@ def run_preflight():
                     "effort": step5.REGISTERED_EFFORT,
                     "entrypoint": step5.REGISTERED_ENTRYPOINT,
                     **({"forbid_subagents": True,
-                        "schedule_tasks": ["holdout-1.md", "holdout-2.md"]}
+                        "schedule_tasks": list(
+                            step5.REGISTERED_ABLATION_TASKS)}
                        if arm == "ablation" else {}),
                 }
                 for arm, sha in step5.REGISTERED_INSTALL_SHA256.items()
@@ -2830,23 +2886,47 @@ def run_preflight():
             "backend_cmd": list(step5.REGISTERED_BACKEND_CMD),
             "backend_version_cmd": list(
                 step5.REGISTERED_BACKEND_VERSION_CMD),
+            "judge_backend_cmd": list(
+                step5.REGISTERED_JUDGE_BACKEND_CMD),
             "workflow_abort_exit_codes": list(
                 step5.REGISTERED_ABORT_EXIT_CODES),
             "seal_package_sha256": step5.REGISTERED_SEAL_PACKAGE_SHA256,
             "backend_version": step5.REGISTERED_BACKEND_VERSION,
             "timeout_seconds": step5.REGISTERED_TIMEOUT_SECONDS,
             "max_infra_retries": step5.REGISTERED_MAX_INFRA_RETRIES,
-            "judge_model": step5.RECORDED_JUDGE_MODEL,
-            "judge_effort": step5.RECORDED_JUDGE_EFFORT,
+            "max_judge_attempts": step5.REGISTERED_MAX_JUDGE_ATTEMPTS,
+            "judge_model": step5.REGISTERED_JUDGE_MODEL,
+            "judge_effort": step5.REGISTERED_JUDGE_EFFORT,
+            "drift_fetch_cmd": list(step5.REGISTERED_DRIFT_FETCH_CMD),
         }
         clean_problems, clean_warnings = step5.validate_config(good_cfg)
+        pending_registration = (
+            step5.REGISTERED_SEAL_PACKAGE_SHA256
+            == step5.PENDING_SEAL_PACKAGE_SHA256)
+
+        def non_pending_problems(config):
+            return [
+                problem for problem in step5.validate_config(config)[0]
+                if "all-zero placeholder" not in problem
+            ]
+
+        registration_state_ok = (
+            not non_pending_problems(good_cfg)
+            and bool(clean_problems) == pending_registration
+            and (not clean_problems
+                 or all("all-zero placeholder" in problem
+                        for problem in clean_problems)))
         drifts = []
         for mutate in (
+            lambda c: c.update(protocol_version=1),
             lambda c: c["arms"]["candidate"].update(model="opus"),
             lambda c: c["arms"]["baseline"].update(effort="medium"),
             lambda c: c["arms"]["candidate"].update(sha256="0" * 64),
             lambda c: c["arms"]["ablation"].pop("forbid_subagents"),
-            lambda c: c.update(seal_package_sha256="0" * 64),
+            lambda c: c["arms"]["ablation"].update(
+                schedule_tasks=list(reversed(
+                    step5.REGISTERED_ABLATION_TASKS))),
+            lambda c: c.update(seal_package_sha256="f" * 64),
             lambda c: c.update(backend_version="9.9.9"),
             lambda c: c.update(nonstandard_config=True),
             lambda c: c.pop("sandbox_cmd"),
@@ -2865,10 +2945,16 @@ def run_preflight():
                 "{effort}", "--plugin-dir", "{installation}"]),
             lambda c: c.update(backend_version_cmd=["claude", "-v"]),
             lambda c: c.update(workflow_abort_exit_codes=[2]),
+            lambda c: c.update(max_judge_attempts=2),
+            lambda c: c.update(judge_backend_cmd=[
+                "claude", "--model", "opus", "--effort", "{effort}"]),
+            lambda c: c.update(judge_model="claude-opus-4"),
+            lambda c: c.update(judge_effort="medium"),
+            lambda c: c.update(drift_fetch_cmd=["cp", "{url}", "{dest}"]),
         ):
             cfg = json.loads(json.dumps(good_cfg))
             mutate(cfg)
-            drifts.append(bool(step5.validate_config(cfg)[0]))
+            drifts.append(bool(non_pending_problems(cfg)))
         # Scored phases require a durable gate receipt for THIS host
         # and config: `--phases schedule,runs` cannot bypass the
         # mandatory gates (on macOS, the host-side sandbox check), and
@@ -2921,23 +3007,492 @@ def run_preflight():
             receipt_dir / "preflight.txt")
         write_receipt(artifacts=forged)
         not_passing = step5.gate_receipt_problem(receipt_dir, good_cfg)
-        shuffled = [f"/sealed/{n}" for n in
-                    ("holdout-4.md", "holdout-1.md", "holdout-6.md",
-                     "holdout-2.md", "holdout-5.md", "holdout-3.md")]
+        real_task = ws / "step5-real-preflight-task.md"
+        real_task.write_text(
+            "---\ntarget-repo: rpa\n"
+            f"target-sha: {step5.FROZEN_CANDIDATE_SHA}\n---\n\n"
+            "## Task prompt\n\nSynthetic real-backend probe.\n",
+            encoding="utf-8")
+        original_verified_seal = step5.verified_seal
+        fake_seal_files = {
+            name: hashlib.sha256(
+                f"sealed task {index}".encode("utf-8")).hexdigest()
+            for index, name in enumerate(step5.REGISTERED_HOLDOUT_TASKS)
+        }
+        step5.verified_seal = lambda _config: (
+            ws / "synthetic-seal-manifest.json", {}, fake_seal_files)
+        missing_real_receipt = step5.real_preflight_receipt_problem(
+            receipt_dir, good_cfg, real_task)
+        real_root = step5.real_preflight_root(receipt_dir)
+        dev_cfg = json.loads(json.dumps(good_cfg))
+        dev_cfg["nonstandard_config"] = True
+        real_root.mkdir()
+        dev_cfg_path = real_root / "dev-config.json"
+        dev_cfg_path.write_text(
+            json.dumps(dev_cfg), encoding="utf-8")
+        real_task_digest = step5.file_digest(real_task)
+        real_record_paths = {}
+        for index, arm in enumerate(sorted(
+                step5.REGISTERED_INSTALL_SHA256), start=1):
+            arm_root = real_root / arm
+            arm_root.mkdir()
+            record_path = arm_root / f"run-{index:012x}.json"
+            real_nodes = [{
+                "model": step5.REGISTERED_MODEL,
+                "effort": step5.REGISTERED_EFFORT,
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "tool_calls": 1,
+                "subagent": False,
+                "subagent_launches": 0,
+            }]
+            record_path.write_text(json.dumps({
+                "run_id": f"{index:012x}",
+                "arm": arm,
+                "task": str(real_task.resolve()),
+                "attempt": 1,
+                "config_digest": runner.config_digest(dev_cfg),
+                "task_sha256": real_task_digest,
+                "protocol_version": step5.REGISTERED_PROTOCOL_VERSION,
+                "environment_policy_id": (
+                    step5.REGISTERED_ENVIRONMENT_POLICY_ID),
+                "status": "completed",
+                "failure_kind": None,
+                "artifact_gate": "passed",
+                "backend_version": step5.REGISTERED_BACKEND_VERSION,
+                "installation_sha256": (
+                    step5.REGISTERED_INSTALL_SHA256[arm]),
+                "registered_model": step5.REGISTERED_MODEL,
+                "effort": step5.REGISTERED_EFFORT,
+                "entrypoint": step5.REGISTERED_ENTRYPOINT,
+                "target_sha": step5.FROZEN_CANDIDATE_SHA,
+                "telemetry_eligible": True,
+                "telemetry_exclusion_reason": None,
+                "nodes": real_nodes,
+                "accounting": runner.account(real_nodes),
+                "wall_seconds": 1.0,
+                "effort_capture": "per_node",
+            }), encoding="utf-8")
+            real_record_paths[arm] = record_path
+        real_records = step5._verified_real_preflight_records(
+            real_root, dev_cfg, real_task)
+        real_receipt = {
+            "identity": step5.real_preflight_identity(good_cfg, real_task),
+            "dev_config": str(dev_cfg_path.resolve()),
+            "records": real_records,
+        }
+        step5.real_preflight_receipt_path(receipt_dir).write_text(
+            json.dumps(real_receipt), encoding="utf-8")
+        valid_real_receipt = step5.real_preflight_receipt_problem(
+            receipt_dir, good_cfg, real_task)
+        candidate_record = real_record_paths["candidate"]
+        candidate_bytes = candidate_record.read_bytes()
+        candidate_record.write_text("{}\n", encoding="utf-8")
+        tampered_real_receipt = step5.real_preflight_receipt_problem(
+            receipt_dir, good_cfg, real_task)
+        candidate_record.write_bytes(candidate_bytes)
+        candidate_doc = json.loads(candidate_bytes.decode("utf-8"))
+        candidate_doc["attempt"] = 2
+        candidate_record.write_text(
+            json.dumps(candidate_doc), encoding="utf-8")
+        try:
+            step5._verified_real_preflight_records(
+                real_root, dev_cfg, real_task)
+            noncontiguous_real_rejected = False
+        except runner.InfraFailure:
+            noncontiguous_real_rejected = True
+        candidate_doc["attempt"] = 1
+        candidate_doc["backend_version"] = "drifted backend"
+        candidate_record.write_text(
+            json.dumps(candidate_doc), encoding="utf-8")
+        try:
+            step5._verified_real_preflight_records(
+                real_root, dev_cfg, real_task)
+            runtime_real_rejected = False
+        except runner.InfraFailure:
+            runtime_real_rejected = True
+        candidate_record.write_bytes(candidate_bytes)
+        renamed_seal_files = dict(fake_seal_files)
+        renamed_seal_files[step5.REGISTERED_HOLDOUT_TASKS[0]] = (
+            real_task_digest)
+        step5.verified_seal = lambda _config: (
+            ws / "synthetic-seal-manifest.json", {}, renamed_seal_files)
+        try:
+            step5.real_preflight_identity(good_cfg, real_task)
+            renamed_holdout_rejected = False
+        except runner.InfraFailure:
+            renamed_holdout_rejected = True
+        step5.verified_seal = original_verified_seal
+        real_gate_ok = (
+            missing_real_receipt and not valid_real_receipt
+            and tampered_real_receipt
+            and noncontiguous_real_rejected and runtime_real_rejected
+            and renamed_holdout_rejected
+            and step5._real_preflight_final_ok("baseline", {
+                "status": "workflow_failure",
+                "failure_kind": "artifact_contract",
+                "artifact_gate": "failed",
+            })
+            and not step5._real_preflight_final_ok("candidate", {
+                "status": "workflow_failure",
+                "failure_kind": "artifact_contract",
+                "artifact_gate": "failed",
+            })
+            and "next" not in step5.DEFAULT_PHASES
+            and "real-preflight" in step5.DEFAULT_PHASES
+            and getattr(step5, "phase_" + "real-preflight".replace(
+                "-", "_")) is step5.phase_real_preflight)
+        canonical_task_dir = ws / "step5-canonical-tasks"
+        canonical_task_dir.mkdir()
+        for task_name in step5.REGISTERED_HOLDOUT_TASKS:
+            (canonical_task_dir / task_name).write_text(
+                "synthetic canonicalization input\n", encoding="utf-8")
+        shuffled = [str(canonical_task_dir / n) for n in (
+            step5.REGISTERED_HOLDOUT_TASKS[3],
+            step5.REGISTERED_HOLDOUT_TASKS[0],
+            step5.REGISTERED_HOLDOUT_TASKS[5],
+            step5.REGISTERED_HOLDOUT_TASKS[1],
+            step5.REGISTERED_HOLDOUT_TASKS[4],
+            step5.REGISTERED_HOLDOUT_TASKS[2],
+        )]
         ordered, order_problem = step5.canonical_tasks(shuffled)
         canonical_ok = (
             not order_problem
             and [Path(x).name for x in ordered]
             == list(step5.REGISTERED_HOLDOUT_TASKS)
-            and step5.canonical_tasks(shuffled[:5])[1]
-            and step5.canonical_tasks(shuffled + shuffled[:1])[1])
+            and bool(step5.canonical_tasks(shuffled[:5])[1])
+            and bool(step5.canonical_tasks(shuffled + shuffled[:1])[1]))
+        relative_tasks = [
+            os.path.relpath(canonical_task_dir / name, Path.cwd())
+            for name in step5.REGISTERED_HOLDOUT_TASKS
+        ]
+        relative_ordered, relative_problem = step5.canonical_tasks(
+            relative_tasks)
+        canonical_ok &= (
+            not relative_problem
+            and relative_ordered
+            == [str((canonical_task_dir / name).resolve())
+                for name in step5.REGISTERED_HOLDOUT_TASKS])
+        mapped_repos = {}
+        mapped_shas = {}
+        for name in runner.REGISTERED_HOLDOUT_REPOS:
+            mapped_repos[name], mapped_shas[name] = make_git_repo(
+                ws, f"step5-map-{name}")
+        normalized_repos, repo_normalize_problem = step5.canonical_repos([
+            f"NeoMenu={os.path.relpath(mapped_repos['neomenu'], Path.cwd())}",
+            f"rpa={os.path.relpath(mapped_repos['rpa'], Path.cwd())}",
+            "livekit-voice-agent="
+            f"{os.path.relpath(mapped_repos['livekit-voice-agent'], Path.cwd())}",
+        ])
+        _duplicate_repos, duplicate_repo_problem = step5.canonical_repos([
+            f"rpa={mapped_repos['rpa']}",
+            f"dsmolchanov/rpa={mapped_repos['rpa']}",
+            f"neomenu={mapped_repos['neomenu']}",
+            f"livekit-voice-agent={mapped_repos['livekit-voice-agent']}",
+        ])
+        _missing_repos, missing_repo_problem = step5.canonical_repos([
+            f"rpa={mapped_repos['rpa']}",
+            f"neomenu={mapped_repos['neomenu']}",
+        ])
+        canonical_ok &= (
+            not repo_normalize_problem
+            and normalized_repos == [
+                "livekit-voice-agent="
+                f"{mapped_repos['livekit-voice-agent'].resolve()}",
+                f"neomenu={mapped_repos['neomenu'].resolve()}",
+                f"rpa={mapped_repos['rpa'].resolve()}",
+            ]
+            and bool(duplicate_repo_problem)
+            and bool(missing_repo_problem))
+        pin_tasks = []
+        pin_repos = (
+            "rpa", "livekit-voice-agent", "neomenu",
+            "rpa", "livekit-voice-agent", "neomenu",
+        )
+        pin_task_dir = ws / "step5-pin-tasks"
+        pin_task_dir.mkdir()
+        for index, repo_name in enumerate(pin_repos, start=1):
+            pin_task = pin_task_dir / f"holdout-v2-{index}.md"
+            pin_task.write_text(
+                f"---\ntarget-repo: {repo_name}\n"
+                f"target-sha: {mapped_shas[repo_name]}\n---\n",
+                encoding="utf-8")
+            pin_tasks.append(str(pin_task))
+        pin_mapping_ok = not step5.task_repo_pin_problem(
+            pin_tasks, normalized_repos)
+        pin_task_bytes = Path(pin_tasks[-1]).read_bytes()
+        Path(pin_tasks[-1]).write_text(
+            pin_task_bytes.decode("utf-8").replace(
+                mapped_shas[pin_repos[-1]], "0" * 40),
+            encoding="utf-8")
+        pin_mapping_ok &= bool(step5.task_repo_pin_problem(
+            pin_tasks, normalized_repos))
+        Path(pin_tasks[-1]).write_bytes(pin_task_bytes)
+        scoped_cfg = json.loads(json.dumps(good_cfg))
+        scoped_cfg["arms"]["ablation"]["schedule_tasks"] = list(
+            step5.REGISTERED_ABLATION_TASKS)
+        ablation_scope_ok = not step5.ablation_scope_problem(
+            scoped_cfg, ordered)
+        scoped_cfg["arms"]["ablation"]["schedule_tasks"].reverse()
+        ablation_scope_ok &= bool(step5.ablation_scope_problem(
+            scoped_cfg, ordered))
+        scoped_cfg["arms"]["ablation"]["schedule_tasks"] = [
+            str(Path(ordered[index]).resolve()) for index in (0, 2)
+        ]
+        ablation_scope_ok &= bool(step5.ablation_scope_problem(
+            scoped_cfg, ordered))
+
+        # Protocol v2 has one population per judge role. Selection is by
+        # immutable artifact-gate binding, not by terminal status: documents
+        # produced before timeout/abort stay in, while a true no-document
+        # outcome stays out. There is no legacy primary/diagnostic command.
+        population_dir = ws / "step5-v2-population"
+        population_dir.mkdir()
+        population_specs = (
+            ("111111111111", "completed", "passed", "anon", None),
+            ("222222222222", "workflow_failure", "failed", "diag",
+             "timeout"),
+            ("333333333333", "workflow_failure", "passed", "anon",
+             "abort"),
+        )
+        population_results = []
+        for run_id, status, gate, suffix, failure_kind in population_specs:
+            artifact = population_dir / f"run-{run_id}-{suffix}.md"
+            artifact.write_text(
+                f"# anonymized synthetic document {run_id}\n",
+                encoding="utf-8")
+            digest = step5.file_digest(artifact)
+            population_results.append({
+                "run_id": run_id,
+                "status": status,
+                "failure_kind": failure_kind,
+                "artifact_gate": gate,
+                "artifact_sha256": digest if suffix == "anon" else None,
+                "diagnostic_sha256": digest if suffix == "diag" else None,
+                "protocol_version": step5.REGISTERED_PROTOCOL_VERSION,
+                "environment_policy_id": (
+                    step5.REGISTERED_ENVIRONMENT_POLICY_ID),
+                "telemetry_policy_id": (
+                    step5.REGISTERED_AGGREGATION_POLICY["telemetry"]),
+                "telemetry_eligible": True,
+                "telemetry_exclusion_reason": None,
+            })
+        population_results.append({
+            "run_id": "444444444444",
+            "status": "workflow_failure",
+            "failure_kind": "missing_document",
+            "artifact_gate": "not_evaluated",
+            "artifact_sha256": None,
+            "diagnostic_sha256": None,
+            "protocol_version": step5.REGISTERED_PROTOCOL_VERSION,
+            "environment_policy_id": (
+                step5.REGISTERED_ENVIRONMENT_POLICY_ID),
+            "telemetry_policy_id": (
+                step5.REGISTERED_AGGREGATION_POLICY["telemetry"]),
+            "telemetry_eligible": True,
+            "telemetry_exclusion_reason": None,
+        })
+        all_docs = step5.all_docs_population(
+            population_results, population_dir)
+        population_names = [Path(path).name for path in all_docs]
+
+        def population_refused(mutator):
+            rows = json.loads(json.dumps(population_results))
+            mutator(rows)
+            try:
+                step5.all_docs_population(rows, population_dir)
+            except runner.InfraFailure:
+                return True
+            return False
+
+        population_fail_closed = all((
+            population_refused(lambda rows: rows[0].update(
+                diagnostic_sha256="a" * 64)),
+            population_refused(lambda rows: rows[1].update(
+                environment_policy_id="ambient-env")),
+            population_refused(lambda rows: rows[3].update(
+                artifact_sha256="b" * 64)),
+            population_refused(lambda rows: rows.append(rows[0])),
+        ))
+        command_root = ws / "step5-v2-command-seal"
+        (command_root / "snapshots").mkdir(parents=True)
+        command_tasks = []
+        archetypes = (
+            "1 subsystem", "2 largest", "3 narrow where-is",
+            "4 thoughts", "5 external", "6 premise",
+        )
+        repos = ("rpa", "livekit-voice-agent", "neomenu",
+                 "rpa", "livekit-voice-agent", "neomenu")
+        for index, name in enumerate(step5.REGISTERED_HOLDOUT_TASKS):
+            task_path = command_root / name
+            task_path.write_text(
+                "---\n"
+                f"archetype: \"{archetypes[index]}\"\n"
+                f"target-repo: {repos[index]}\n"
+                f"target-sha: {'a' * 40}\n"
+                + ("external-snapshots: true\n" if index == 4 else "")
+                + "---\n\n## Task prompt\n\n"
+                + "Synthetic operator task.\n",
+                encoding="utf-8")
+            command_tasks.append(str(task_path))
+        drift_path = ws / "step5-v2-drift.json"
+        drift_path.write_text(json.dumps({
+            step5.REGISTERED_HOLDOUT_TASKS[4]: {"changed": {}},
+        }), encoding="utf-8")
+        command_args = SimpleNamespace(
+            config=str(ws / "operator-config.json"),
+            out=str(ws / "operator-output"),
+            tasks=command_tasks,
+            repos=["rpa=/clones/rpa", "livekit-voice-agent=/clones/livekit",
+                   "neomenu=/clones/neomenu"],
+            scorer_seed=step5.REGISTERED_SCORER_SEED,
+            verifier_seed=step5.REGISTERED_VERIFIER_SEED,
+            drift_report=str(drift_path),
+        )
+        command_seal = {
+            "task_contexts": {
+                name: f"contexts/{name}.context.md"
+                for name in step5.REGISTERED_HOLDOUT_TASKS
+            },
+            "judge_prompts": {
+                "scorer": "judge/scorer.md",
+                "verifier": "judge/verifier.md",
+            },
+            "snapshot_sources": {
+                "snapshots/reference.txt":
+                    "https://example.invalid/reference.txt",
+            },
+            "files": {
+                "snapshots/reference.txt": "1" * 64,
+            },
+        }
+        judge_commands, aggregate_command = step5._next_commands(
+            command_args, ws / "schedule-manifest.json", all_docs,
+            command_root / "seal-manifest.json", command_seal)
+        drift_path.write_text(json.dumps({
+            step5.REGISTERED_HOLDOUT_TASKS[4]: {"changed": {}},
+            step5.REGISTERED_HOLDOUT_TASKS[0]: {"changed": {}},
+        }), encoding="utf-8")
+        try:
+            step5._next_commands(
+                command_args, ws / "schedule-manifest.json", all_docs,
+                command_root / "seal-manifest.json", command_seal)
+            extra_drift_entry_rejected = False
+        except runner.InfraFailure:
+            extra_drift_entry_rejected = True
+        drift_path.write_text(json.dumps({
+            step5.REGISTERED_HOLDOUT_TASKS[4]: {"changed": {}},
+        }), encoding="utf-8")
+        seed_args = SimpleNamespace(
+            seed=step5.REGISTERED_SCHEDULE_SEED,
+            scorer_seed=step5.REGISTERED_SCORER_SEED,
+            verifier_seed=step5.REGISTERED_VERIFIER_SEED,
+            drift_report=str(drift_path),
+        )
+        fixed_seeds_ok = not step5.phase_seed_problem(
+            ["schedule", "next"], seed_args)
+        for field in ("seed", "scorer_seed", "verifier_seed"):
+            drifted_seed_args = SimpleNamespace(**vars(seed_args))
+            setattr(drifted_seed_args, field,
+                    getattr(drifted_seed_args, field) + 1)
+            fixed_seeds_ok &= bool(step5.phase_seed_problem(
+                ["schedule", "next"], drifted_seed_args))
+        missing_drift_args = SimpleNamespace(**vars(seed_args))
+        missing_drift_args.drift_report = None
+        fixed_seeds_ok &= bool(step5.phase_seed_problem(
+            ["schedule", "next"], missing_drift_args))
+        registered_schedule = {
+            "seed": step5.REGISTERED_SCHEDULE_SEED,
+            "entries": ["synthetic-fixed-order"],
+        }
+        registered_schedule_path = ws / "step5-registered-schedule.json"
+        registered_schedule_path.write_text(
+            json.dumps(registered_schedule), encoding="utf-8")
+        schedule_calls = []
+        original_make_schedule = runner.make_schedule
+
+        def fixed_schedule_probe(config, tasks, replicates, seed,
+                                 allow_nonstandard=False):
+            schedule_calls.append((config, tasks, replicates, seed,
+                                   allow_nonstandard))
+            return registered_schedule
+
+        runner.make_schedule = fixed_schedule_probe
+        try:
+            schedule_seed_ok = (
+                step5.verify_registered_schedule(
+                    registered_schedule_path, good_cfg, command_tasks)
+                == registered_schedule)
+            drifted_schedule = json.loads(json.dumps(registered_schedule))
+            drifted_schedule["seed"] += 1
+            registered_schedule_path.write_text(
+                json.dumps(drifted_schedule), encoding="utf-8")
+            try:
+                step5.verify_registered_schedule(
+                    registered_schedule_path, good_cfg, command_tasks)
+            except runner.InfraFailure:
+                schedule_seed_ok &= True
+            else:
+                schedule_seed_ok = False
+        finally:
+            runner.make_schedule = original_make_schedule
+        schedule_seed_ok &= (
+            len(schedule_calls) == 2
+            and all(call[2:] == (
+                step5.REGISTERED_REPLICATES,
+                step5.REGISTERED_SCHEDULE_SEED,
+                False,
+            ) for call in schedule_calls))
+
+        def option_values(command, start, end):
+            first = command.index(start) + 1
+            last = command.index(end, first)
+            return command[first:last]
+
+        exact_commands_ok = (
+            len(judge_commands) == 2
+            and all(option_values(command, "--docs", "--manifest")
+                    == all_docs for command in judge_commands)
+            and all("--diagnostic-axis" not in command
+                    for command in judge_commands)
+            and all("--task-snapshots" in command
+                    and "--drift-report" in command
+                    for command in judge_commands)
+            and "--evidence-repos" not in judge_commands[0]
+            and "--evidence-repos" in judge_commands[1]
+            and judge_commands[0][
+                judge_commands[0].index("--scoring-seed") + 1]
+            == str(step5.REGISTERED_SCORER_SEED)
+            and judge_commands[1][
+                judge_commands[1].index("--scoring-seed") + 1]
+            == str(step5.REGISTERED_VERIFIER_SEED)
+            and aggregate_command[0] == sys.executable
+            and aggregate_command[1]
+            == str((HERE / "aggregate_results.py").resolve())
+            and "scoring-scorer-all-docs-manifest.json" in " ".join(
+                aggregate_command)
+            and "scoring-verifier-all-docs-manifest.json" in " ".join(
+                aggregate_command))
         ok &= check(
             "step-5 driver restates the freeze record and refuses drift",
-            constants_in_plan and not clean_problems
+            constants_in_plan and registration_state_ok
             and not clean_warnings and all(drifts)
             and missing_receipt and not fresh_receipt
             and stale_receipt and partial_gates and no_transcripts
-            and tampered and not_passing and canonical_ok,
+            and tampered and not_passing and canonical_ok
+            and ablation_scope_ok and pin_mapping_ok and real_gate_ok,
+            notes)
+
+        ok &= check(
+            "step-5 v2 handoff derives one all-doc population and two roles",
+            population_names == [
+                "run-111111111111-anon.md",
+                "run-222222222222-diag.md",
+                "run-333333333333-anon.md",
+            ]
+            and population_fail_closed and exact_commands_ok
+            and fixed_seeds_ok and schedule_seed_ok
+            and extra_drift_entry_rejected,
             notes)
 
         ok &= check(
@@ -3053,7 +3608,9 @@ def run_preflight():
             record["status"] == "infra_failure"
             and "cannot read task file" in record.get("failure", "")
             and record_bin["status"] == "infra_failure"
-            and "cannot read task file" in record_bin.get("failure", ""),
+            and ("cannot read task file" in record_bin.get("failure", "")
+                 or "cannot decode task file"
+                 in record_bin.get("failure", "")),
             notes)
 
         config, _ = build_config(ws, "normal")
@@ -3249,12 +3806,15 @@ def run_preflight():
                          scoring_seed=5, allow_unscheduled=True)
             bindoc_ok = False
         except runner.InfraFailure as exc:
-            bindoc_ok = "cannot read scoring document" in str(exc)
+            bindoc_ok = ("cannot read scoring document" in str(exc)
+                         or "scoring document is not UTF-8" in str(exc))
         ok &= check(
             "missing or non-UTF-8 scoring document classified as infra",
             missdoc_ok and bindoc_ok, notes)
         malformed_out = ws / "judge-batch-malformed"
         malformed_out.mkdir()
+        (malformed_out / ".scoring-scorer-primary.lock").write_text(
+            "", encoding="utf-8")
         (malformed_out / "scoring-scorer-primary-manifest.json").write_text(
             "{truncated", encoding="utf-8")
         try:
@@ -3467,6 +4027,30 @@ def run_preflight():
             atomic_target.read_text(encoding="utf-8") == "new-content"
             and not list(ws.glob("atomic-test.json.*")),
             notes)
+        unsafe_atomic_results = []
+        for target_kind in ("symlink", "directory", "hardlink"):
+            target = ws / f"unsafe-atomic-{target_kind}.json"
+            victim = ws / f"unsafe-atomic-{target_kind}-victim.txt"
+            victim.write_text("unchanged\n", encoding="utf-8")
+            if target_kind == "symlink":
+                target.symlink_to(victim)
+            elif target_kind == "directory":
+                target.mkdir()
+            else:
+                os.link(victim, target)
+            try:
+                runner.atomic_write_text(target, "replacement\n")
+                unsafe_atomic_blocked = False
+            except runner.InfraFailure:
+                unsafe_atomic_blocked = True
+            unsafe_atomic_results.append(
+                unsafe_atomic_blocked
+                and victim.read_text(encoding="utf-8") == "unchanged\n"
+                and (target.is_dir() if target_kind == "directory" else True)
+            )
+        ok &= check(
+            "atomic writer refuses symlink/directory/hardlink targets",
+            all(unsafe_atomic_results), notes)
         ok &= check(
             "scorer judge role recorded (blind, evidence-free)",
             all(r.get("role") == "scorer" for r in results),
@@ -3723,14 +4307,17 @@ def run_preflight():
             "<html>SEALED-SNAPSHOT A</html>\n", encoding="utf-8")
         (refetch_bad / "b" / "index.html").write_text(
             "<html>THE LIVE SOURCE CHANGED</html>\n", encoding="utf-8")
+        bad_live_sha = hashlib.sha256(
+            (refetch_bad / "b" / "index.html").read_bytes()).hexdigest()
         os.environ["MOCK_LIVE_ROOT"] = str(refetch_ok)
         drift_ok_file = ws / "drift-unchanged.json"
         drift_ok_file.write_text(json.dumps(
-            {task_snap.name: {}}), encoding="utf-8")
+            {task_snap.name: {"changed": {}}}), encoding="utf-8")
         drift_bad_file = ws / "drift-drifted.json"
         drift_bad_file.write_text(json.dumps(
             {task_snap.name: {"changed": {
                 "external-snapshots/b/index.html": {
+                    "observed_sha256": bad_live_sha,
                     "material": True,
                     "rationale": "ground-truth section replaced"}}}}),
             encoding="utf-8")
@@ -3738,13 +4325,41 @@ def run_preflight():
         drift_cosmetic_file.write_text(json.dumps(
             {task_snap.name: {"changed": {
                 "external-snapshots/b/index.html": {
+                    "observed_sha256": bad_live_sha,
                     "material": False,
                     "rationale": "footer timestamp only; ground-truth "
                                  "sections untouched"}}}}),
             encoding="utf-8")
         drift_noadj_file = ws / "drift-noadj.json"
         drift_noadj_file.write_text(json.dumps(
-            {task_snap.name: {}}), encoding="utf-8")
+            {task_snap.name: {"changed": {}}}), encoding="utf-8")
+        drift_list_file = ws / "drift-list.json"
+        drift_list_file.write_text(json.dumps(
+            {task_snap.name: {"changed": []}}), encoding="utf-8")
+        drift_numeric_file = ws / "drift-numeric-rationale.json"
+        drift_numeric_file.write_text(json.dumps(
+            {task_snap.name: {"changed": {
+                "external-snapshots/b/index.html": {
+                    "observed_sha256": bad_live_sha,
+                    "material": True, "rationale": 7}}}}),
+            encoding="utf-8")
+        drift_extra_file = ws / "drift-extra-field.json"
+        drift_extra_file.write_text(json.dumps(
+            {task_snap.name: {"changed": {
+                "external-snapshots/b/index.html": {
+                    "observed_sha256": bad_live_sha,
+                    "material": True,
+                    "rationale": "material section changed",
+                    "extra": "not registered"}}}}),
+            encoding="utf-8")
+        drift_wrong_sha_file = ws / "drift-wrong-observed-sha.json"
+        drift_wrong_sha_file.write_text(json.dumps(
+            {task_snap.name: {"changed": {
+                "external-snapshots/b/index.html": {
+                    "observed_sha256": "0" * 64,
+                    "material": True,
+                    "rationale": "material section changed"}}}}),
+            encoding="utf-8")
         drift_claim_file = ws / "drift-claim.json"
         drift_claim_file.write_text(json.dumps(
             {task_snap.name: {"status": "unchanged"}}), encoding="utf-8")
@@ -3817,7 +4432,55 @@ def run_preflight():
         ok &= check(
             "external-context scoring requires the pre-score drift report",
             nodrift_ok, notes)
+        os.environ["MOCK_LIVE_ROOT"] = str(refetch_ok)
+        malformed_unchanged_ok = True
+        malformed_unchanged_outputs = []
+        for label, malformed_path in (
+            ("list", drift_list_file),
+            ("stale", drift_bad_file),
+        ):
+            malformed_out = ws / f"judge-drift-{label}-unchanged"
+            malformed_unchanged_outputs.append(malformed_out)
+            try:
+                runner.score(
+                    snap_cfg, snap_docs, judge, malformed_out,
+                    scoring_seed=5, manifest_path=snap_manifest_path,
+                    score_task_paths=[str(task_snap)], task_contexts=snap_ctx,
+                    seal_manifest_path=seal_file,
+                    task_snapshots={task_snap.name: str(snap_dir)},
+                    drift_report_path=malformed_path)
+                malformed_unchanged_ok = False
+            except runner.InfraFailure:
+                malformed_unchanged_ok &= not list(
+                    malformed_out.glob("scoring-*-manifest.json"))
+        malformed_changed_ok = True
         os.environ["MOCK_LIVE_ROOT"] = str(refetch_bad)
+        for label, malformed_path in (
+            ("list", drift_list_file),
+            ("numeric", drift_numeric_file),
+            ("extra", drift_extra_file),
+            ("wrong-sha", drift_wrong_sha_file),
+        ):
+            malformed_out = ws / f"judge-drift-malformed-{label}"
+            try:
+                runner.score(
+                    snap_cfg, snap_docs, judge, malformed_out,
+                    scoring_seed=5, manifest_path=snap_manifest_path,
+                    score_task_paths=[str(task_snap)],
+                    task_contexts=snap_ctx, seal_manifest_path=seal_file,
+                    task_snapshots={task_snap.name: str(snap_dir)},
+                    drift_report_path=malformed_path)
+                malformed_changed_ok = False
+            except runner.InfraFailure:
+                malformed_changed_ok &= not list(
+                    malformed_out.glob("scoring-*-manifest.json"))
+        ok &= check(
+            "malformed drift maps/rationales refused before batch creation",
+            malformed_unchanged_ok
+            and all(not list(path.glob("scoring-*-manifest.json"))
+                    for path in malformed_unchanged_outputs)
+            and malformed_changed_ok,
+            notes)
         drift_res = runner.score(
             snap_cfg, snap_docs, judge, ws / "judge-drifted",
             scoring_seed=5, manifest_path=snap_manifest_path,
@@ -3851,6 +4514,7 @@ def run_preflight():
         drift_bad2_file.write_text(json.dumps(
             {task_snap.name: {"changed": {
                 "external-snapshots/b/index.html": {
+                    "observed_sha256": bad_live_sha,
                     "material": True,
                     "rationale": "a different recorded basis"}}}}),
             encoding="utf-8")
@@ -3883,7 +4547,7 @@ def run_preflight():
                          drift_report_path=drift_claim_file)
             claim_ok = False
         except runner.InfraFailure as exc:
-            claim_ok = "materiality adjudication" in str(exc)
+            claim_ok = "exactly one `changed` object" in str(exc)
         ok &= check(
             "bare drift status claim refused (harness computes drift)",
             claim_ok, notes)
@@ -3928,7 +4592,7 @@ def run_preflight():
                          drift_report_path=drift_noadj_file)
             noadj_ok = False
         except runner.InfraFailure as exc:
-            noadj_ok = "materiality adjudication" in str(exc)
+            noadj_ok = "must adjudicate exactly" in str(exc)
         ok &= check(
             "changed source without materiality adjudication refused",
             noadj_ok, notes)
@@ -3960,7 +4624,7 @@ def run_preflight():
                          drift_report_path=drift_local_file)
             localcopy_ok = False
         except runner.InfraFailure as exc:
-            localcopy_ok = "not accepted" in str(exc)
+            localcopy_ok = "exactly one `changed` object" in str(exc)
         ok &= check(
             "local re-fetched copies refused (harness fetches live sources)",
             localcopy_ok, notes)
@@ -4128,12 +4792,16 @@ def run_preflight():
         # state is namespaced by role AND axis, so a completed primary
         # batch must not reject the diagnostic batch.
         shared_out = ws / "judge-diag-shared"
-        pres_shared = runner.score(cfg_diag, [], judge, shared_out,
-                                   scoring_seed=7,
-                                   manifest_path=man_diag_path,
-                                   score_task_paths=[str(task_s)],
-                                   task_contexts=sched_ctx,
-                                   seal_manifest_path=seal_file)
+        try:
+            runner.score(cfg_diag, [], judge, shared_out,
+                         scoring_seed=7,
+                         manifest_path=man_diag_path,
+                         score_task_paths=[str(task_s)],
+                         task_contexts=sched_ctx,
+                         seal_manifest_path=seal_file)
+            empty_v1_refused = False
+        except runner.InfraFailure as exc:
+            empty_v1_refused = "protocol-v2" in str(exc)
         dres_shared = runner.score(cfg_diag, diag_docs, judge, shared_out,
                                    scoring_seed=7,
                                    manifest_path=man_diag_path,
@@ -4159,7 +4827,7 @@ def run_preflight():
             and len(dres) == len(diag_recs)
             and all(r.get("axis") == "diagnostic" for r in dres)
             and unclosed_masked_ok
-            and pres_shared == []
+            and empty_v1_refused
             and len(dres_shared) == len(diag_recs)
             and diag_verif_refused,
             notes)
@@ -4221,7 +4889,8 @@ def run_preflight():
                          task_contexts=sched_ctx)
             sdrift_ok = False
         except runner.InfraFailure as exc:
-            sdrift_ok = "task file changed" in str(exc)
+            sdrift_ok = ("task file changed" in str(exc)
+                         or "schedule does not match" in str(exc))
         Path(task_s).write_bytes(original_task_bytes)
         ok &= check(
             "task drift refused at scoring time (binding to scheduled task)",
@@ -4269,6 +4938,9 @@ def run_preflight():
         partial_schedule = json.loads(
             v2_partial["schedule"].read_text(encoding="utf-8"))
         partial_digest = runner.schedule_digest(partial_schedule)
+        v2_partial["run_output"].mkdir(parents=True, exist_ok=True)
+        (v2_partial["run_output"] / ".run-schedule.lock").write_text(
+            "", encoding="utf-8")
         partial_first = runner.run_task(
             v2_partial["config"], "mock", v2_partial["task"], repo_v2,
             v2_partial["run_output"], attempt=1, scheduled=True,
@@ -4349,6 +5021,8 @@ def run_preflight():
         ambiguous_journal = v2_ambiguous["run_output"] / (
             "run-a11b1a11b1a1.json")
         ambiguous_journal.parent.mkdir(parents=True)
+        (v2_ambiguous["run_output"] / ".run-schedule.lock").write_text(
+            "", encoding="utf-8")
         ambiguous_journal.write_text(json.dumps({
             "run_id": "a11b1a11b1a1",
             "arm": "mock",
@@ -4461,6 +5135,456 @@ def run_preflight():
             and not list(v2_concurrent_run["run_output"].glob("*.claim")),
             notes)
 
+        # A resume must scan ALL future slots before launching the first
+        # unfinished one.  Slot 1 material is valid-shaped and immutable, but
+        # it is out of order while the manifest prefix is empty.
+        v2_future_run = make_v2_fixture(
+            ws, "run-future-slot", repo_v2, sha_v2, execute_run=False,
+            task_numbers=(1, 2))
+        future_run_receipt = (
+            v2_future_run["root"] / "unexpected-run-launch.txt")
+        v2_future_run["config"]["backend_cmd"].extend([
+            "--prompt-receipt-file", str(future_run_receipt)])
+        future_schedule = runner.make_schedule(
+            v2_future_run["config"],
+            [str(task) for task in v2_future_run["tasks"]],
+            1, seed=runner.PILOT_V2_SCHEDULE_SEED,
+            allow_nonstandard=True)
+        v2_future_run["schedule"].write_text(
+            json.dumps(future_schedule, indent=2) + "\n", encoding="utf-8")
+        future_entry = future_schedule["entries"][1]
+        v2_future_run["run_output"].mkdir()
+        (v2_future_run["run_output"] / ".run-schedule.lock").write_text(
+            "", encoding="utf-8")
+        (v2_future_run["run_output"] / "run-f001f001f001.json").write_text(
+            json.dumps({
+                "run_id": "f001f001f001",
+                "arm": future_entry["arm"],
+                "task": future_entry["task"],
+                "attempt": 1,
+                "status": "infra_failure",
+                "blocking": False,
+                "protocol_version": runner.PILOT_V2_PROTOCOL_VERSION,
+                "environment_policy_id": (
+                    runner.PILOT_V2_ENVIRONMENT_POLICY_ID),
+                "schedule_digest": runner.schedule_digest(future_schedule),
+                "schedule_index": future_entry["index"],
+                "task_sha256": future_schedule["task_digests"][
+                    future_entry["task"]],
+                "config_digest": runner.config_digest(
+                    v2_future_run["config"]),
+            }, indent=2) + "\n", encoding="utf-8")
+        try:
+            runner.run_schedule(
+                v2_future_run["config"], v2_future_run["schedule"],
+                {"mock-repo": str(repo_v2)},
+                v2_future_run["run_output"],
+                [str(task) for task in v2_future_run["tasks"]],
+            )
+            future_run_blocked = False
+        except runner.InfraFailure as exc:
+            future_run_blocked = "out_of_order_future_material" in str(exc)
+        ok &= check(
+            "protocol-v2 future run slot refused before earlier backend call",
+            future_run_blocked and not future_run_receipt.exists()
+            and (v2_future_run["run_output"]
+                 / "schedule-entry-1-terminal-invalid.json").exists(),
+            notes)
+
+        v2_tampered_prefix = make_v2_fixture(
+            ws, "run-tampered-prefix", repo_v2, sha_v2,
+            run_mode="normal", task_numbers=(1, 2))
+        prefix_manifest = json.loads(
+            v2_tampered_prefix["manifest_path"].read_text(encoding="utf-8"))
+        removed_summary = prefix_manifest["results"].pop()
+        prefix_manifest["complete"] = False
+        v2_tampered_prefix["manifest_path"].write_text(
+            json.dumps(prefix_manifest, indent=2) + "\n", encoding="utf-8")
+        for removed_path in v2_tampered_prefix["run_output"].glob(
+                f"run-{removed_summary['run_id']}*"):
+            removed_path.unlink()
+        retained_summary = prefix_manifest["results"][0]
+        retained_record_path = v2_tampered_prefix["run_output"] / (
+            f"run-{retained_summary['run_id']}.json")
+        retained_record = json.loads(
+            retained_record_path.read_text(encoding="utf-8"))
+        retained_record["nodes"][0]["model"] = "tampered-model"
+        retained_record_path.write_text(
+            json.dumps(retained_record, indent=2) + "\n", encoding="utf-8")
+        before_prefix_records = list(
+            v2_tampered_prefix["run_output"].glob("run-*.json"))
+        try:
+            runner.run_schedule(
+                v2_tampered_prefix["config"],
+                v2_tampered_prefix["schedule"],
+                {"mock-repo": str(repo_v2)},
+                v2_tampered_prefix["run_output"],
+                [str(task) for task in v2_tampered_prefix["tasks"]])
+            tampered_prefix_blocked = False
+        except runner.InfraFailure as exc:
+            tampered_prefix_blocked = "runtime/accounting" in str(exc)
+        ok &= check(
+            "tampered completed prefix blocks the next scheduled backend",
+            tampered_prefix_blocked
+            and len(list(v2_tampered_prefix["run_output"].glob(
+                "run-*.json"))) == len(before_prefix_records), notes)
+
+        prefix_state_results = []
+        for prefix_case in (
+                "missing-artifact", "attempt-mismatch", "blocking-prior"):
+            prefix_fixture = make_v2_fixture(
+                ws, f"run-prefix-{prefix_case}", repo_v2, sha_v2,
+                run_mode="normal", task_numbers=(1, 2))
+            prefix_doc = json.loads(
+                prefix_fixture["manifest_path"].read_text(encoding="utf-8"))
+            removed = prefix_doc["results"].pop()
+            prefix_doc["complete"] = False
+            for removed_path in prefix_fixture["run_output"].glob(
+                    f"run-{removed['run_id']}*"):
+                removed_path.unlink()
+            retained = prefix_doc["results"][0]
+            retained_path = prefix_fixture["run_output"] / (
+                f"run-{retained['run_id']}.json")
+            retained_record = json.loads(
+                retained_path.read_text(encoding="utf-8"))
+            expected_fragment = None
+            if prefix_case == "missing-artifact":
+                (prefix_fixture["run_output"]
+                 / f"run-{retained['run_id']}-anon.md").unlink()
+                expected_fragment = "lacks its bound anon artifact"
+            elif prefix_case == "attempt-mismatch":
+                prefix_doc["results"][0]["attempts"] = 2
+                expected_fragment = "final attempt differs"
+            else:
+                prefix_doc["results"][0]["attempts"] = 2
+                retained_record["attempt"] = 2
+                retained_path.write_text(
+                    json.dumps(retained_record, indent=2) + "\n",
+                    encoding="utf-8")
+                prior = json.loads(json.dumps(retained_record))
+                prior.update({
+                    "run_id": "b10cb10cb10c",
+                    "attempt": 1,
+                    "status": "infra_failure",
+                    "blocking": True,
+                    "failure": "synthetic blocking infrastructure state",
+                    "failure_kind": None,
+                    "artifact_gate": "not_evaluated",
+                    "raw_sha256": None,
+                    "artifact_sha256": None,
+                    "diagnostic_sha256": None,
+                    "telemetry_eligible": False,
+                    "telemetry_exclusion_reason":
+                        "not_a_final_workflow_outcome",
+                })
+                (prefix_fixture["run_output"]
+                 / "run-b10cb10cb10c.json").write_text(
+                     json.dumps(prior, indent=2) + "\n", encoding="utf-8")
+                expected_fragment = "terminally invalid"
+            prefix_fixture["manifest_path"].write_text(
+                json.dumps(prefix_doc, indent=2) + "\n", encoding="utf-8")
+            before_bound_records = {
+                path.name for path in prefix_fixture["run_output"].glob(
+                    "run-*.json")
+            }
+            try:
+                runner.run_schedule(
+                    prefix_fixture["config"], prefix_fixture["schedule"],
+                    {"mock-repo": str(repo_v2)},
+                    prefix_fixture["run_output"],
+                    [str(task) for task in prefix_fixture["tasks"]])
+                prefix_blocked = False
+            except runner.InfraFailure as exc:
+                prefix_blocked = expected_fragment in str(exc)
+            after_bound_records = {
+                path.name for path in prefix_fixture["run_output"].glob(
+                    "run-*.json")
+            }
+            prefix_state_results.append(
+                prefix_blocked
+                and after_bound_records == before_bound_records)
+        ok &= check(
+            "completed-prefix artifacts, attempt parity, and blocking "
+            "history fail closed before the next backend",
+            all(prefix_state_results), notes)
+
+        v2_foreign_claim = make_v2_fixture(
+            ws, "run-foreign-claim", repo_v2, sha_v2, execute_run=False)
+        foreign_claim_receipt = (
+            v2_foreign_claim["root"] / "unexpected-run-launch.txt")
+        v2_foreign_claim["config"]["backend_cmd"].extend([
+            "--prompt-receipt-file", str(foreign_claim_receipt)])
+        foreign_claim_schedule = runner.make_schedule(
+            v2_foreign_claim["config"],
+            [str(v2_foreign_claim["task"])], 1,
+            seed=runner.PILOT_V2_SCHEDULE_SEED,
+            allow_nonstandard=True)
+        v2_foreign_claim["schedule"].write_text(
+            json.dumps(foreign_claim_schedule, indent=2) + "\n",
+            encoding="utf-8")
+        v2_foreign_claim["run_output"].mkdir()
+        (v2_foreign_claim["run_output"] / ".run-schedule.lock").write_text(
+            "", encoding="utf-8")
+        (v2_foreign_claim["run_output"]
+         / "schedule-entry-99.claim").write_text("{}\n", encoding="utf-8")
+        try:
+            runner.run_schedule(
+                v2_foreign_claim["config"], v2_foreign_claim["schedule"],
+                {"mock-repo": str(repo_v2)},
+                v2_foreign_claim["run_output"],
+                [str(v2_foreign_claim["task"])],
+            )
+            foreign_claim_blocked = False
+        except runner.InfraFailure as exc:
+            foreign_claim_blocked = "foreign_schedule_material" in str(exc)
+        ok &= check(
+            "unknown schedule-entry material refused before backend call",
+            foreign_claim_blocked and not foreign_claim_receipt.exists(),
+            notes)
+
+        unsafe_run_lock_results = []
+        for lock_kind in ("symlink", "directory", "hardlink"):
+            lock_fixture = make_v2_fixture(
+                ws, f"run-lock-{lock_kind}", repo_v2, sha_v2,
+                execute_run=False)
+            lock_fixture["run_output"].mkdir()
+            lock_path = lock_fixture["run_output"] / ".run-schedule.lock"
+            victim = lock_fixture["root"] / "lock-victim.txt"
+            victim.write_text("must remain intact\n", encoding="utf-8")
+            if lock_kind == "symlink":
+                lock_path.symlink_to(victim)
+            elif lock_kind == "directory":
+                lock_path.mkdir()
+            else:
+                os.link(victim, lock_path)
+            try:
+                runner.run_schedule(
+                    lock_fixture["config"], lock_fixture["schedule"],
+                    {"mock-repo": str(repo_v2)}, lock_fixture["run_output"],
+                    [str(lock_fixture["task"])])
+                unsafe_lock_blocked = False
+            except runner.InfraFailure:
+                unsafe_lock_blocked = True
+            unsafe_run_lock_results.append(
+                unsafe_lock_blocked
+                and victim.read_text(encoding="utf-8")
+                == "must remain intact\n"
+                and not list(lock_fixture["run_output"].glob("run-*")))
+        ok &= check(
+            "run lock refuses symlink/directory/hardlink without mutation",
+            all(unsafe_run_lock_results), notes)
+
+        missing_run_lock = make_v2_fixture(
+            ws, "run-lock-missing-with-state", repo_v2, sha_v2,
+            run_mode="normal")
+        missing_run_lock_path = (
+            missing_run_lock["run_output"] / ".run-schedule.lock")
+        missing_run_lock_path.unlink()
+        run_state_before = {
+            path.name: path.read_bytes()
+            for path in missing_run_lock["run_output"].glob("run-*.json")
+        }
+        try:
+            runner.run_schedule(
+                missing_run_lock["config"], missing_run_lock["schedule"],
+                {"mock-repo": str(repo_v2)}, missing_run_lock["run_output"],
+                [str(task) for task in missing_run_lock["tasks"]])
+            missing_run_lock_blocked = False
+        except runner.InfraFailure as exc:
+            missing_run_lock_blocked = "persistent lock is missing" in str(exc)
+        ok &= check(
+            "missing persistent run lock with state is never recreated",
+            missing_run_lock_blocked and not missing_run_lock_path.exists()
+            and run_state_before == {
+                path.name: path.read_bytes()
+                for path in missing_run_lock["run_output"].glob("run-*.json")
+            }, notes)
+
+        wrong_seed_fixture = make_v2_fixture(
+            ws, "wrong-schedule-seed", repo_v2, sha_v2,
+            execute_run=False)
+        try:
+            runner.make_schedule(
+                wrong_seed_fixture["config"],
+                [str(wrong_seed_fixture["task"])], 1,
+                seed=runner.PILOT_V2_SCHEDULE_SEED + 1,
+                allow_nonstandard=True)
+            wrong_schedule_seed_rejected = False
+        except runner.InfraFailure as exc:
+            wrong_schedule_seed_rejected = "registered schedule seed" in str(exc)
+        ok &= check(
+            "protocol-v2 rejects alternate self-consistent schedule seed",
+            wrong_schedule_seed_rejected, notes)
+
+        v2_reversed_docs = make_v2_fixture(
+            ws, "reversed-docs", repo_v2, sha_v2,
+            run_mode="normal", judge_mode="judge-auto",
+            task_numbers=(1, 2))
+        try:
+            runner.score(
+                v2_reversed_docs["config"],
+                list(reversed(v2_reversed_docs["docs"])),
+                v2_reversed_docs["prompts"]["scorer"],
+                v2_reversed_docs["root"] / "judges",
+                scoring_seed=runner.PILOT_V2_SCORER_SEED,
+                manifest_path=v2_reversed_docs["manifest_path"],
+                score_task_paths=[
+                    str(task) for task in v2_reversed_docs["tasks"]],
+                task_contexts={
+                    name: str(path)
+                    for name, path in v2_reversed_docs["contexts"].items()
+                },
+                seal_manifest_path=v2_reversed_docs["seal"],
+            )
+            reversed_docs_blocked = False
+        except runner.InfraFailure as exc:
+            reversed_docs_blocked = "canonical manifest order" in str(exc)
+        ok &= check(
+            "protocol-v2 all-doc input order is canonical before shuffle",
+            reversed_docs_blocked
+            and not v2_reversed_docs["prompt_receipt"].exists(), notes)
+
+        v2_raw_mutation = make_v2_fixture(
+            ws, "raw-mutation", repo_v2, sha_v2,
+            run_mode="normal", judge_mode="judge-auto")
+        raw_result = v2_raw_mutation["manifest"]["results"][0]
+        raw_path = v2_raw_mutation["run_output"] / (
+            f"run-{raw_result['run_id']}-raw.md")
+        raw_path.write_bytes(raw_path.read_bytes() + b"\nmutated\n")
+        try:
+            score_v2_fixture(
+                v2_raw_mutation, "scorer",
+                v2_raw_mutation["root"] / "judges")
+            raw_mutation_blocked = False
+        except runner.InfraFailure as exc:
+            raw_mutation_blocked = "raw run artifact digest" in str(exc)
+        ok &= check(
+            "raw artifact mutation blocks protocol-v2 judge prelaunch",
+            raw_mutation_blocked
+            and not v2_raw_mutation["prompt_receipt"].exists(), notes)
+
+        v2_missing_contradiction = make_v2_fixture(
+            ws, "missing-doc-contradiction", repo_v2, sha_v2,
+            run_mode="no-artifact", judge_mode="judge-auto")
+        missing_summary = v2_missing_contradiction["manifest"]["results"][0]
+        missing_run_id = missing_summary["run_id"]
+        missing_record_path = v2_missing_contradiction["run_output"] / (
+            f"run-{missing_run_id}.json")
+        missing_record = json.loads(
+            missing_record_path.read_text(encoding="utf-8"))
+        contradiction_bytes = b"# impossible produced document\n"
+        contradiction_sha = hashlib.sha256(contradiction_bytes).hexdigest()
+        for suffix in ("raw", "anon"):
+            (v2_missing_contradiction["run_output"] / (
+                f"run-{missing_run_id}-{suffix}.md"
+            )).write_bytes(contradiction_bytes)
+        missing_record.update({
+            "artifact_gate": "passed",
+            "raw_sha256": contradiction_sha,
+            "artifact_sha256": contradiction_sha,
+            "artifact_defects": [],
+        })
+        missing_record_path.write_text(
+            json.dumps(missing_record, indent=2) + "\n", encoding="utf-8")
+        missing_manifest = json.loads(
+            v2_missing_contradiction["manifest_path"].read_text(
+                encoding="utf-8"))
+        missing_manifest["results"][0].update({
+            "artifact_gate": "passed",
+            "raw_sha256": contradiction_sha,
+            "artifact_sha256": contradiction_sha,
+        })
+        v2_missing_contradiction["manifest_path"].write_text(
+            json.dumps(missing_manifest, indent=2) + "\n", encoding="utf-8")
+        contradiction_doc = v2_missing_contradiction["run_output"] / (
+            f"run-{missing_run_id}-anon.md")
+        try:
+            runner.score(
+                v2_missing_contradiction["config"], [contradiction_doc],
+                v2_missing_contradiction["prompts"]["scorer"],
+                v2_missing_contradiction["root"] / "judges",
+                scoring_seed=runner.PILOT_V2_SCORER_SEED,
+                manifest_path=v2_missing_contradiction["manifest_path"],
+                score_task_paths=[str(v2_missing_contradiction["task"])],
+                task_contexts={
+                    v2_missing_contradiction["task"].name:
+                        str(v2_missing_contradiction["context"]),
+                },
+                seal_manifest_path=v2_missing_contradiction["seal"],
+            )
+            missing_contradiction_blocked = False
+        except runner.InfraFailure as exc:
+            missing_contradiction_blocked = "missing-document" in str(exc)
+        ok &= check(
+            "missing-document outcome cannot acquire produced material",
+            missing_contradiction_blocked
+            and not v2_missing_contradiction["prompt_receipt"].exists(),
+            notes)
+
+        v2_run_root_swap = make_v2_fixture(
+            ws, "run-root-swap", repo_v2, sha_v2, execute_run=False)
+        original_run_locked = runner._run_schedule_locked
+        moved_run_root = v2_run_root_swap["root"] / "bound-runs-moved"
+        redirected_run_root = v2_run_root_swap["root"] / "redirected-runs"
+
+        def swap_run_root(*args, **kwargs):
+            bound_root = Path(args[3])
+            bound_root.rename(moved_run_root)
+            redirected_run_root.mkdir()
+            bound_root.symlink_to(redirected_run_root, target_is_directory=True)
+            return original_run_locked(*args, **kwargs)
+
+        runner._run_schedule_locked = swap_run_root
+        try:
+            try:
+                runner.run_schedule(
+                    v2_run_root_swap["config"],
+                    v2_run_root_swap["schedule"],
+                    {"mock-repo": str(repo_v2)},
+                    v2_run_root_swap["run_output"],
+                    [str(v2_run_root_swap["task"])])
+                run_root_swap_blocked = False
+            except runner.InfraFailure as exc:
+                run_root_swap_blocked = "changed identity" in str(exc)
+        finally:
+            runner._run_schedule_locked = original_run_locked
+        ok &= check(
+            "run output-root swap cannot split state from its lock",
+            run_root_swap_blocked
+            and not list(moved_run_root.glob("run-*"))
+            and not list(redirected_run_root.glob("run-*")), notes)
+
+        v2_score_root_swap = make_v2_fixture(
+            ws, "score-root-swap", repo_v2, sha_v2,
+            run_mode="normal", judge_mode="judge-auto")
+        original_score_locked = runner._score_locked
+        score_root = v2_score_root_swap["root"] / "judges"
+        moved_score_root = v2_score_root_swap["root"] / "judges-moved"
+        redirected_score_root = v2_score_root_swap["root"] / "judges-redirected"
+
+        def swap_score_root(*args, **kwargs):
+            bound_root = Path(args[3])
+            bound_root.rename(moved_score_root)
+            redirected_score_root.mkdir()
+            bound_root.symlink_to(
+                redirected_score_root, target_is_directory=True)
+            return original_score_locked(*args, **kwargs)
+
+        runner._score_locked = swap_score_root
+        try:
+            try:
+                score_v2_fixture(v2_score_root_swap, "scorer", score_root)
+                score_root_swap_blocked = False
+            except runner.InfraFailure as exc:
+                score_root_swap_blocked = "changed identity" in str(exc)
+        finally:
+            runner._score_locked = original_score_locked
+        ok &= check(
+            "judge output-root swap cannot split state from its lock",
+            score_root_swap_blocked
+            and not v2_score_root_swap["prompt_receipt"].exists()
+            and not list(redirected_score_root.glob("judge-*")), notes)
+
         v2_valid = make_v2_fixture(
             ws, "valid", repo_v2, sha_v2,
             run_mode="normal", judge_mode="judge-auto")
@@ -4511,6 +5635,356 @@ def run_preflight():
                 encoding="utf-8"))["complete"] is True,
             notes)
 
+        # Scoring re-audits the completed run namespace before electing a
+        # judge batch.  A copied terminal record is not hidden merely because
+        # the manifest still points at the original final run.
+        v2_foreign_run = make_v2_fixture(
+            ws, "score-foreign-run", repo_v2, sha_v2,
+            run_mode="normal", judge_mode="judge-auto")
+        foreign_summary = v2_foreign_run["manifest"]["results"][0]
+        foreign_source = (v2_foreign_run["run_output"]
+                          / f"run-{foreign_summary['run_id']}.json")
+        foreign_record = json.loads(
+            foreign_source.read_text(encoding="utf-8"))
+        foreign_record["run_id"] = "f0e1f0e1f0e1"
+        (v2_foreign_run["run_output"]
+         / "run-f0e1f0e1f0e1.json").write_text(
+             json.dumps(foreign_record, indent=2) + "\n", encoding="utf-8")
+        try:
+            score_v2_fixture(
+                v2_foreign_run, "scorer",
+                v2_foreign_run["root"] / "judges")
+            foreign_run_blocked = False
+        except runner.InfraFailure as exc:
+            foreign_run_blocked = "run slot" in str(exc)
+        ok &= check(
+            "foreign completed-run material blocks first judge launch",
+            foreign_run_blocked
+            and not v2_foreign_run["prompt_receipt"].exists(), notes)
+
+        v2_foreign_scoring = make_v2_fixture(
+            ws, "judge-foreign-scoring", repo_v2, sha_v2,
+            run_mode="normal", judge_mode="judge-auto")
+        foreign_scoring_out = v2_foreign_scoring["root"] / "judges"
+        foreign_scoring_out.mkdir()
+        (foreign_scoring_out
+         / "scoring-scorer-primary-manifest.json").write_text(
+             "{}\n", encoding="utf-8")
+        try:
+            score_v2_fixture(
+                v2_foreign_scoring, "scorer", foreign_scoring_out)
+            foreign_scoring_blocked = False
+        except runner.InfraFailure as exc:
+            foreign_scoring_blocked = "terminally invalid" in str(exc)
+        ok &= check(
+            "foreign scoring namespace blocks first judge launch",
+            foreign_scoring_blocked
+            and not v2_foreign_scoring["prompt_receipt"].exists(), notes)
+
+        v2_foreign_judge = make_v2_fixture(
+            ws, "judge-foreign-id", repo_v2, sha_v2,
+            run_mode="normal", judge_mode="judge-auto")
+        foreign_judge_out = v2_foreign_judge["root"] / "judges"
+        foreign_judge_out.mkdir()
+        (foreign_judge_out
+         / "judge-deadbeef-0-attempt-1.json").write_text(
+             "{}\n", encoding="utf-8")
+        try:
+            score_v2_fixture(v2_foreign_judge, "scorer", foreign_judge_out)
+            foreign_judge_blocked = False
+        except runner.InfraFailure as exc:
+            foreign_judge_blocked = "terminally invalid" in str(exc)
+        ok &= check(
+            "foreign judge id blocks first judge launch",
+            foreign_judge_blocked
+            and not v2_foreign_judge["prompt_receipt"].exists(), notes)
+
+        unsafe_judge_lock_results = []
+        for lock_kind in ("symlink", "directory", "hardlink"):
+            lock_fixture = make_v2_fixture(
+                ws, f"judge-lock-{lock_kind}", repo_v2, sha_v2,
+                run_mode="normal", judge_mode="judge-auto")
+            lock_out = lock_fixture["root"] / "judges"
+            lock_out.mkdir()
+            lock_path = lock_out / ".scoring-scorer-all-docs.lock"
+            victim = lock_fixture["root"] / "judge-lock-victim.txt"
+            victim.write_text("must remain intact\n", encoding="utf-8")
+            if lock_kind == "symlink":
+                lock_path.symlink_to(victim)
+            elif lock_kind == "directory":
+                lock_path.mkdir()
+            else:
+                os.link(victim, lock_path)
+            try:
+                score_v2_fixture(lock_fixture, "scorer", lock_out)
+                unsafe_lock_blocked = False
+            except runner.InfraFailure:
+                unsafe_lock_blocked = True
+            unsafe_judge_lock_results.append(
+                unsafe_lock_blocked
+                and victim.read_text(encoding="utf-8")
+                == "must remain intact\n"
+                and not lock_fixture["prompt_receipt"].exists())
+        ok &= check(
+            "judge lock refuses symlink/directory/hardlink without mutation",
+            all(unsafe_judge_lock_results), notes)
+
+        missing_judge_lock = make_v2_fixture(
+            ws, "judge-lock-missing-with-state", repo_v2, sha_v2,
+            run_mode="normal", judge_mode="judge-auto")
+        missing_judge_lock_out = missing_judge_lock["root"] / "judges"
+        missing_judge_lock_out.mkdir()
+        missing_judge_manifest = (
+            missing_judge_lock_out
+            / "scoring-scorer-all-docs-manifest.json")
+        missing_judge_manifest.write_text("{}\n", encoding="utf-8")
+        missing_judge_lock_path = (
+            missing_judge_lock_out / ".scoring-scorer-all-docs.lock")
+        try:
+            score_v2_fixture(
+                missing_judge_lock, "scorer", missing_judge_lock_out)
+            missing_judge_lock_blocked = False
+        except runner.InfraFailure as exc:
+            missing_judge_lock_blocked = (
+                "persistent lock is missing" in str(exc))
+        ok &= check(
+            "missing persistent judge lock with state is never recreated",
+            missing_judge_lock_blocked
+            and not missing_judge_lock_path.exists()
+            and not missing_judge_lock["prompt_receipt"].exists()
+            and not list(missing_judge_lock_out.glob("judge-*")), notes)
+
+        v2_wrong_judge_seed = make_v2_fixture(
+            ws, "judge-wrong-seed", repo_v2, sha_v2,
+            run_mode="normal", judge_mode="judge-auto")
+        try:
+            runner.score(
+                v2_wrong_judge_seed["config"],
+                v2_wrong_judge_seed["docs"],
+                v2_wrong_judge_seed["prompts"]["scorer"],
+                v2_wrong_judge_seed["root"] / "judges",
+                scoring_seed=runner.PILOT_V2_SCORER_SEED + 1,
+                manifest_path=v2_wrong_judge_seed["manifest_path"],
+                score_task_paths=[str(v2_wrong_judge_seed["task"])],
+                task_contexts={
+                    v2_wrong_judge_seed["task"].name:
+                        str(v2_wrong_judge_seed["context"]),
+                },
+                seal_manifest_path=v2_wrong_judge_seed["seal"],
+            )
+            wrong_judge_seed_rejected = False
+        except runner.InfraFailure as exc:
+            wrong_judge_seed_rejected = "registered scoring seed" in str(exc)
+        ok &= check(
+            "protocol-v2 rejects alternate scorer seed before backend",
+            wrong_judge_seed_rejected
+            and not v2_wrong_judge_seed["prompt_receipt"].exists(), notes)
+
+        v2_premature_verifier = make_v2_fixture(
+            ws, "judge-premature-verifier", repo_v2, sha_v2,
+            run_mode="normal", judge_mode="judge-auto")
+        premature_out = v2_premature_verifier["root"] / "judges"
+        premature_out.mkdir()
+        (premature_out
+         / "scoring-verifier-all-docs-manifest.json").write_text(
+             "{}\n", encoding="utf-8")
+        try:
+            score_v2_fixture(
+                v2_premature_verifier, "scorer", premature_out)
+            premature_verifier_blocked = False
+        except runner.InfraFailure as exc:
+            premature_verifier_blocked = "terminally invalid" in str(exc)
+        ok &= check(
+            "scorer starts only with no verifier counterpart material",
+            premature_verifier_blocked
+            and not v2_premature_verifier["prompt_receipt"].exists(), notes)
+
+        v2_incomplete_counterpart = make_v2_fixture(
+            ws, "judge-incomplete-counterpart", repo_v2, sha_v2,
+            run_mode="normal", judge_mode="judge-auto")
+        incomplete_out = v2_incomplete_counterpart["root"] / "judges"
+        score_v2_fixture(v2_incomplete_counterpart, "scorer", incomplete_out)
+        incomplete_receipt = v2_incomplete_counterpart[
+            "prompt_receipt"].read_bytes()
+        incomplete_manifest_path = (
+            incomplete_out / "scoring-scorer-all-docs-manifest.json")
+        incomplete_manifest = json.loads(
+            incomplete_manifest_path.read_text(encoding="utf-8"))
+        incomplete_manifest["complete"] = False
+        incomplete_manifest_path.write_text(
+            json.dumps(incomplete_manifest) + "\n", encoding="utf-8")
+        try:
+            score_v2_fixture(
+                v2_incomplete_counterpart, "verifier", incomplete_out)
+            incomplete_counterpart_blocked = False
+        except runner.InfraFailure as exc:
+            incomplete_counterpart_blocked = "terminally invalid" in str(exc)
+        ok &= check(
+            "incomplete scorer counterpart blocks verifier backend",
+            incomplete_counterpart_blocked
+            and v2_incomplete_counterpart["prompt_receipt"].read_bytes()
+            == incomplete_receipt, notes)
+
+        v2_corrupt_counterpart = make_v2_fixture(
+            ws, "judge-corrupt-counterpart", repo_v2, sha_v2,
+            run_mode="normal", judge_mode="judge-auto")
+        corrupt_counterpart_out = v2_corrupt_counterpart["root"] / "judges"
+        score_v2_fixture(
+            v2_corrupt_counterpart, "scorer", corrupt_counterpart_out)
+        corrupt_receipt = v2_corrupt_counterpart["prompt_receipt"].read_bytes()
+        corrupt_scorer_manifest = json.loads(
+            (corrupt_counterpart_out
+             / "scoring-scorer-all-docs-manifest.json").read_text(
+                 encoding="utf-8"))
+        corrupt_scorer_id = corrupt_scorer_manifest["scoring_id"]
+        (corrupt_counterpart_out
+         / f"judge-{corrupt_scorer_id}-0.json").write_text(
+             "{}\n", encoding="utf-8")
+        try:
+            score_v2_fixture(
+                v2_corrupt_counterpart, "verifier",
+                corrupt_counterpart_out)
+            corrupt_counterpart_blocked = False
+        except runner.InfraFailure as exc:
+            corrupt_counterpart_blocked = "terminally invalid" in str(exc)
+        ok &= check(
+            "corrupt scorer counterpart blocks verifier backend",
+            corrupt_counterpart_blocked
+            and v2_corrupt_counterpart["prompt_receipt"].read_bytes()
+            == corrupt_receipt, notes)
+
+        v2_future_judge = make_v2_fixture(
+            ws, "judge-future-slot", repo_v2, sha_v2,
+            run_mode="normal", judge_mode="judge-invalid-then-valid",
+            task_numbers=(1, 2))
+        future_judge_out = v2_future_judge["root"] / "judges"
+        score_v2_fixture(v2_future_judge, "scorer", future_judge_out)
+        future_judge_manifest_path = (
+            future_judge_out / "scoring-scorer-all-docs-manifest.json")
+        future_judge_manifest = json.loads(
+            future_judge_manifest_path.read_text(encoding="utf-8"))
+        future_judge_id = future_judge_manifest["scoring_id"]
+        future_judge_manifest.update({"complete": False, "results": []})
+        future_judge_manifest_path.write_text(
+            json.dumps(future_judge_manifest) + "\n", encoding="utf-8")
+        for slot_zero_path in future_judge_out.glob(
+                f"judge-{future_judge_id}-0*"):
+            slot_zero_path.unlink()
+        judge_state_before = (
+            v2_future_judge["root"] / "judge-state.txt").read_bytes()
+        try:
+            score_v2_fixture(v2_future_judge, "scorer", future_judge_out)
+            future_judge_blocked = False
+        except runner.InfraFailure as exc:
+            future_judge_blocked = "terminally invalid" in str(exc)
+        ok &= check(
+            "future same-id judge slot blocks earlier backend launch",
+            future_judge_blocked
+            and (v2_future_judge["root"]
+                 / "judge-state.txt").read_bytes() == judge_state_before,
+            notes)
+
+        v2_empty_judges = make_v2_fixture(
+            ws, "judge-empty-population", repo_v2, sha_v2,
+            run_mode="no-artifact", judge_mode="judge-auto")
+        empty_judge_out = v2_empty_judges["root"] / "judges"
+        empty_scorer = score_v2_fixture(
+            v2_empty_judges, "scorer", empty_judge_out)
+        empty_verifier = score_v2_fixture(
+            v2_empty_judges, "verifier", empty_judge_out)
+        ok &= check(
+            "protocol-v2 empty all-doc population records two zero-call batches",
+            empty_scorer == empty_verifier == []
+            and json.loads((empty_judge_out
+                            / "scoring-scorer-all-docs-manifest.json")
+                           .read_text(encoding="utf-8"))["complete"] is True
+            and json.loads((empty_judge_out
+                            / "scoring-verifier-all-docs-manifest.json")
+                           .read_text(encoding="utf-8"))["complete"] is True
+            and not list(empty_judge_out.glob("judge-*"))
+            and not v2_empty_judges["prompt_receipt"].exists(),
+            notes)
+
+        v2_empty_external = make_v2_fixture(
+            ws, "judge-empty-external-drift", repo_v2, sha_v2,
+            run_mode="no-artifact", judge_mode="judge-auto",
+            task_numbers=(5,))
+        empty_external_live = v2_empty_external["root"] / "live"
+        empty_external_live.mkdir()
+        changed_live_bytes = b"materially changed live reference\n"
+        (empty_external_live / "reference.txt").write_bytes(
+            changed_live_bytes)
+        changed_live_sha = hashlib.sha256(changed_live_bytes).hexdigest()
+        empty_external_report = (
+            v2_empty_external["root"] / "drift-report.json")
+        empty_external_report.write_text(json.dumps({
+            v2_empty_external["task"].name: {"changed": {
+                "snapshots/reference.txt": {
+                    "observed_sha256": changed_live_sha,
+                    "material": True,
+                    "rationale": "material source change despite zero docs",
+                },
+            }},
+        }), encoding="utf-8")
+        empty_external_out = v2_empty_external["root"] / "judges"
+        empty_external_states = []
+        os.environ["MOCK_LIVE_ROOT"] = str(empty_external_live)
+        try:
+            for judge_role in ("scorer", "verifier"):
+                external_kwargs = {
+                    "scoring_seed": (
+                        runner.PILOT_V2_SCORER_SEED
+                        if judge_role == "scorer"
+                        else runner.PILOT_V2_VERIFIER_SEED),
+                    "manifest_path": v2_empty_external["manifest_path"],
+                    "score_task_paths": [str(v2_empty_external["task"])],
+                    "task_contexts": {
+                        v2_empty_external["task"].name:
+                            str(v2_empty_external["context"]),
+                    },
+                    "seal_manifest_path": v2_empty_external["seal"],
+                    "task_snapshots": {
+                        v2_empty_external["task"].name:
+                            str(v2_empty_external["root"]
+                                / "sealed" / "snapshots"),
+                    },
+                    "drift_report_path": empty_external_report,
+                }
+                if judge_role == "verifier":
+                    external_kwargs["evidence_repos"] = {
+                        "mock-repo": str(repo_v2)}
+                external_results = runner.score(
+                    v2_empty_external["config"], [],
+                    v2_empty_external["prompts"][judge_role],
+                    empty_external_out, **external_kwargs)
+                role_state = json.loads((empty_external_out / (
+                    f"scoring-{judge_role}-all-docs-manifest.json"
+                )).read_text(encoding="utf-8"))
+                empty_external_states.append((external_results, role_state))
+        finally:
+            os.environ.pop("MOCK_LIVE_ROOT", None)
+        expected_empty_receipt = {
+            "observed_sha256": {
+                "snapshots/reference.txt": changed_live_sha},
+            "changed": ["snapshots/reference.txt"],
+            "material": True,
+            "adjudications": {
+                "snapshots/reference.txt": {
+                    "observed_sha256": changed_live_sha,
+                    "material": True,
+                    "rationale": "material source change despite zero docs",
+                },
+            },
+        }
+        ok &= check(
+            "zero-doc external task still records both live-drift receipts",
+            all(results == [] and state["complete"] is True
+                and state["identity"]["drift_decisions"]["tasks"] == {
+                    v2_empty_external["task"].name: expected_empty_receipt}
+                for results, state in empty_external_states)
+            and not list(empty_external_out.glob("judge-*"))
+            and not v2_empty_external["prompt_receipt"].exists(), notes)
+
         v2_background_judge = make_v2_fixture(
             ws, "judge-background-child", repo_v2, sha_v2,
             run_mode="normal", judge_mode="judge-background-child")
@@ -4541,6 +6015,14 @@ def run_preflight():
         duplicate_path.write_text(
             json.dumps(duplicate_record, indent=2) + "\n",
             encoding="utf-8")
+        duplicate_artifacts = []
+        for suffix in ("raw", "anon"):
+            copied = (v2_duplicate["run_output"]
+                      / f"run-d00bd00bd00b-{suffix}.md")
+            copied.write_bytes((v2_duplicate["run_output"] / (
+                f"run-{duplicate_summary['run_id']}-{suffix}.md"
+            )).read_bytes())
+            duplicate_artifacts.append(copied)
         try:
             runner.run_schedule(
                 v2_duplicate["config"], v2_duplicate["schedule"],
@@ -4555,6 +6037,8 @@ def run_preflight():
             v2_duplicate["run_output"]
             / "schedule-entry-0-terminal-invalid.json")
         duplicate_path.unlink()
+        for duplicate_artifact in duplicate_artifacts:
+            duplicate_artifact.unlink()
         try:
             runner.run_schedule(
                 v2_duplicate["config"], v2_duplicate["schedule"],
@@ -4979,6 +6463,57 @@ def run_preflight():
             schema_drift_ok and v2_seal_drift_ok, notes)
 
         aggregate_fixture = make_v2_aggregation_fixture(ws, sha_v2)
+        portable_tasks = [
+            str(aggregate_fixture["root"] / "sealed"
+                / f"holdout-v2-{index}.md")
+            for index in range(1, 7)
+        ]
+        portable_config = json.loads(json.dumps(
+            aggregate_fixture["config"]))
+        portable_config["arms"]["ablation"]["schedule_tasks"] = [
+            "holdout-v2-1.md", "holdout-v2-3.md",
+        ]
+        try:
+            portable_schedule = runner.make_schedule(
+                portable_config, portable_tasks, 3,
+                seed=runner.PILOT_V2_SCHEDULE_SEED)
+            portable_scope_ok = (
+                len(portable_schedule["entries"]) == 42
+                and {Path(entry["task"]).name for entry in
+                     portable_schedule["entries"]
+                     if entry["arm"] == "ablation"}
+                == {"holdout-v2-1.md", "holdout-v2-3.md"}
+            )
+        except runner.InfraFailure:
+            portable_scope_ok = False
+        unknown_config = json.loads(json.dumps(portable_config))
+        unknown_config["arms"]["ablation"]["schedule_tasks"][1] = (
+            "holdout-v2-unknown.md")
+        try:
+            runner.make_schedule(
+                unknown_config, portable_tasks, 3,
+                seed=runner.PILOT_V2_SCHEDULE_SEED,
+                allow_nonstandard=True)
+            portable_unknown_rejected = False
+        except runner.InfraFailure:
+            portable_unknown_rejected = True
+        duplicate_dir = aggregate_fixture["root"] / "duplicate-task-name"
+        duplicate_dir.mkdir()
+        duplicate_task = duplicate_dir / "holdout-v2-1.md"
+        duplicate_task.write_bytes(Path(portable_tasks[0]).read_bytes())
+        try:
+            runner.make_schedule(
+                portable_config, [*portable_tasks, str(duplicate_task)], 3,
+                seed=runner.PILOT_V2_SCHEDULE_SEED,
+                allow_nonstandard=True)
+            portable_duplicate_rejected = False
+        except runner.InfraFailure:
+            portable_duplicate_rejected = True
+        ok &= check(
+            "portable ablation basenames resolve uniquely to canonical tasks",
+            portable_scope_ok and portable_unknown_rejected
+            and portable_duplicate_rejected,
+            notes)
         source_seal = json.loads(
             aggregate_fixture["seal"].read_text(encoding="utf-8"))
         builder_package = aggregate_fixture["root"] / "builder-package"
@@ -5054,6 +6589,17 @@ def run_preflight():
             not in sanitized_registration
             and SECRET not in sanitized_registration,
             notes)
+        canonical_schedule = json.loads(
+            aggregate_fixture["schedule"].read_text(encoding="utf-8"))
+        permuted_schedule = runner.make_schedule(
+            aggregate_fixture["config"],
+            list(reversed(canonical_schedule["tasks"])), 3,
+            seed=runner.PILOT_V2_SCHEDULE_SEED)
+        ok &= check(
+            "protocol-v2 task arguments normalize to registered base order",
+            permuted_schedule == canonical_schedule
+            and [Path(task).name for task in permuted_schedule["tasks"]]
+            == list(seal_package.HOLDOUT_TASKS), notes)
         aggregate = aggregate_results.aggregate(
             aggregate_fixture["config_path"],
             aggregate_fixture["manifest"],
@@ -5085,6 +6631,162 @@ def run_preflight():
             and SECRET not in serialized_aggregate
             and "Synthetic aggregate document" not in serialized_aggregate,
             notes)
+
+        empty_aggregate_fixture = make_v2_aggregation_fixture(
+            ws, sha_v2, label="empty")
+        empty_output = empty_aggregate_fixture["manifest"].parent
+        empty_manifest = json.loads(
+            empty_aggregate_fixture["manifest"].read_text(encoding="utf-8"))
+        for summary in empty_manifest["results"]:
+            run_path = empty_output / f"run-{summary['run_id']}.json"
+            run_record = json.loads(run_path.read_text(encoding="utf-8"))
+            run_record.update({
+                "status": "workflow_failure",
+                "failure_kind": "missing_document",
+                "artifact_gate": "not_evaluated",
+                "artifact_sha256": None,
+                "diagnostic_sha256": None,
+                "raw_sha256": None,
+            })
+            run_path.write_text(
+                json.dumps(run_record, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8")
+            summary.update({
+                "status": "workflow_failure",
+                "failure_kind": "missing_document",
+                "artifact_gate": "not_evaluated",
+                "artifact_sha256": None,
+                "diagnostic_sha256": None,
+                "raw_sha256": None,
+            })
+            (empty_output / f"run-{summary['run_id']}-raw.md").unlink()
+            (empty_output / f"run-{summary['run_id']}-anon.md").unlink()
+        empty_aggregate_fixture["manifest"].write_text(
+            json.dumps(empty_manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8")
+        for judge_path in empty_output.glob("judge-*"):
+            judge_path.unlink()
+        for role in ("scorer", "verifier"):
+            role_path = empty_aggregate_fixture["judge_manifests"][role]
+            role_manifest = json.loads(role_path.read_text(encoding="utf-8"))
+            role_manifest["identity"]["docs"] = []
+            role_manifest["identity"]["drift_decisions"]["inconclusive"] = []
+            role_manifest["identity"]["drift_decisions"]["notes_digest"] = (
+                hashlib.sha256(b"{}").hexdigest())
+            role_manifest["results"] = []
+            role_path.write_text(
+                json.dumps(role_manifest, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8")
+        empty_aggregate = aggregate_results.aggregate(
+            empty_aggregate_fixture["config_path"],
+            empty_aggregate_fixture["manifest"],
+            empty_aggregate_fixture["judge_manifests"]["scorer"],
+            empty_aggregate_fixture["judge_manifests"]["verifier"],
+            empty_aggregate_fixture["seal"],
+        )
+        ok &= check(
+            "protocol-v2 all-no-document 42-run population aggregates",
+            empty_aggregate.get("verdict") == "indeterminate"
+            and empty_aggregate.get("population", {}).get(
+                "scheduled_final_runs") == 42
+            and empty_aggregate.get("population", {}).get(
+                "scoreable_documents") == 0
+            and empty_aggregate.get("population", {}).get(
+                "conclusive_tasks") == 0,
+            notes)
+        empty_seal_doc = json.loads(
+            empty_aggregate_fixture["seal"].read_text(encoding="utf-8"))
+        empty_source_key = next(iter(empty_seal_doc["snapshot_sources"]))
+        changed_observed = "f" * 64
+        changed_task_receipt = {
+            "observed_sha256": {empty_source_key: changed_observed},
+            "changed": [empty_source_key],
+            "material": True,
+            "adjudications": {
+                empty_source_key: {
+                    "observed_sha256": changed_observed,
+                    "material": True,
+                    "rationale": "material live-source change with no docs",
+                },
+            },
+        }
+        for role in ("scorer", "verifier"):
+            role_path = empty_aggregate_fixture["judge_manifests"][role]
+            role_manifest = json.loads(role_path.read_text(encoding="utf-8"))
+            role_manifest["identity"]["drift_decisions"]["tasks"][
+                "holdout-v2-5.md"] = changed_task_receipt
+            role_path.write_text(
+                json.dumps(role_manifest, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8")
+        zero_doc_material_aggregate = aggregate_results.aggregate(
+            empty_aggregate_fixture["config_path"],
+            empty_aggregate_fixture["manifest"],
+            empty_aggregate_fixture["judge_manifests"]["scorer"],
+            empty_aggregate_fixture["judge_manifests"]["verifier"],
+            empty_aggregate_fixture["seal"],
+        )
+        ok &= check(
+            "zero-doc external drift still requires a fresh seal",
+            zero_doc_material_aggregate.get("population", {}).get(
+                "fresh_seal_required") is True
+            and zero_doc_material_aggregate.get("verdict")
+            == "indeterminate", notes)
+
+        positive_node_path = aggregate_fixture["first_run_record"]
+        positive_node_bytes = positive_node_path.read_bytes()
+        try:
+            zero_node_record = json.loads(
+                positive_node_bytes.decode("utf-8"))
+            zero_node_record["nodes"][0]["input_tokens"] = 0
+            zero_node_record["nodes"][0]["output_tokens"] = 0
+            positive_node_path.write_text(
+                json.dumps(zero_node_record, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8")
+            try:
+                aggregate_results.aggregate(
+                    aggregate_fixture["config_path"],
+                    aggregate_fixture["manifest"],
+                    aggregate_fixture["judge_manifests"]["scorer"],
+                    aggregate_fixture["judge_manifests"]["verifier"],
+                    aggregate_fixture["seal"],
+                )
+                zero_node_rejected = False
+            except runner.InfraFailure:
+                zero_node_rejected = True
+        finally:
+            positive_node_path.write_bytes(positive_node_bytes)
+        ok &= check(
+            "aggregate rejects self-consistent-looking zero-token model node",
+            zero_node_rejected, notes)
+
+        alternate_seed_manifest = aggregate_fixture[
+            "judge_manifests"]["scorer"]
+        alternate_seed_bytes = alternate_seed_manifest.read_bytes()
+        try:
+            alternate_seed_doc = json.loads(
+                alternate_seed_bytes.decode("utf-8"))
+            alternate_seed_doc["identity"]["scoring_seed"] = (
+                runner.PILOT_V2_SCORER_SEED + 1)
+            alternate_seed_manifest.write_text(
+                json.dumps(alternate_seed_doc, indent=2, sort_keys=True)
+                + "\n", encoding="utf-8")
+            try:
+                aggregate_results.aggregate(
+                    aggregate_fixture["config_path"],
+                    aggregate_fixture["manifest"],
+                    aggregate_fixture["judge_manifests"]["scorer"],
+                    aggregate_fixture["judge_manifests"]["verifier"],
+                    aggregate_fixture["seal"],
+                )
+                alternate_aggregate_seed_rejected = False
+            except runner.InfraFailure as exc:
+                alternate_aggregate_seed_rejected = (
+                    "registered seed" in str(exc))
+        finally:
+            alternate_seed_manifest.write_bytes(alternate_seed_bytes)
+        ok &= check(
+            "aggregate rejects alternate protocol-v2 role seed",
+            alternate_aggregate_seed_rejected, notes)
 
         def aggregate_golden():
             return aggregate_results.aggregate(
@@ -5224,6 +6926,7 @@ def run_preflight():
                 "artifact_gate": "not_evaluated",
                 "artifact_sha256": None,
                 "diagnostic_sha256": None,
+                "raw_sha256": None,
                 "telemetry_eligible": False,
                 "telemetry_exclusion_reason": "not_a_final_workflow_outcome",
             })
@@ -5396,6 +7099,71 @@ def run_preflight():
             "protocol-v2 aggregation rejects foreign judge batch material",
             foreign_judge_rejected, notes)
 
+        aggregate_scorer_path = aggregate_fixture[
+            "judge_manifests"]["scorer"]
+        aggregate_scorer_bytes = aggregate_scorer_path.read_bytes()
+        aggregate_seal_doc = json.loads(
+            aggregate_fixture["seal"].read_text(encoding="utf-8"))
+        sealed_snapshot_key = next(iter(
+            aggregate_seal_doc["snapshot_sources"]))
+
+        def forged_drift_rejected(task_name, drift, expected_text):
+            manifest_doc = json.loads(
+                aggregate_scorer_bytes.decode("utf-8"))
+            result = next(
+                row for row in manifest_doc["results"]
+                if Path(row["task"]).name == task_name)
+            slot = result["presentation_index"]
+            scoring_id = manifest_doc["scoring_id"]
+            canonical_path = aggregate_scorer_path.parent / (
+                f"judge-{scoring_id}-{slot}.json")
+            canonical_bytes = canonical_path.read_bytes()
+            result.update({
+                "inconclusive": True,
+                "schema_valid": False,
+                "parsed_response": None,
+                "source_drift": drift,
+            })
+            canonical_path.write_text(
+                json.dumps(result, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8")
+            aggregate_scorer_path.write_text(
+                json.dumps(manifest_doc, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8")
+            try:
+                aggregate_golden()
+                return False
+            except runner.InfraFailure as exc:
+                return expected_text in str(exc)
+            finally:
+                canonical_path.write_bytes(canonical_bytes)
+                aggregate_scorer_path.write_bytes(aggregate_scorer_bytes)
+
+        valid_drift_shape = {
+            "changed": [sealed_snapshot_key],
+            "material": True,
+            "adjudications": {
+                sealed_snapshot_key: {
+                    "observed_sha256": "f" * 64,
+                    "material": True,
+                    "rationale": "synthetic changed authoritative bytes",
+                },
+            },
+        }
+        nonexternal_drift_rejected = forged_drift_rejected(
+            "holdout-v2-1.md", valid_drift_shape,
+            "task-level live-byte receipt")
+        malformed_drift = json.loads(json.dumps(valid_drift_shape))
+        malformed_drift["unexpected"] = True
+        malformed_aggregate_drift_rejected = forged_drift_rejected(
+            "holdout-v2-5.md", malformed_drift,
+            "task-level live-byte receipt")
+        ok &= check(
+            "protocol-v2 aggregate rejects forged/noncanonical drift",
+            nonexternal_drift_rejected
+            and malformed_aggregate_drift_rejected,
+            notes)
+
         scorer_batch = json.loads(
             aggregate_fixture["judge_manifests"]["scorer"].read_text(
                 encoding="utf-8"))
@@ -5442,7 +7210,7 @@ def run_preflight():
             try:
                 runner.make_schedule(
                     aggregate_fixture["config"], aggregate_tasks, 3,
-                    seed=7301)
+                    seed=runner.PILOT_V2_SCHEDULE_SEED)
                 external_flag_rejected = False
             except runner.InfraFailure as exc:
                 external_flag_rejected = "external-snapshots" in str(exc)
