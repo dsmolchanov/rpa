@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# hacky script that is referenced by global research commands
+# Shared metadata helper for global research commands. Its labeled stdout is
+# a compatibility contract consumed by artifact tooling and eval fixtures.
 
 # Collect metadata
 # %z (numeric ISO offset) rather than %Z: zone NAMES can themselves be
