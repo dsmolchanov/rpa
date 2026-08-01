@@ -208,9 +208,15 @@ def main():
     parser.add_argument("--effort", default="high")
     parser.add_argument("--plugin-dir")
     parser.add_argument("--resume")
+    parser.add_argument("--verbose", action="store_true")
     parser.add_argument("-p", dest="prompt", required=True)
-    parser.add_argument("--output-format", default="stream-json")
+    parser.add_argument("--output-format", default="text")
     args = parser.parse_args()
+
+    if args.output_format == "stream-json" and not args.verbose:
+        parser.error(
+            "When using --print, --output-format=stream-json requires "
+            "--verbose")
 
     echo("prompt.txt", args.prompt)
     echo("plugin-dir.txt", args.plugin_dir)

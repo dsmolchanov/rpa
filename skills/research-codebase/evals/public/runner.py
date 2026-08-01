@@ -782,6 +782,18 @@ def remove_worktree(repo_dir, worktree):
         pass
 
 
+def with_stream_json_transport(cmd):
+    """Add CLI flags owned by the stream-json transport to a backend argv.
+
+    This must run before ``apply_sandbox``: a wrapper may have its own
+    ``--verbose`` option, which must not be mistaken for the backend flag.
+    """
+    full = list(cmd)
+    if "--verbose" not in full:
+        full.append("--verbose")
+    return full
+
+
 def spawn_session(cmd, prompt, cwd, env, timeout, resume=None,
                   workflow_abort_exits=()):
     """`workflow_abort_exits` lists backend exit codes that represent an
@@ -1236,6 +1248,7 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
         require_installation_mount(config["backend_cmd"])
         cmd = expand_backend_cmd(config["backend_cmd"], mount,
                                  arm.get("effort", "default"))
+        cmd = with_stream_json_transport(cmd)
         cmd = apply_sandbox(config, cmd, worktree, profile)
         env = backend_env(profile)
         abort_exits = validate_abort_exits(config)
@@ -2662,7 +2675,8 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             workdir = judge_root / "workdir"
             workdir.mkdir()
         env = backend_env(profile)
-        sandboxed_cmd = apply_sandbox(config, judge_cmd, workdir, profile)
+        sandboxed_cmd = apply_sandbox(
+            config, with_stream_json_transport(judge_cmd), workdir, profile)
         prompt_parts = [judge_prompt]
         if sealed_context_texts is not None:
             # Preloaded and seal-verified once, before any session: a file

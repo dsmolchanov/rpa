@@ -140,6 +140,44 @@ def run_preflight():
     with tempfile.TemporaryDirectory() as tmp:
         ws = Path(tmp)
 
+        # Transport flags belong to the backend argv, not the sandbox
+        # prefix: a wrapper's own --verbose must not suppress the flag that
+        # Claude 2.1.220 requires with stream-json output.
+        collision_config = {
+            "nonstandard_config": True,
+            "sandbox_cmd": ["sandbox", "--verbose", "{workdir}",
+                            "{profile}", "--"],
+        }
+        collision_cmd = runner.apply_sandbox(
+            collision_config,
+            runner.with_stream_json_transport(["claude"]), ws, ws)
+        ok &= check(
+            "backend stream transport ignores wrapper --verbose collision",
+            collision_cmd.count("--verbose") == 2
+            and collision_cmd[-2:] == ["claude", "--verbose"], notes)
+        existing_verbose = runner.with_stream_json_transport(
+            ["claude", "--verbose"])
+        ok &= check(
+            "backend stream transport adds verbose idempotently",
+            existing_verbose == ["claude", "--verbose"], notes)
+
+        mock_base = [sys.executable, str(HERE / "mock_claude.py"),
+                     "--mode", "no-artifact", "-p", "probe"]
+        implicit_text = subprocess.run(
+            mock_base, cwd=ws, capture_output=True, text=True)
+        missing_verbose = subprocess.run(
+            mock_base + ["--output-format", "stream-json"],
+            cwd=ws, capture_output=True, text=True)
+        explicit_verbose = subprocess.run(
+            mock_base + ["--verbose", "--output-format", "stream-json"],
+            cwd=ws, capture_output=True, text=True)
+        ok &= check(
+            "mock accepts text default and enforces stream-json verbose",
+            implicit_text.returncode == 0
+            and missing_verbose.returncode == 2
+            and "requires --verbose" in missing_verbose.stderr
+            and explicit_verbose.returncode == 0, notes)
+
         # Sealed judge materials, created up front so every config
         # registers the same seal package hash (part of the config digest).
         judge = ws / "judge-prompt.md"
