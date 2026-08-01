@@ -892,6 +892,12 @@ keeps its all-zero seal sentinel until the same clean sealing boundary updates
 the package policy with `observed_sha256` binding and returns the replacement
 digest; only that replacement may be registered or executed.
 
+The replacement uncontaminated package was atomically promoted and registered
+before schedule creation with digest
+`8812c97a59aa16d5c4c023d81798819cbff40b290d84406c7f2551ba7d63b2ed`.
+Its only disclosed task identifiers are the six prospective basenames above;
+no holdout outcome was observed before this registration.
+
 1. Implement strict role validation, bounded crash-safe judge attempts,
    all-document role coverage, immutable policy bindings, and deterministic
    aggregation in `skills/research-codebase/evals/public/`.
