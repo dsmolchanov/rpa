@@ -18,6 +18,7 @@ Declared accounting per invocation:
 """
 
 import argparse
+import hashlib
 import json
 import subprocess
 import os
@@ -85,6 +86,50 @@ Free-form text without the contract's frontmatter or sections.
 """
 
 
+SCORER_RESPONSE = {
+    "coverage": {
+        "score": 3.5,
+        "rationale": "The mock document covers the registered areas.",
+    },
+    "relevance": {
+        "score": 2.5,
+        "rationale": "The mock findings stay focused on the task.",
+    },
+    "synthesis": {
+        "score": 2.0,
+        "rationale": "The mock document connects its findings.",
+    },
+    "total": 8.0,
+    "summary": "Deterministic valid scorer response.",
+}
+
+VERIFIER_RESPONSE = {
+    "verifiable_claims": 2,
+    "supported_claims": 1,
+    "unsupported_claims": 1,
+    "unverifiable_claims": 0,
+    "claim_ledger": [
+        {
+            "claim": "The mock file contains the cited definition.",
+            "candidate_citations": ["mock/file.py:1"],
+            "status": "supported",
+            "evidence": ["mock/file.py:1"],
+            "rationale": "The cited line supports the claim.",
+        },
+        {
+            "claim": "The mock file contains an additional setting.",
+            "candidate_citations": ["mock/file.py:2"],
+            "status": "unsupported",
+            "evidence": [],
+            "rationale": "The cited setting is absent from frozen evidence.",
+        },
+    ],
+    "critical_errors": [],
+    "critical_error_count": 0,
+    "summary": "Deterministic valid verifier response.",
+}
+
+
 def emit(event):
     print(json.dumps(event), flush=True)
 
@@ -115,6 +160,30 @@ def write_artifact(commit=None):
     (research / "2026-07-26-mock-research.md").write_text(
         ARTIFACT.replace("deadbeef", commit).replace("mock-repo", repo_name),
         encoding="utf-8")
+
+
+def write_non_utf8_artifact():
+    """Write a fresh Markdown-named artifact with invalid UTF-8 bytes."""
+    research = Path("thoughts/shared/research")
+    research.mkdir(parents=True, exist_ok=True)
+    (research / "2026-07-26-non-utf8.md").write_bytes(
+        b"---\nstatus: complete\n---\n\n# invalid utf-8: \xff\n")
+
+
+def write_multiple_artifacts():
+    """Write two nonempty fresh documents for population-shape testing."""
+    write_artifact()
+    research = Path("thoughts/shared/research")
+    original = research / "2026-07-26-mock-research.md"
+    (research / "2026-07-26-mock-research-extra.md").write_bytes(
+        original.read_bytes())
+
+
+def write_empty_artifact():
+    """Write a Markdown-named file that is not a nonempty document."""
+    research = Path("thoughts/shared/research")
+    research.mkdir(parents=True, exist_ok=True)
+    (research / "2026-07-26-empty.md").write_bytes(b" \n\t\n")
 
 
 def echo(name, value):
@@ -199,6 +268,21 @@ def emit_real_stream(model, session_id):
           "result": "MOCK-VERDICT: coverage 7/10, evidence 9/10"})
 
 
+def judge_result(prompt):
+    """Return the deterministic role-specific protocol-v2 JSON object.
+
+    The real backend learns its role from the sealed prompt, not a special
+    command-line flag. The mock follows that contract: preflight prompts carry
+    one of these non-sensitive markers so one registered judge command can
+    exercise both roles.
+    """
+    if "VERIFIER-CONTRACT" in prompt:
+        return json.dumps(VERIFIER_RESPONSE, sort_keys=True)
+    if "SCORER-CONTRACT" in prompt:
+        return json.dumps(SCORER_RESPONSE, sort_keys=True)
+    return json.dumps(SCORER_RESPONSE, sort_keys=True)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", action="version",
@@ -207,6 +291,10 @@ def main():
     parser.add_argument("--model", default="opus")
     parser.add_argument("--effort", default="high")
     parser.add_argument("--plugin-dir")
+    parser.add_argument("--judge-state-file")
+    parser.add_argument("--run-state-file")
+    parser.add_argument("--prompt-receipt-file")
+    parser.add_argument("--child-write-file")
     parser.add_argument("--resume")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("-p", dest="prompt", required=True)
@@ -222,11 +310,17 @@ def main():
     echo("plugin-dir.txt", args.plugin_dir)
     echo("cwd-listing.txt",
          "\n".join(sorted(p.name for p in Path(".").iterdir())))
+    if args.prompt_receipt_file:
+        Path(args.prompt_receipt_file).write_text(
+            hashlib.sha256(args.prompt.encode("utf-8")).hexdigest() + "\n",
+            encoding="utf-8",
+        )
 
     if args.mode == "flaky-infra":
-        # Transient fault: crash once (recorded via MOCK_STATE_FILE), then
-        # behave normally, so the runner's auto-retry can be proven.
-        state = os.environ.get("MOCK_STATE_FILE", "")
+        # Transient fault: crash once, then behave normally. The explicit
+        # CLI path is usable under protocol v2's minimal environment policy;
+        # the environment fallback remains for historical v1 self-tests.
+        state = args.run_state_file or os.environ.get("MOCK_STATE_FILE", "")
         if state and not Path(state).exists():
             Path(state).write_text("crashed once\n", encoding="utf-8")
             print("transient mock crash", file=sys.stderr)
@@ -236,6 +330,10 @@ def main():
     if args.mode == "infra-crash":
         print("mock backend crashed", file=sys.stderr)
         sys.exit(3)
+    if args.mode in ("slow-normal", "judge-slow-auto"):
+        time.sleep(0.5)
+        if args.mode == "slow-normal":
+            args.mode = "normal"
     if args.mode == "slow-no-artifact":
         # Burns most of a small run-level deadline per session, never makes
         # an artifact: proves continuations share ONE deadline instead of
@@ -275,6 +373,49 @@ def main():
         emit({"type": "result", "session_id": session_id,
               "result": "MOCK-VERDICT: coverage 7/10, evidence 9/10"})
         return
+    if args.mode in {
+            "bad-accounting-negative", "bad-accounting-fractional",
+            "bad-accounting-typed", "bad-accounting-missing",
+            "bad-accounting-zero", "abort-bad-accounting"}:
+        usage = {"input_tokens": 100, "output_tokens": 50}
+        tool_calls = 7
+        if args.mode == "bad-accounting-negative":
+            usage["input_tokens"] = -1
+        elif args.mode == "bad-accounting-fractional":
+            usage["output_tokens"] = 1.5
+        elif args.mode == "bad-accounting-typed":
+            usage = ["not", "an", "object"]
+            tool_calls = True
+        elif args.mode == "bad-accounting-missing":
+            usage = {"input_tokens": 100}
+        elif args.mode == "bad-accounting-zero":
+            usage = {"input_tokens": 0, "output_tokens": 0}
+        else:
+            usage["input_tokens"] = "100"
+        emit({"type": "node", "model": model, "effort": args.effort,
+              "tool_calls": tool_calls, "usage": usage})
+        if args.mode == "abort-bad-accounting":
+            print("workflow aborted with malformed accounting",
+                  file=sys.stderr)
+            sys.exit(21)
+        emit({"type": "result", "session_id": session_id,
+              "result": "MOCK-VERDICT: malformed accounting"})
+        return
+    if args.mode in ("bad-assistant-message",
+                     "abort-bad-assistant-message"):
+        # A malformed assistant envelope must never disappear merely because
+        # later events carry valid accounting.  This mirrors a truncated or
+        # schema-drifted real stream event rather than a synthetic node.
+        emit({"type": "assistant", "session_id": session_id,
+              "message": None})
+        emit_nodes(model, args.effort, args.effort)
+        if args.mode == "abort-bad-assistant-message":
+            print("workflow aborted after malformed assistant event",
+                  file=sys.stderr)
+            sys.exit(21)
+        emit({"type": "result", "session_id": session_id,
+              "result": "MOCK-VERDICT: malformed assistant envelope"})
+        return
     if args.mode == "wrong-effort":
         main_effort = sub_effort = "low"
     elif args.mode == "mixed-effort":
@@ -282,6 +423,60 @@ def main():
     else:
         main_effort = sub_effort = args.effort
     emit_nodes(model, main_effort, sub_effort)
+
+    if args.mode == "abort-malformed-stream":
+        # Preserve a valid first node population, then truncate another event.
+        # Accepting only the valid prefix would undercount an observed abort.
+        print('{"type":"node"', flush=True)
+        print("workflow aborted after truncated accounting event",
+              file=sys.stderr)
+        sys.exit(21)
+
+    if args.mode in ("background-child-success",
+                     "judge-background-child"):
+        if not args.child_write_file:
+            print("--child-write-file is required", file=sys.stderr)
+            sys.exit(3)
+        child_code = (
+            "import pathlib,time; time.sleep(1); "
+            f"pathlib.Path({args.child_write_file!r}).write_text('survived')"
+        )
+        subprocess.Popen(
+            [sys.executable, "-c", child_code],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL)
+        if args.mode == "background-child-success":
+            write_artifact()
+            result_text = "MOCK-VERDICT: parent exited successfully"
+        else:
+            result_text = judge_result(args.prompt)
+        emit({"type": "result", "session_id": session_id,
+              "result": result_text})
+        return
+
+    if args.mode in ("judge-auto", "judge-slow-auto", "judge-invalid",
+                     "judge-invalid-then-valid"):
+        if args.mode == "judge-invalid":
+            result_text = '{"coverage": {"score": 3.5}'
+        elif args.mode == "judge-invalid-then-valid":
+            state_name = (args.judge_state_file
+                          or os.environ.get("MOCK_JUDGE_STATE_FILE", ""))
+            if not state_name:
+                print("--judge-state-file is required", file=sys.stderr)
+                sys.exit(3)
+            state = Path(state_name)
+            try:
+                count = int(state.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                count = 0
+            state.write_text(str(count + 1), encoding="utf-8")
+            result_text = ('```json\n{"total": 8}\n```'
+                           if count == 0 else judge_result(args.prompt))
+        else:
+            result_text = judge_result(args.prompt)
+        emit({"type": "result", "session_id": session_id,
+              "result": result_text})
+        return
 
     if args.mode == "timeout":
         # Hangs AFTER emitting accounting: the killed session's partial
@@ -308,6 +503,28 @@ def main():
         print("workflow aborted by evaluated agent", file=sys.stderr)
         sys.exit(21)
 
+    if args.mode == "abort-after-stop":
+        # A valid result can precede the registered abort exit. The runner
+        # must retain it as the final unanswered pre-artifact stop.
+        emit({"type": "result", "session_id": session_id,
+              "result": "Hello. Please provide the research query."})
+        print("workflow aborted after ritual stop", file=sys.stderr)
+        sys.exit(21)
+
+    if args.mode == "abort-after-artifact":
+        # The workflow wrote a document and only then aborted. Protocol v2
+        # must retain the abort outcome while still gating and judging the
+        # document instead of deleting it with the disposable worktree.
+        write_artifact()
+        print("workflow aborted after writing artifact", file=sys.stderr)
+        sys.exit(21)
+
+    if args.mode == "timeout-after-artifact":
+        # Same ordering as above, but exercise the timeout path.
+        write_artifact()
+        time.sleep(30)
+        sys.exit(0)
+
     if args.mode == "stale-artifact":
         # Metadata claims a checkout OTHER than the run's pinned
         # target-sha: the harness must reject the run-binding mismatch as
@@ -326,6 +543,24 @@ def main():
         (research / "mock-bad.md").write_text(ARTIFACT_BAD, encoding="utf-8")
         emit({"type": "result", "session_id": session_id,
               "result": "MOCK-VERDICT: wrote nonconforming document"})
+        return
+
+    if args.mode == "bad-utf8-artifact":
+        write_non_utf8_artifact()
+        emit({"type": "result", "session_id": session_id,
+              "result": "MOCK-VERDICT: wrote non-UTF-8 document"})
+        return
+
+    if args.mode == "multiple-artifacts":
+        write_multiple_artifacts()
+        emit({"type": "result", "session_id": session_id,
+              "result": "MOCK-VERDICT: wrote multiple documents"})
+        return
+
+    if args.mode == "empty-artifact":
+        write_empty_artifact()
+        emit({"type": "result", "session_id": session_id,
+              "result": "MOCK-VERDICT: wrote only whitespace"})
         return
 
     if args.mode == "silent-stop":

@@ -509,7 +509,8 @@ instruction «давай, шаг 4»):**
   `timeout_seconds 3600`, `max_infra_retries 2`,
   `workflow_abort_exit_codes []` (any registration of real abort
   codes happens at the formal preflight, before any scored run);
-  judge sessions mount-free at `judge_model opus` /
+  judge sessions mount-free with command selector `--model opus` and
+  effective-model parity pinned as `judge_model claude-opus-5` /
   `judge_effort high`; 3 replicates per arm per task in randomized
   interleaved order (unchanged from the registered design);
   `sandbox_cmd = ["python3",
@@ -699,6 +700,199 @@ candidate ritual stops and timeout/abort failures are zero. The fleet-ablation
 redundancy criterion is not satisfied because its clean T3 cell fails the
 efficiency condition. No post-hoc imputation or judge-response repair was
 applied.
+
+## Protocol v2 amendment — fresh sealed round (registered 2026-08-01)
+
+The owner authorized a fresh round after reviewing the indeterminate first
+round. This amendment is prospective: it does not reinterpret, repair, or
+reuse any task, artifact, judge response, or score from the completed round.
+The original arm definitions, frozen candidate
+`b731f06cdff5f38c0fa4c5aa64f93277d69e741d`, runtime pins, six-archetype
+coverage, three replicates, random interleaving, pass thresholds, and two-task
+ablation remain fixed unless this section expressly replaces a rule.
+
+### Registered v2 population and failure rules
+
+1. Each scheduled arm×task×replicate slot has exactly one final workflow
+   outcome after the existing maximum of two infrastructure retries.
+   Infrastructure retries replace only harness, backend-transport, runtime-
+   parity, or environment failures. A timeout, registered abort, missing
+   document, artifact-contract rejection, or ablation-policy violation is a
+   workflow outcome and is never repaired or rerun.
+2. Artifact compatibility is a **separate mandatory binary gate**, uniform
+   across arms. A produced document passes only when the registered validator
+   completes and reports no defects; the global legacy-consumer compatibility
+   preflight remains a prerequisite for the frozen artifact format. Validator
+   crash or indeterminate validator output is infrastructure failure, not a
+   gate failure. Every candidate artifact must pass; one candidate rejection
+   fails the candidate. An ablation rejection means fleet redundancy is not
+   established. Baseline rejections remain observed baseline outcomes and do
+   not erase their content/evidence observations.
+3. A valid scheduled slot produces **exactly one nonempty** research Markdown
+   document. An empty/whitespace-only fresh `.md` is a no-document outcome.
+   More than one nonempty fresh document makes the round terminally invalid:
+   the harness preserves byte-and-digest evidence and never selects a convenient
+   winner post hoc. The one nonempty document is anonymized, digest-bound to its
+   run, and judged exactly once by the blind content scorer and exactly once by
+   the evidence verifier, whether the artifact gate passed or failed. Judges
+   are not told the arm or gate result. V2 therefore has one all-documents
+   content population per role, not separate primary and diagnostic judge
+   calls. Gate-passed `-anon.md` and gate-failed `-diag.md` copies are mutually
+   exclusive inputs selected from the immutable run manifest. Gate status is
+   reported separately and may be used for a descriptive content-by-gate
+   breakdown, never to delete or substitute a score.
+4. The original no-document rules remain binding: a candidate timeout, abort,
+   or missing document fails the candidate; the corresponding ablation
+   outcome prevents a redundancy finding. A baseline timeout, abort, or
+   missing document makes that task inconclusive and excludes it from every
+   holdout aggregate. Fewer than three conclusive baseline tasks yields no
+   verdict. No-document outcomes are not sent to judges and are never
+   imputed.
+5. Cost and latency use **all final scheduled workflow outcomes with complete
+   runtime accounting**, including artifact-rejected outcomes. Superseded
+   infrastructure attempts and source-drift-excluded tasks do not enter the
+   binding population. Timeout/abort latency is the measured run-start to
+   terminal-outcome interval under the registered ceiling; tokens are the
+   observed tree-wide total. Missing or incomplete final-run accounting is an
+   infrastructure fault, never a zero or an exclusion chosen after outcomes.
+   The deadline and elapsed duration are measured from one monotonic clock;
+   wall-clock adjustments cannot change the ceiling or latency telemetry.
+   Every nonblank event in a timeout/abort transcript must be valid strict
+   stream JSON and every model-bearing node must carry typed, nonnegative,
+   nonzero model-token accounting. Because the workflow outcome has already
+   been observed, incomplete/malformed accounting or runtime parity after a
+   timeout/abort is a terminal operator block and is never infrastructure-
+   retried.
+6. Agent-tree parity precedes outcome classification: every observed Task
+   launch must have model-bearing child accounting. In the no-subagent arm, a
+   launch without that child evidence terminally blocks (the policy event was
+   observed but cannot be costed or parity-validated). When a fully-accounted
+   no-subagent-policy violation and timeout/abort occur in the same run,
+   `subagent_policy` is the deterministic primary failure kind and the
+   timeout/abort kind and detail are retained as secondary evidence. This
+   preserves both observations while keeping the ablation gate internally
+   consistent.
+
+### Registered v2 judge contract
+
+The runtime config and fresh seal both record `protocol_version: 2` and
+`max_judge_attempts: 3`. The seal contains role-associated JSON Schema files,
+their per-file hashes, the semantic rules below, and the fixed retry policy.
+The schema version, retry bound, aggregation policy, judge command/model/
+effort, and package digest are part of the schedule and scoring-batch identity.
+Every judge invocation receives the sealed role prompt, quality rubric, exact
+role schema, task context, and candidate document in that fixed order; prompt
+and rubric digests are recorded in batch, attempt, and result identity.
+
+All evaluated and judge processes use the fixed
+`claude-cli-minimal-env-v1` environment policy: only the pinned Claude auth,
+proxy/TLS, locale, HOME/PATH, and sandbox-wrapper variables cross the process
+boundary. Arbitrary ambient cloud, source-control, and developer-tool
+credentials are absent. This policy is implemented by the frozen public
+harness and proven with a secret-canary preflight before sealing.
+
+- A judge response is exactly one UTF-8 JSON object: no Markdown fence,
+  wrapper prose, trailing value, duplicate key, unknown property, non-finite
+  number, or tolerant repair. Resource bounds are 1 MiB UTF-8, nesting depth
+  32, 2,000 aggregate array items, and 20,000 UTF-8 characters per string.
+- The scorer object has exactly `coverage`, `relevance`, `synthesis`, `total`,
+  and `summary`. Each component has exactly numeric `score` and a nonempty
+  `rationale`; bounds are 0–4, 0–3, and 0–3 respectively, in quarter-point
+  increments. `total` is 0–10 in quarter-point increments and must equal the
+  exact integer-quarter sum of the components. `summary` is nonempty.
+- The verifier object has exactly `verifiable_claims`, `supported_claims`,
+  `unsupported_claims`, `unverifiable_claims`, `claim_ledger`,
+  `critical_errors`, `critical_error_count`, and `summary`. Counts are
+  nonnegative integers; `verifiable_claims` equals the other three claim
+  counts' sum. There is exactly one ledger row per counted claim and ledger
+  status counts reconcile with the counters. A supported row has at least one
+  candidate citation and one evidence reference. Critical-error entries use
+  the sealed category enum, contain evidence, and have unique normalized
+  propositions within one response. The judge does **not** emit
+  `evidence_accuracy`; the harness derives the exact ratio
+  `supported_claims / verifiable_claims` (zero when the denominator is zero),
+  and rounding is display-only.
+- Each required record receives at most three total attempts. Every attempt is
+  a fresh pinned, isolated session with identical prompt, document, context,
+  settings, output contract, and limits; it sees neither prior output nor
+  validation defects. The first schema-valid response is irrevocably accepted.
+  Every raw attempt and validation result is retained. Invalid output is judge
+  infrastructure, never a workflow score. If three attempts are exhausted,
+  the entire round is protocol-invalid: no repair, fence stripping, score
+  recovery, imputation, judge substitution, selective rejudge, partial median,
+  or reuse of a prior-round response is permitted.
+- Attempt JSON, pending journals, and external raw-stream sidecars are an
+  immutable association. Orphan sidecars, non-contiguous attempts, material
+  after a valid attempt, and any symlink/directory/non-regular material at a
+  registered attempt name durably invalidate the batch before launch. Evidence
+  descriptors never follow unsafe paths, and deleting the offending path does
+  not authorize another judge observation.
+
+### Registered v2 aggregation and decisions
+
+- Per task and arm, quality and evidence accuracy are the medians of the three
+  all-document judge values. Candidate-minus-baseline task deltas and the mean
+  across all conclusive tasks (six when none is excluded by the registered
+  baseline/source-drift rules) use unrounded values. Cost and latency use the
+  same median-then-mean-percentage pairing already registered, over the final-
+  run population above. No cross-task pooling is permitted.
+- Artifact success is reported as passed/final runs per arm and is an
+  independent candidate gate; format failure does not numerically zero an
+  otherwise judged content score. This is the registered resolution of the
+  first round's missing-cell ambiguity.
+- The critical-error gate is deliberately conservative and deterministic in
+  v2: the candidate must have **zero verifier-reported critical-error
+  occurrences across all candidate documents**. Baseline and ablation errors
+  are reported but cannot excuse a candidate occurrence. This replaces the
+  original cross-document “same distinct error” comparison, whose identity
+  rule was not machine-defined.
+- Candidate pass still requires quality delta ≥ −0.25/10, evidence delta ≥
+  −2 percentage points, zero candidate critical errors, zero candidate
+  artifact/workflow failures, zero ritual stops, and either ≥20% token savings
+  or ≥15% wall-time reduction. These absolute candidate gates cover all six
+  scheduled candidate tasks even when a baseline no-document outcome excludes
+  one task from paired deltas; an exclusion cannot hide a candidate failure.
+  All original thresholds are unchanged.
+- The ablation still runs exactly the newly sealed archetype-1 and archetype-3
+  tasks. Its quality, evidence, cost, and latency use these v2 populations and
+  the original non-inferiority/efficiency bounds. “Fleet not earning its keep”
+  is established only when both tasks satisfy every original conjunct and the
+  ablation has no artifact, workflow, subagent-policy, or critical-error
+  failure. Failure to establish redundancy is not evidence that the fleet is
+  positively useful.
+
+### V2 freeze, seal, execution, and proof
+
+1. Implement strict role validation, bounded crash-safe judge attempts,
+   all-document role coverage, immutable policy bindings, and deterministic
+   aggregation in `skills/research-codebase/evals/public/`.
+2. The synthetic preflight must prove valid scorer/verifier acceptance,
+   malformed/extra/duplicate/inconsistent response rejection, invalid→valid
+   retry, retry exhaustion, crash-safe attempt adoption, scorer+verifier
+   coverage of gate-failed documents, exclusive run/judge launch claims under
+   concurrent resumes, persistent duplicate-outcome invalidation, telemetry
+   populations, and aggregation rejection of incomplete, mixed, or foreign-
+   batch inputs.
+3. Freeze and commit the public harness while leaving the candidate and three
+   registered installation hashes unchanged. A separate uncontaminated
+   session then creates **one fresh atomic package** with six genuinely new
+   holdout tasks, new ground truth and snapshots, updated quality rubric and
+   coverage matrix, updated judge prompts, role schemas,
+   semantic/retry/aggregation policies, the explicit `ablation_tasks`
+   designation, and per-file hashes. Only its package SHA-256 and task
+   basenames return to the implementation context.
+4. Register that package hash, run the real-backend preflight on the sealed
+   v2 configuration, then execute one fresh 42-run randomized schedule and
+   its two all-document judge batches. Any material source-drift exclusion,
+   exhausted run/judge infrastructure, or ambiguous post-launch run/judge
+   journal makes the round indeterminate and requires another fresh seal and
+   complete schedule; deleting a journal never authorizes another observation,
+   and no cell- or result-selective rerun is allowed.
+5. A deterministic aggregation manifest records protocol/policy IDs and
+   SHA-256 digests of the run manifest, accepted judge records, and seal. The
+   public results update contains only sanitized aggregates and the go/no-go
+   recommendation; old and new private holdout contents remain outside this
+   repository.
 
 ## Owner decisions (2026-07-26)
 

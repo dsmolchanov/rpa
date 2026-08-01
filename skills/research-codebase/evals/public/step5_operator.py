@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Operator driver for Sequence step 5 (holdout runs) of the pilot.
+"""Historical protocol-v1 operator driver for Sequence step 5.
 
 Runs on the operator host that holds the sealed package and the target
 clones. Every phase is FAIL-CLOSED: a drifted configuration, a rebuilt
@@ -7,10 +7,14 @@ installation, a wrong CLI version, a failing sandbox, or an unexpected
 task set stops the experiment before any scored run, instead of
 producing results that cannot be trusted.
 
-The registered values below come from the pilot plan's freeze record
+The registered values below come from the pilot plan's original freeze record
 (`thoughts/shared/plans/2026-07-26-thinking-model-modernization-pilot.md`)
 and are compared against the operator's config — this driver is the
 mechanical restatement of that record, not a new decision.
+
+Until a fresh protocol-v2 seal is created and registered, this driver
+FAILS CLOSED on every protocol-v2 config; it must never emit legacy scoring
+commands for the new round.
 
 PROTOCOL NOTE: this driver never reads or prints holdout task CONTENT.
 It checks task-file basenames and digests only, so running it does not
@@ -44,7 +48,6 @@ Usage:
 import argparse
 import hashlib
 import json
-import os
 import platform
 import re
 import subprocess
@@ -94,6 +97,7 @@ DEFAULT_WRAPPER = "ns_sandbox.py"
 REGISTERED_TIMEOUT_SECONDS = 3600
 REGISTERED_MAX_INFRA_RETRIES = 2
 REGISTERED_REPLICATES = 3
+REGISTERED_PROTOCOL_VERSION = 1
 # The seal's judge_config is authoritative at scoring time; the plan
 # recorded these, so a difference is surfaced as a WARNING, not a stop.
 RECORDED_JUDGE_MODEL = "opus"
@@ -259,6 +263,12 @@ def validate_config(config):
     Returns (problems, warnings) — problems are fail-closed."""
     problems = []
     warnings = []
+    if config.get("protocol_version", 1) != REGISTERED_PROTOCOL_VERSION:
+        problems.append(
+            "this driver is registered only for the historical protocol-v1 "
+            "seal; protocol v2 requires a newly sealed package and updated "
+            "operator registration before any schedule or scoring command"
+        )
     if config.get("nonstandard_config"):
         problems.append(
             "`nonstandard_config` is true — holdout runs require the "
@@ -587,8 +597,8 @@ def phase_next(args, config):
         # does not read task content, so which basename is external is
         # left as a placeholder; drop both lines only if the batch has
         # no external-context task.
-        print(f"    --task-snapshots <external-task>.md="
-              f"<sealed>/<snapshot dir> \\")
+        print("    --task-snapshots <external-task>.md="
+              "<sealed>/<snapshot dir> \\")
         print(f"    --drift-report {Path(args.out) / 'drift-report.json'}"
               f" \\")
         print(f"    --scoring-seed <recorded> --output {judge_out}\n")
@@ -636,6 +646,19 @@ def main():
         p for p in PHASES if p != "score"))
     args = parser.parse_args()
 
+    try:
+        config = runner.load_config(args.config)
+    except runner.InfraFailure as exc:
+        fail(f"config refused: {exc}")
+    problems, warnings = validate_config(config)
+    for w in warnings:
+        warn(w)
+    if problems:
+        for problem in problems:
+            print(f"step5: STOP — {problem}", file=sys.stderr)
+        sys.exit(1)
+    ok("config matches the registered runtime configuration")
+
     canonical, problem = canonical_tasks(args.tasks)
     if problem:
         fail(problem)
@@ -645,19 +668,6 @@ def main():
     unknown = [p for p in phases if p not in PHASES]
     if unknown:
         fail(f"unknown phase(s): {unknown} — valid: {list(PHASES)}")
-
-    try:
-        config = runner.load_config(args.config)
-    except runner.InfraFailure as exc:
-        fail(f"config refused: {exc}")
-    problems, warnings = validate_config(config)
-    for w in warnings:
-        warn(w)
-    if problems:
-        for p in problems:
-            print(f"step5: STOP — {p}", file=sys.stderr)
-        sys.exit(1)
-    ok("config matches the registered runtime configuration")
 
     Path(args.out).mkdir(parents=True, exist_ok=True)
     if "schedule" in phases and args.seed is None:

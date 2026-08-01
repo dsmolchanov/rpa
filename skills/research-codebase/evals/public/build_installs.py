@@ -38,7 +38,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import runner
 
@@ -47,6 +47,46 @@ CANDIDATE_SHA = "b731f06cdff5f38c0fa4c5aa64f93277d69e741d"
 INSTALL_PATHS = [".claude-plugin", "agents", "commands", "hooks",
                  "scripts", "skills", "CLAUDE.md", "AGENTS.md"]
 IMPORT_LINE = "@AGENTS.md"
+
+
+def safe_extract_git_archive(archive, dest):
+    """Extract the trusted ``git archive`` without version-specific APIs.
+
+    Python 3.12 added ``TarFile.extractall(filter="data")``, while the
+    pinned operator image intentionally remains on Python 3.11.  Validate
+    every member ourselves so compatibility does not reintroduce traversal,
+    links, device nodes, or overwrite behavior.
+    """
+    directories = []
+    for member in archive.getmembers():
+        name = member.name.rstrip("/")
+        relative = PurePosixPath(name)
+        if (not name or "\\" in name or relative.is_absolute()
+                or any(part in ("", ".", "..") for part in relative.parts)
+                or relative.as_posix() != name):
+            raise RuntimeError(f"unsafe git-archive member path: {member.name!r}")
+        target = dest.joinpath(*relative.parts)
+        if member.isdir():
+            target.mkdir(parents=True, exist_ok=True)
+            # `git archive` uses group-writable tar modes (0775/0664),
+            # while TarFile extraction applies the process umask.  The
+            # registered installation hashes were built under umask 022;
+            # normalize explicitly so host/container umask cannot drift
+            # the artifact.
+            directories.append((target, 0o755))
+            continue
+        if not member.isfile():
+            raise RuntimeError(
+                f"unsupported git-archive member type: {member.name!r}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        source = archive.extractfile(member)
+        if source is None:
+            raise RuntimeError(f"cannot read git-archive member: {member.name!r}")
+        with source, target.open("xb") as output:
+            shutil.copyfileobj(source, output)
+        target.chmod(0o755 if member.mode & 0o111 else 0o644)
+    for directory, mode in reversed(directories):
+        directory.chmod(mode)
 
 
 def extract(repo, sha, dest):
@@ -58,9 +98,9 @@ def extract(repo, sha, dest):
     tar_bytes = subprocess.run(
         ["git", "-C", str(repo), "archive", sha, "--"] + paths,
         capture_output=True, check=True).stdout
-    dest.mkdir(parents=True, exist_ok=True)
+    dest.mkdir(parents=True, exist_ok=False)
     with tarfile.open(fileobj=io.BytesIO(tar_bytes)) as tf:
-        tf.extractall(dest, filter="data")
+        safe_extract_git_archive(tf, dest)
 
 
 def build(repo, out):

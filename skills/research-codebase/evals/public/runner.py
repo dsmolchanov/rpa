@@ -108,6 +108,8 @@ Stdlib only.
 """
 
 import argparse
+import codecs
+import fcntl
 import importlib.util
 import hashlib
 import json
@@ -116,6 +118,7 @@ import re
 import os
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -127,6 +130,16 @@ _ARTIFACT_VALIDATOR_SPEC = importlib.util.spec_from_file_location(
     "artifact_validator", Path(__file__).with_name("validate_artifact.py"))
 artifact_validator = importlib.util.module_from_spec(_ARTIFACT_VALIDATOR_SPEC)
 _ARTIFACT_VALIDATOR_SPEC.loader.exec_module(artifact_validator)
+
+_JUDGE_CONTRACT_SPEC = importlib.util.spec_from_file_location(
+    "judge_contract", Path(__file__).with_name("judge_contract.py"))
+judge_contract = importlib.util.module_from_spec(_JUDGE_CONTRACT_SPEC)
+_JUDGE_CONTRACT_SPEC.loader.exec_module(judge_contract)
+
+_SEAL_PACKAGE_SPEC = importlib.util.spec_from_file_location(
+    "seal_package", Path(__file__).with_name("seal_package.py"))
+seal_package = importlib.util.module_from_spec(_SEAL_PACKAGE_SPEC)
+_SEAL_PACKAGE_SPEC.loader.exec_module(seal_package)
 
 MAX_CONTINUATIONS = 3
 DEFAULT_MAX_INFRA_RETRIES = 2
@@ -151,6 +164,74 @@ REGISTERED_HOLDOUT_ARCHETYPE_KEYWORDS = {
     5: "external",         # requires external library/API context
     6: "premise",          # question with a known-wrong premise
 }
+PILOT_V2_PROTOCOL_VERSION = 2
+PILOT_V2_MAX_JUDGE_ATTEMPTS = 3
+# Judge responses are capped at 1 MiB by judge_contract; 4 MiB leaves room
+# for stream-json envelopes and accounting nodes. An oversized stream is
+# preserved verbatim in a sidecar and consumes one invalid attempt, so bounded
+# attempt JSON never discards audit evidence or permits unbounded retries.
+PILOT_V2_MAX_RAW_STREAM_BYTES = 4 * 1024 * 1024
+# Protocol-v2 sessions receive only the environment needed by the pinned
+# Claude CLI, its filesystem wrapper, locale/TLS, and network proxy.  In
+# particular, arbitrary cloud, source-control, and developer-tool tokens from
+# the operator process must never become model-visible ambient context.
+PILOT_V2_ENVIRONMENT_POLICY_ID = "claude-cli-minimal-env-v1"
+PILOT_V2_ENV_ALLOWLIST = frozenset({
+    "ALL_PROXY",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_SESSION_INGRESS_TOKEN",
+    "CLAUDE_SESSION_INGRESS_TOKEN_FILE",
+    "COLORTERM",
+    "CURL_CA_BUNDLE",
+    "HOME",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "LANG",
+    "LC_ALL",
+    "LC_COLLATE",
+    "LC_CTYPE",
+    "LC_MESSAGES",
+    "LC_MONETARY",
+    "LC_NUMERIC",
+    "LC_TIME",
+    "LOGNAME",
+    "MACOS_SANDBOX_CLI_ROOT",
+    "NODE_EXTRA_CA_CERTS",
+    "NO_PROXY",
+    "PATH",
+    "REQUESTS_CA_BUNDLE",
+    "SHELL",
+    "SSL_CERT_DIR",
+    "SSL_CERT_FILE",
+    "TERM",
+    "TZ",
+    "USER",
+    "all_proxy",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+})
+PILOT_V2_AGGREGATION_POLICY = {
+    "id": "pilot-v2-all-docs-v1",
+    "telemetry": "all-final-scheduled-workflow-outcomes-v1",
+    "critical": "candidate-absolute-zero-v1",
+}
+PILOT_V2_JUDGE_RETRY_POLICY = {
+    "max_attempts": PILOT_V2_MAX_JUDGE_ATTEMPTS,
+    "fresh_session_each_attempt": True,
+    "repair": "none",
+}
+PILOT_V2_FAILURE_KINDS = {
+    "artifact_contract",
+    "timeout",
+    "abort",
+    "missing_document",
+    "subagent_policy",
+    "workflow_failure",
+}
 CONTINUATION_MESSAGE = (
     "Proceed with the research as specified; no additional constraints."
 )
@@ -161,6 +242,28 @@ FINGERPRINT_KEYS = (
     "date",
     "last_updated",
     "last_updated_by",
+)
+FINGERPRINT_KEY_RE = re.compile(
+    r"(?:^|[,\{\[\-?])\s*(?:\?\s*)?(?:\[\s*)?"
+    r"(?P<quote>['\"]?)(?P<key>"
+    + "|".join(re.escape(key) for key in FINGERPRINT_KEYS)
+    + r")(?P=quote)(?:\s*\])?\s*:",
+    re.IGNORECASE,
+)
+FINGERPRINT_EXPLICIT_KEY_RE = re.compile(
+    r"^\s*(?:-\s*)?\?\s*(?:\[\s*)?(?P<quote>['\"]?)(?P<key>"
+    + "|".join(re.escape(key) for key in FINGERPRINT_KEYS)
+    + r")(?P=quote)(?:\s*\])?\s*$",
+    re.IGNORECASE,
+)
+YAML_EXPLICIT_VALUE_RE = re.compile(r"^\s*:\s*(?P<value>.*)$")
+YAML_ALIAS_RE = re.compile(r"^\*(?P<name>[A-Za-z0-9_-]+)(?:\s|$)")
+YAML_ANCHOR_RE = re.compile(r"&(?P<name>[A-Za-z0-9_-]+)(?:\s|$)")
+FRONTMATTER_DELIMITER_RE = re.compile(r"^---[ \t]*$")
+BOLD_FINGERPRINT_RE = re.compile(
+    r"^\*\*(?P<label>date|researcher|branch|git[ _-]*commit|"
+    r"last[ _-]*updated(?:[ _-]*by)?)\*\*\s*:.*$",
+    re.IGNORECASE | re.MULTILINE,
 )
 TARGET_SHA_RE = re.compile(r"^target-sha:\s*([0-9a-f]{7,40})\s*$", re.MULTILINE)
 TARGET_REPO_RE = re.compile(r"^target-repo:\s*(\S+)\s*$", re.MULTILINE)
@@ -181,15 +284,22 @@ class BlockingInfraFailure(InfraFailure):
     infra_failure contract, but never consumed by the automatic retry
     loop."""
 
+    def __init__(self, message, failure_kind=None):
+        super().__init__(message)
+        self.failure_kind = failure_kind
+
 
 class WorkflowFailure(Exception):
     """The evaluated workflow failed (timeout, abort, no artifact): counted,
     never replaced. `stdout` carries any partial transcript emitted before
     the failure so the failed run's accounting is preserved."""
 
-    def __init__(self, message, stdout=None):
+    def __init__(self, message, stdout=None, failure_kind="workflow_failure"):
         super().__init__(message)
         self.stdout = stdout
+        if failure_kind not in PILOT_V2_FAILURE_KINDS:
+            raise ValueError(f"unknown workflow failure kind: {failure_kind}")
+        self.failure_kind = failure_kind
 
 
 # Blind SCORERS receive the anonymized document inline; filesystem, exec,
@@ -310,17 +420,190 @@ def atomic_write_text(path, text):
         raise
 
 
+def _path_present(path):
+    """Existence check that does not treat a dangling symlink as absent."""
+    try:
+        Path(path).lstat()
+        return True
+    except OSError:
+        return False
+
+
+def _safe_regular_file(path):
+    """True only for a real regular file, never a symlink or directory."""
+    try:
+        return stat.S_ISREG(Path(path).lstat().st_mode)
+    except OSError:
+        return False
+
+
+def _evidence_descriptor(path):
+    """Describe invalid material without following it or failing to seal.
+
+    Terminal-invalid markers must survive directories, dangling symlinks,
+    unreadable files, and type-changing races.  Hash bytes only through a
+    no-follow descriptor whose identity still matches the initial lstat;
+    otherwise retain type/error metadata as the durable evidence.
+    """
+    path = Path(path)
+    evidence = {"file": path.name}
+    try:
+        before = path.lstat()
+    except OSError as exc:
+        evidence.update({
+            "file_type": "unreadable_or_missing",
+            "error_errno": exc.errno,
+        })
+        return evidence
+    if stat.S_ISLNK(before.st_mode):
+        evidence["file_type"] = "symlink"
+        return evidence
+    if stat.S_ISDIR(before.st_mode):
+        evidence["file_type"] = "directory"
+        return evidence
+    if not stat.S_ISREG(before.st_mode):
+        evidence["file_type"] = "other"
+        evidence["mode"] = stat.S_IFMT(before.st_mode)
+        return evidence
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        evidence.update({
+            "file_type": "unreadable_regular",
+            "error_errno": exc.errno,
+        })
+        return evidence
+    digest = hashlib.sha256()
+    try:
+        opened = os.fstat(fd)
+        if (not stat.S_ISREG(opened.st_mode)
+                or (opened.st_dev, opened.st_ino)
+                != (before.st_dev, before.st_ino)):
+            evidence["file_type"] = "changed_during_audit"
+            return evidence
+        while True:
+            chunk = os.read(fd, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    except OSError as exc:
+        evidence.update({
+            "file_type": "unreadable_regular",
+            "error_errno": exc.errno,
+        })
+        return evidence
+    finally:
+        os.close(fd)
+    evidence.update({"file_type": "regular", "sha256": digest.hexdigest()})
+    return evidence
+
+
+def exclusive_write_text(path, text):
+    """Create one durable claim without ever replacing an existing claim.
+
+    ``atomic_write_text`` is correct for single-writer state, but its final
+    ``os.replace`` lets two concurrent resumptions both believe they own the
+    same experimental slot.  Claims use ``O_EXCL`` so exactly one process can
+    cross the launch boundary; every loser stops before spawning a backend.
+    """
+    path = Path(path)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    fd = os.open(path, flags, 0o600)
+    created = True
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = -1
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        if fd >= 0:
+            os.close(fd)
+        if created:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        raise
+
+
+def process_is_alive(pid):
+    """Best-effort liveness test used only to avoid concurrent relaunches.
+
+    A false positive merely blocks until the reported process exits; it can
+    never authorize an extra experimental observation.
+    """
+    if (isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0):
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def acquire_advisory_lock(path, label):
+    """Acquire one process-scoped, nonblocking exclusive advisory lock.
+
+    The lock file is deliberately persistent: unlinking a live advisory-lock
+    path creates a second inode that another process can lock independently.
+    Crash recovery relies on the kernel releasing ``flock`` when the owning
+    process exits, never on deleting a stale pathname or PID claim.
+    """
+    path = Path(path)
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError as exc:
+        raise InfraFailure(f"cannot open {label} lock {path}: {exc}") from exc
+    handle = os.fdopen(fd, "r+", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        handle.close()
+        raise InfraFailure(
+            f"{label} is owned by an active concurrent process; no backend "
+            f"was launched"
+        ) from exc
+    except OSError as exc:
+        handle.close()
+        raise InfraFailure(f"cannot acquire {label} lock: {exc}") from exc
+    try:
+        handle.seek(0)
+        handle.truncate()
+        handle.write(json.dumps({"pid": os.getpid(), "label": label}) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    except BaseException:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+        raise
+    return handle
+
+
+def release_advisory_lock(handle):
+    """Release a handle returned by :func:`acquire_advisory_lock`."""
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
+
+
 def load_config(path):
     """User-input faults (missing/unreadable/malformed config, wrong shape)
     are classified infrastructure failures, never raw tracebacks: a
     syntactically valid but structurally wrong config (e.g. `{}`) must not
     surface later as a KeyError deep inside a mode."""
     try:
-        with open(path, encoding="utf-8") as fh:
-            config = json.load(fh)
+        config = _json_without_duplicate_keys(
+            Path(path).read_bytes(), f"config {path}")
     except OSError as exc:
         raise InfraFailure(f"cannot read config {path}: {exc}") from exc
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, InfraFailure) as exc:
         raise InfraFailure(f"config {path} is not valid JSON: {exc}") from exc
     if not isinstance(config, dict):
         raise InfraFailure(
@@ -400,6 +683,36 @@ def load_config(path):
                 required=False)
     require_str(config.get("seal_package_sha256"),
                 "`seal_package_sha256`", required=False)
+    protocol_version = config.get("protocol_version", 1)
+    if (isinstance(protocol_version, bool)
+            or not isinstance(protocol_version, int)
+            or protocol_version not in (1, PILOT_V2_PROTOCOL_VERSION)):
+        raise InfraFailure(
+            f"config {path}: `protocol_version` must be integer 1 or 2, "
+            f"got {protocol_version!r}"
+        )
+    if protocol_version == PILOT_V2_PROTOCOL_VERSION:
+        max_judge_attempts = config.get("max_judge_attempts")
+        if (isinstance(max_judge_attempts, bool)
+                or not isinstance(max_judge_attempts, int)
+                or max_judge_attempts <= 0
+                or max_judge_attempts != PILOT_V2_MAX_JUDGE_ATTEMPTS):
+            raise InfraFailure(
+                f"config {path}: protocol v2 requires "
+                f"`max_judge_attempts` exactly "
+                f"{PILOT_V2_MAX_JUDGE_ATTEMPTS}, got "
+                f"{max_judge_attempts!r}"
+            )
+        if not config.get("nonstandard_config"):
+            max_infra_retries = config.get("max_infra_retries")
+            if (isinstance(max_infra_retries, bool)
+                    or max_infra_retries != DEFAULT_MAX_INFRA_RETRIES):
+                raise InfraFailure(
+                    f"config {path}: standard protocol v2 requires "
+                    f"`max_infra_retries` exactly "
+                    f"{DEFAULT_MAX_INFRA_RETRIES}, got "
+                    f"{max_infra_retries!r}"
+                )
     return config
 
 
@@ -431,6 +744,14 @@ def config_digest(config):
         "drift_fetch_cmd": config.get("drift_fetch_cmd"),
         "seal_package_sha256": config.get("seal_package_sha256"),
     }
+    # Keep legacy schedules byte-compatible when neither v2 field exists;
+    # an explicitly versioned config binds both values into its identity.
+    if ("protocol_version" in config or "max_judge_attempts" in config):
+        material["protocol_version"] = config.get("protocol_version", 1)
+        material["max_judge_attempts"] = config.get("max_judge_attempts")
+        if config.get("protocol_version", 1) == PILOT_V2_PROTOCOL_VERSION:
+            material["environment_policy_id"] = (
+                PILOT_V2_ENVIRONMENT_POLICY_ID)
     return hashlib.sha256(
         json.dumps(material, sort_keys=True).encode("utf-8")
     ).hexdigest()
@@ -441,10 +762,11 @@ def load_json_object(path, what):
     drift reports) fail as classified infrastructure errors, never as
     OSError/JSONDecodeError/AttributeError tracebacks."""
     try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        data = _json_without_duplicate_keys(
+            Path(path).read_bytes(), f"{what} {path}")
     except OSError as exc:
         raise InfraFailure(f"cannot read {what} {path}: {exc}") from exc
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, InfraFailure) as exc:
         raise InfraFailure(f"{what} {path} is not valid JSON: {exc}") from exc
     if not isinstance(data, dict):
         raise InfraFailure(f"{what} {path} must be a JSON object")
@@ -516,8 +838,25 @@ def make_profile(workspace, label, installation_dir=None, settings=None):
     return profile, mount
 
 
-def backend_env(profile):
-    env = dict(os.environ)
+def backend_env(profile, protocol_version=1):
+    """Build the child environment without leaking operator credentials.
+
+    Historical v1 reproduction keeps its original ambient-environment
+    behavior.  Protocol v2 is prospective and fail-closed: only the fixed
+    CLI/auth/proxy/TLS/locale allowlist crosses the session boundary.
+    """
+    if protocol_version == PILOT_V2_PROTOCOL_VERSION:
+        env = {
+            name: os.environ[name]
+            for name in PILOT_V2_ENV_ALLOWLIST
+            if name in os.environ
+        }
+        # Never inherit an operator-host temp path into a filesystem sandbox;
+        # Linux supplies private /tmp and the macOS wrapper replaces it again.
+        env["TMPDIR"] = "/tmp"
+        env["RPA_ENVIRONMENT_POLICY"] = PILOT_V2_ENVIRONMENT_POLICY_ID
+    else:
+        env = dict(os.environ)
     env["CLAUDE_CONFIG_DIR"] = str(profile)
     return env
 
@@ -557,7 +896,118 @@ def read_input_bytes(path, what):
         raise InfraFailure(f"cannot read {what} {path}: {exc}") from exc
 
 
-def validate_sealed_judge_config(config, seal_doc):
+def _json_without_duplicate_keys(data, what):
+    def reject_constant(token):
+        raise ValueError(f"non-finite numeric literal {token} is forbidden")
+
+    def reject_duplicates(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate object key {key!r}")
+            result[key] = value
+        return result
+
+    try:
+        return json.loads(data.decode("utf-8"),
+                          object_pairs_hook=reject_duplicates,
+                          parse_constant=reject_constant)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise InfraFailure(f"{what} is not strict UTF-8 JSON: {exc}") from exc
+
+
+def _validate_v2_sealed_schemas(seal_doc, seal_files, seal_manifest_path,
+                                include_text=False):
+    """Resolve both role schemas inside the sealed package without allowing
+    absolute paths, traversal, or symlink escape.  The sealed bytes must be
+    the exact contract emitted by ``judge_contract`` for that role."""
+    associations = seal_doc.get("judge_response_schemas")
+    if (not isinstance(associations, dict)
+            or set(associations) != {"scorer", "verifier"}
+            or not all(isinstance(value, str) and value.strip()
+                       for value in associations.values())):
+        raise InfraFailure(
+            "protocol v2 seal `judge_response_schemas` must map exactly "
+            "`scorer` and `verifier` to nonempty package-relative paths"
+        )
+    if seal_manifest_path is None or seal_files is None:
+        raise InfraFailure(
+            "protocol v2 seal validation requires the seal manifest path "
+            "and its sealed file map"
+        )
+
+    package_root = Path(seal_manifest_path).resolve().parent
+    digests = {}
+    texts = {}
+    for role in ("scorer", "verifier"):
+        ref = associations[role]
+        rel = Path(ref)
+        if ("\\" in ref or rel.is_absolute() or not rel.parts
+                or any(part in ("", ".", "..") for part in rel.parts)
+                or rel.as_posix() != ref):
+            raise InfraFailure(
+                f"sealed {role} response schema path `{ref}` is not one "
+                f"canonical package-relative path"
+            )
+        resolved = (package_root / rel).resolve()
+        try:
+            resolved.relative_to(package_root)
+        except ValueError as exc:
+            raise InfraFailure(
+                f"sealed {role} response schema `{ref}` escapes the "
+                f"package directory"
+            ) from exc
+        expected_digest = seal_files.get(ref)
+        if not isinstance(expected_digest, str) or not expected_digest:
+            raise InfraFailure(
+                f"sealed {role} response schema `{ref}` has no digest in "
+                f"the seal file map"
+            )
+        data = read_input_bytes(resolved, f"sealed {role} response schema")
+        actual_digest = hashlib.sha256(data).hexdigest()
+        if actual_digest != expected_digest:
+            raise InfraFailure(
+                f"sealed {role} response schema `{ref}` differs from its "
+                f"registered digest"
+            )
+        schema = _json_without_duplicate_keys(
+            data, f"sealed {role} response schema `{ref}`")
+        if schema != judge_contract.contract_schema(role):
+            raise InfraFailure(
+                f"sealed {role} response schema `{ref}` is not exactly "
+                f"the harness contract version "
+                f"{judge_contract.RESPONSE_SCHEMA_VERSION}"
+            )
+        digests[role] = actual_digest
+        texts[role] = data.decode("utf-8")
+    return (digests, texts) if include_text else digests
+
+
+def _verify_v2_seal_package(config, seal_manifest_path):
+    """Run the package-level verifier (file set, ordinary-file/symlink
+    policy, canonical manifest, and every digest) without surfacing private
+    package paths or contents in the classified error."""
+    if seal_manifest_path is None:
+        raise InfraFailure(
+            "protocol v2 requires the complete atomic seal package")
+    try:
+        registration = seal_package.verify_package(
+            Path(seal_manifest_path).parent, seal_manifest_path)
+    except seal_package.SealError as exc:
+        raise InfraFailure(
+            "protocol v2 atomic seal package failed full verification"
+        ) from exc
+    if registration.get("seal_package_sha256") != config.get(
+            "seal_package_sha256"):
+        raise InfraFailure(
+            "protocol v2 atomic seal package differs from its registered "
+            "SHA-256"
+        )
+    return registration
+
+
+def validate_sealed_judge_config(config, seal_doc, seal_manifest_path=None,
+                                 seal_files=None, include_schema_text=False):
     """The atomic seal registers the judge session configuration; the
     runtime config must match it exactly. config_digest alone binds
     whatever judge settings existed at schedule creation — without this
@@ -578,6 +1028,40 @@ def validate_sealed_judge_config(config, seal_doc):
                 f"configuration — scoring would run under unregistered "
                 f"judge settings; fix the config or re-seal"
             )
+    if config.get("protocol_version", 1) != PILOT_V2_PROTOCOL_VERSION:
+        return {}
+    _verify_v2_seal_package(config, seal_manifest_path)
+    if seal_doc.get("protocol_version") != PILOT_V2_PROTOCOL_VERSION:
+        raise InfraFailure(
+            "protocol v2 config requires a seal with `protocol_version: 2`"
+        )
+    configured_attempts = config.get("max_judge_attempts")
+    if (isinstance(configured_attempts, bool)
+            or not isinstance(configured_attempts, int)
+            or configured_attempts != PILOT_V2_MAX_JUDGE_ATTEMPTS):
+        raise InfraFailure(
+            "protocol v2 config requires `max_judge_attempts` exactly 3"
+        )
+    if (seal_doc.get("max_judge_attempts") != configured_attempts
+            or seal_doc.get("max_judge_attempts")
+            != PILOT_V2_MAX_JUDGE_ATTEMPTS):
+        raise InfraFailure(
+            "protocol v2 seal must record `max_judge_attempts: 3` and "
+            "match the runtime config"
+        )
+    if seal_doc.get("judge_retry_policy") != PILOT_V2_JUDGE_RETRY_POLICY:
+        raise InfraFailure(
+            "protocol v2 seal `judge_retry_policy` must be exactly "
+            f"{PILOT_V2_JUDGE_RETRY_POLICY!r}"
+        )
+    if seal_doc.get("aggregation_policy") != PILOT_V2_AGGREGATION_POLICY:
+        raise InfraFailure(
+            "protocol v2 seal `aggregation_policy` must be exactly "
+            f"{PILOT_V2_AGGREGATION_POLICY!r}"
+        )
+    return _validate_v2_sealed_schemas(
+        seal_doc, seal_files, seal_manifest_path,
+        include_text=include_schema_text)
 
 
 def parse_seal_manifest(seal_bytes, path):
@@ -585,8 +1069,9 @@ def parse_seal_manifest(seal_bytes, path):
     parse through the classified boundary, and require `files` to be an
     object before any dereference."""
     try:
-        seal_doc = json.loads(seal_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        seal_doc = _json_without_duplicate_keys(
+            seal_bytes, f"seal manifest {path}")
+    except InfraFailure as exc:
         raise InfraFailure(
             f"seal manifest {path} is not valid UTF-8 JSON: {exc}"
         ) from exc
@@ -794,6 +1279,19 @@ def with_stream_json_transport(cmd):
     return full
 
 
+def kill_process_group(proc):
+    """Ensure no subprocess from a finished model session survives it."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    except PermissionError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+
+
 def spawn_session(cmd, prompt, cwd, env, timeout, resume=None,
                   workflow_abort_exits=()):
     """`workflow_abort_exits` lists backend exit codes that represent an
@@ -818,14 +1316,16 @@ def spawn_session(cmd, prompt, cwd, env, timeout, resume=None,
         # on timeout the WHOLE tree is killed, so spawned tool
         # subprocesses cannot keep consuming the budget or touching the
         # disposable worktree after the timeout is recorded.
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            proc.kill()
+        kill_process_group(proc)
         stdout, stderr = proc.communicate()
         raise WorkflowFailure(
-            f"session timed out after {timeout}s", stdout=stdout
+            f"session timed out after {timeout}s", stdout=stdout,
+            failure_kind="timeout",
         ) from exc
+    # The parent CLI exiting is not proof that its tool subprocesses exited.
+    # Kill the dedicated process group after *every* terminal parent outcome
+    # before artifact discovery or worktree cleanup.
+    kill_process_group(proc)
     if proc.returncode != 0:
         detail = (stderr or "").strip()[:500]
         if proc.returncode in workflow_abort_exits:
@@ -834,9 +1334,109 @@ def spawn_session(cmd, prompt, cwd, env, timeout, resume=None,
             raise WorkflowFailure(
                 f"workflow aborted (exit {proc.returncode}): {detail}",
                 stdout=stdout,
+                failure_kind="abort",
             )
         raise InfraFailure(f"backend exited {proc.returncode}: {detail}")
     return stdout
+
+
+def spawn_judge_session_capped(cmd, prompt, cwd, env, timeout,
+                               raw_stream_path, max_stream_bytes):
+    """Run one v2 judge with stdout captured to disk and a live size cap.
+
+    Disk capture avoids unbounded in-memory ``communicate`` buffering. The
+    process group is killed as soon as the observed stream exceeds the cap;
+    the exact emitted bytes remain at ``raw_stream_path`` for audit.
+    Returns ``(text_or_none, byte_count, sha256, launch_defects, external)``.
+    ``external`` means the preserved sidecar is intentionally not embedded
+    in the bounded attempt JSON.
+    """
+    full = list(cmd) + ["-p", prompt, "--output-format", "stream-json"]
+    raw_stream_path = Path(raw_stream_path)
+    launch_defects = []
+    with raw_stream_path.open("w+b") as raw_handle, tempfile.TemporaryFile() as err:
+        try:
+            proc = subprocess.Popen(
+                full, cwd=cwd, env=env, stdout=raw_handle, stderr=err,
+                start_new_session=True)
+        except OSError as exc:
+            launch_defects.append(f"judge transport failed: {exc}")
+            proc = None
+        oversized = False
+        timed_out = False
+        if proc is not None:
+            deadline = time.monotonic() + timeout
+            while proc.poll() is None:
+                raw_handle.flush()
+                if os.fstat(raw_handle.fileno()).st_size > max_stream_bytes:
+                    oversized = True
+                elif time.monotonic() >= deadline:
+                    timed_out = True
+                else:
+                    time.sleep(0.02)
+                    continue
+                kill_process_group(proc)
+                proc.wait()
+                break
+            # A successful/nonzero parent can leave detached-stdio tool
+            # children in its process group. Reap them before reading the
+            # final stream or tearing down judge isolation.
+            kill_process_group(proc)
+            raw_handle.flush()
+            os.fsync(raw_handle.fileno())
+            byte_count = os.fstat(raw_handle.fileno()).st_size
+            oversized = oversized or byte_count > max_stream_bytes
+            err.seek(0)
+            detail = err.read(500).decode("utf-8", "replace").strip()
+            if oversized:
+                launch_defects.append(
+                    f"judge raw stream exceeded {max_stream_bytes} bytes")
+            elif timed_out:
+                launch_defects.append(
+                    f"judge session failed: session timed out after "
+                    f"{timeout}s")
+            elif proc.returncode != 0:
+                launch_defects.append(
+                    f"judge transport failed: backend exited "
+                    f"{proc.returncode}: {detail}")
+        else:
+            raw_handle.flush()
+            byte_count = os.fstat(raw_handle.fileno()).st_size
+        raw_handle.seek(0)
+        digest = hashlib.sha256()
+        chunks = [] if not oversized else None
+        while True:
+            chunk = raw_handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+            if chunks is not None:
+                chunks.append(chunk)
+    if oversized:
+        return None, byte_count, digest.hexdigest(), launch_defects, True
+    try:
+        text = b"".join(chunks).decode("utf-8")
+    except UnicodeDecodeError:
+        # Preserve the exact bytes as an external audit sidecar and consume
+        # the attempt as invalid; tolerant replacement would be repair.
+        launch_defects.append("judge raw stream is not UTF-8")
+        return None, byte_count, digest.hexdigest(), launch_defects, True
+    raw_stream_path.unlink(missing_ok=True)
+    return text, byte_count, digest.hexdigest(), launch_defects, False
+
+
+def _nonnegative_event_int(value, label):
+    """Strict accounting integer at the backend transport boundary."""
+    if (isinstance(value, bool) or not isinstance(value, int) or value < 0):
+        raise InfraFailure(
+            f"{label} must be a nonnegative integer, got {value!r}")
+    return value
+
+
+def _required_usage_int(usage, key, label):
+    if key not in usage:
+        raise InfraFailure(f"{label} is missing mandatory `{key}`")
+    return _nonnegative_event_int(usage[key], f"{label} {key}")
 
 
 def _node_from_event(event):
@@ -852,19 +1452,39 @@ def _node_from_event(event):
         effort field — see `validate_efforts` for how the pin is enforced.
     """
     if event.get("type") == "node":
-        usage = event.get("usage", {})
+        usage = event.get("usage")
+        if not isinstance(usage, dict):
+            raise InfraFailure("synthetic node usage must be an object")
+        model = event.get("model")
+        if not isinstance(model, str) or not model:
+            raise InfraFailure("synthetic node model must be nonempty text")
+        subagent = event.get("subagent", False)
+        if not isinstance(subagent, bool):
+            raise InfraFailure("synthetic node subagent flag must be boolean")
+        input_tokens = _required_usage_int(
+            usage, "input_tokens", "node usage")
+        output_tokens = _required_usage_int(
+            usage, "output_tokens", "node usage")
+        if input_tokens + output_tokens == 0:
+            raise InfraFailure(
+                "node usage must contain a positive model-token total")
         return {
-            "model": event.get("model"),
+            "model": model,
             "effort": event.get("effort"),
-            "input_tokens": int(usage.get("input_tokens", 0)),
-            "output_tokens": int(usage.get("output_tokens", 0)),
-            "tool_calls": int(event.get("tool_calls", 0)),
-            "subagent": bool(event.get("subagent", False)),
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "tool_calls": _nonnegative_event_int(
+                event.get("tool_calls", 0), "node tool_calls"),
+            "subagent": subagent,
             "subagent_id": event.get("subagent_id"),
-            "subagent_launches": int(event.get("subagent_launches", 0)),
+            "subagent_launches": _nonnegative_event_int(
+                event.get("subagent_launches", 0),
+                "node subagent_launches"),
         }
-    if event.get("type") == "assistant" and isinstance(event.get("message"), dict):
-        message = event["message"]
+    if event.get("type") == "assistant":
+        message = event.get("message")
+        if not isinstance(message, dict):
+            raise InfraFailure("assistant event message must be an object")
         # The real CLI also emits CLIENT-GENERATED assistant notices (e.g.
         # "Unknown command: ...") marked `model: "<synthetic>"`. They are
         # not API turns: no runtime ran and no usage was consumed, so they
@@ -874,8 +1494,17 @@ def _node_from_event(event):
         # counting (real-backend shakedown finding, 2026-07-27).
         if message.get("model") == "<synthetic>":
             return None
-        usage = message.get("usage") or {}
-        content = message.get("content") or []
+        model = message.get("model")
+        if not isinstance(model, str) or not model:
+            raise InfraFailure("assistant node model must be nonempty text")
+        usage = message.get("usage")
+        if not isinstance(usage, dict):
+            raise InfraFailure("assistant node usage must be an object")
+        content = message.get("content")
+        if (not isinstance(content, list)
+                or any(not isinstance(block, dict) for block in content)):
+            raise InfraFailure(
+                "assistant node content must be an array of objects")
         tool_calls = sum(
             1 for block in content
             if isinstance(block, dict) and block.get("type") == "tool_use"
@@ -892,22 +1521,37 @@ def _node_from_event(event):
         # `input_tokens`; all input categories must count toward tree-wide
         # cost, or cached runs undercount (differently per arm) and can
         # fake the token-savings pass bar.
-        input_total = (
-            int(usage.get("input_tokens", 0) or 0)
-            + int(usage.get("cache_creation_input_tokens", 0) or 0)
-            + int(usage.get("cache_read_input_tokens", 0) or 0)
-        )
+        input_total = sum((
+            _required_usage_int(
+                usage, "input_tokens", "assistant usage"),
+            _nonnegative_event_int(
+                usage.get("cache_creation_input_tokens", 0),
+                "assistant cache_creation_input_tokens"),
+            _nonnegative_event_int(
+                usage.get("cache_read_input_tokens", 0),
+                "assistant cache_read_input_tokens"),
+        ))
+        parent_id = event.get("parent_tool_use_id")
+        if parent_id is not None and (
+                not isinstance(parent_id, str) or not parent_id):
+            raise InfraFailure(
+                "assistant parent_tool_use_id must be null or nonempty text")
+        output_tokens = _required_usage_int(
+            usage, "output_tokens", "assistant usage")
+        if input_total + output_tokens == 0:
+            raise InfraFailure(
+                "assistant usage must contain a positive model-token total")
         return {
-            "model": message.get("model"),
+            "model": model,
             "effort": event.get("effort"),
             "input_tokens": input_total,
-            "output_tokens": int(usage.get("output_tokens", 0) or 0),
+            "output_tokens": output_tokens,
             "tool_calls": tool_calls,
-            "subagent": event.get("parent_tool_use_id") is not None,
+            "subagent": parent_id is not None,
             # Identity, not just a boolean: several messages from one
             # subagent must stay distinguishable from one message each
             # from several subagents, or "subagents spawned" is unmeasurable.
-            "subagent_id": event.get("parent_tool_use_id"),
+            "subagent_id": parent_id,
             "subagent_launches": subagent_launches,
         }
     return None
@@ -919,16 +1563,29 @@ def parse_transcript(stdout):
     headless stream (see `_node_from_event`); `session_id` comes from any
     event carrying one, response text from the `result` event."""
     nodes, session_id, result_parts = [], None, []
-    for line in stdout.splitlines():
+    for line_number, line in enumerate(stdout.splitlines(), 1):
         line = line.strip()
         if not line:
             continue
         try:
-            event = json.loads(line)
-        except json.JSONDecodeError as exc:
+            event = _json_without_duplicate_keys(
+                line.encode("utf-8"), "backend stream event")
+        except InfraFailure as exc:
             raise InfraFailure(f"unparseable backend output line: {line[:200]}") from exc
+        if not isinstance(event, dict):
+            raise InfraFailure("backend stream event is not a JSON object")
         if "session_id" in event:
-            session_id = event["session_id"]
+            candidate = event["session_id"]
+            if not isinstance(candidate, str) or not candidate.strip():
+                raise InfraFailure(
+                    f"stream line {line_number} has a non-string or empty "
+                    f"session_id")
+            elif session_id is None:
+                session_id = candidate
+            elif candidate != session_id:
+                raise InfraFailure(
+                    f"stream line {line_number} conflicts with the first "
+                    f"session_id")
         if event.get("type") == "result" and event.get("result"):
             result_parts.append(str(event["result"]))
         node = _node_from_event(event)
@@ -942,28 +1599,73 @@ def parse_transcript(stdout):
 
 
 def parse_nodes_tolerant(stdout):
-    """Best-effort node extraction from a partial transcript (timeout or
-    workflow abort): unparseable lines are skipped, nothing is required.
-    Used only to preserve accounting on already-failed runs."""
+    """Extract nodes from a partial timeout/abort transcript.
+
+    A partial stream may legitimately omit its final result, but every byte
+    that did arrive is accounting evidence.  Reject malformed/non-object
+    events instead of accepting a convenient valid prefix and undercounting
+    the already-observed workflow failure.
+    """
     nodes = []
-    for line in (stdout or "").splitlines():
+    for line_number, line in enumerate((stdout or "").splitlines(), 1):
         line = line.strip()
         if not line:
             continue
         try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+            event = _json_without_duplicate_keys(
+                line.encode("utf-8"), "partial backend stream event")
+        except InfraFailure as exc:
+            raise InfraFailure(
+                f"partial stream line {line_number} is not valid JSON"
+            ) from exc
+        if not isinstance(event, dict):
+            raise InfraFailure(
+                f"partial stream line {line_number} is not a JSON object")
         node = _node_from_event(event)
         if node is not None:
             nodes.append(node)
     return nodes
 
 
+def parse_result_tolerant(stdout):
+    """Best-effort final-response extraction from a failed partial stream.
+
+    Timeout/abort is already a workflow outcome, so malformed transport is
+    not repaired here.  Valid result events that did arrive remain necessary
+    ritual-stop evidence and must not disappear merely because the process
+    later exited or hit its deadline.
+    """
+    result_parts = []
+    for line in (stdout or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = _json_without_duplicate_keys(
+                line.encode("utf-8"), "partial backend stream event")
+        except InfraFailure:
+            continue
+        if (isinstance(event, dict)
+                and event.get("type") == "result"
+                and event.get("result") is not None):
+            result_parts.append(str(event["result"]))
+    return "\n".join(result_parts)
+
+
 def account(nodes):
     totals = {"main": {"input_tokens": 0, "output_tokens": 0, "tool_calls": 0},
               "subagents": {"input_tokens": 0, "output_tokens": 0, "tool_calls": 0}}
     for node in nodes:
+        if not isinstance(node, dict):
+            raise InfraFailure("accounting node must be an object")
+        if not isinstance(node.get("subagent"), bool):
+            raise InfraFailure("accounting node subagent flag must be boolean")
+        for field in ("input_tokens", "output_tokens", "tool_calls"):
+            _nonnegative_event_int(
+                node.get(field), f"accounting node {field}")
+        _nonnegative_event_int(
+            node.get("subagent_launches", 0),
+            "accounting node subagent_launches")
         bucket = totals["subagents"] if node["subagent"] else totals["main"]
         bucket["input_tokens"] += node["input_tokens"]
         bucket["output_tokens"] += node["output_tokens"]
@@ -1120,16 +1822,28 @@ def snapshot_research(worktree):
     return {p: p.stat().st_mtime for p in research.glob("*.md")}
 
 
-def find_new_artifact(worktree, before):
-    """Only documents created or modified during the run count."""
+def find_new_artifacts(worktree, before):
+    """Return every document created or modified during the run.
+
+    Selecting only the newest file would silently discard other observed
+    workflow output.  The protocol's immutable population is one nonempty
+    document per scheduled slot, so the caller must explicitly classify zero,
+    one, or multiple fresh documents.
+    """
     research = Path(worktree) / "thoughts" / "shared" / "research"
     if not research.is_dir():
-        return None
-    fresh = [
-        p for p in research.glob("*.md")
-        if p not in before or p.stat().st_mtime > before[p]
-    ]
-    return max(fresh, key=lambda p: p.stat().st_mtime) if fresh else None
+        return []
+    fresh = []
+    for path in research.glob("*.md"):
+        try:
+            changed = path not in before or path.stat().st_mtime > before[path]
+        except OSError:
+            # Let the caller's byte read classify a disappeared/unreadable
+            # fresh path as ambiguous observed output.
+            changed = True
+        if changed:
+            fresh.append(path)
+    return sorted(fresh, key=lambda path: path.name)
 
 
 def anonymize(text, run_id):
@@ -1142,27 +1856,126 @@ def anonymize(text, run_id):
     # replicate would abort its whole blind-scoring batch.
     # Over-masking a look-alike prose line is the safe direction.
     text = text.lstrip("\ufeff")
-    key_re = re.compile(
-        "^\\ufeff?\\s*(" + "|".join(FINGERPRINT_KEYS) + ")\\s*:",
-        re.IGNORECASE)
     lines = text.splitlines()
-    for j, line in enumerate(lines):
-        match = key_re.match(line)
-        if match:
-            lines[j] = (f"{match.group(1).lower()}: "
+    # The frontmatter is metadata, not judged content. Replace the complete
+    # block rather than trying to interpret every legal YAML spelling
+    # (quoted/explicit/flow keys and block scalars can all hide identity from
+    # a line-oriented masker).
+    first_content = next(
+        (index for index, line in enumerate(lines) if line.strip()), None)
+    frontmatter_open = (
+        first_content is not None
+        and re.fullmatch(r"[ \t]*---[ \t]*", lines[first_content])
+    )
+    if frontmatter_open:
+        closing = next(
+            (index for index in range(first_content + 1, len(lines))
+             if FRONTMATTER_DELIMITER_RE.fullmatch(lines[index])),
+            None,
+        )
+        if closing is not None:
+            lines[first_content:closing + 1] = [
+                "---",
+                f"anonymized_run: '[anonymized:{run_id}]'",
+                "---",
+            ]
+        else:
+            # An unclosed/indented opening is a gate failure, but its
+            # diagnostic copy is still judged.  YAML permits arbitrarily
+            # nested continuations, anchors, tags and flow constructs, so a
+            # regex cannot prove where malformed metadata ends.  Erase the
+            # entire metadata-looking prefix up to the first Markdown
+            # heading (or EOF) and retain the research body from there.
+            body_start = next(
+                (index for index in range(first_content + 1, len(lines))
+                 if re.match(r"^#{1,6}\s+", lines[index])),
+                len(lines),
+            )
+            lines[first_content:body_start] = [
+                "---",
+                f"anonymized_run: '[anonymized:{run_id}]'",
+                "---",
+                "",
+            ]
+    # Malformed/unclosed frontmatter is still diagnostic-judge input. Mask
+    # YAML's two-line explicit-key spelling (`? researcher` / `: Alice`),
+    # including sequence-wrapped keys, before the ordinary mapping pass.
+    sensitive_aliases = set()
+    for index, line in enumerate(lines):
+        explicit = FINGERPRINT_EXPLICIT_KEY_RE.match(line)
+        if not explicit:
+            continue
+        lines[index] = (f"{explicit.group('key').lower()}: "
                         f"'[anonymized:{run_id}]'")
+        if index + 1 < len(lines):
+            value_match = YAML_EXPLICIT_VALUE_RE.match(lines[index + 1])
+            if value_match:
+                value = value_match.group("value").lstrip()
+                alias_match = YAML_ALIAS_RE.match(value)
+                if alias_match:
+                    sensitive_aliases.add(alias_match.group("name"))
+                value_indent = len(lines[index + 1]) - len(
+                    lines[index + 1].lstrip(" \t"))
+                lines[index + 1] = ""
+                cursor = index + 2
+                while cursor < len(lines):
+                    continuation = lines[cursor]
+                    indent = len(continuation) - len(
+                        continuation.lstrip(" \t"))
+                    if continuation.strip() and indent <= value_indent:
+                        break
+                    lines[cursor] = ""
+                    cursor += 1
+    block_indent = None
+    for j, line in enumerate(lines):
+        leading = len(line) - len(line.lstrip(" \t"))
+        if block_indent is not None:
+            if not line.strip() or leading > block_indent:
+                lines[j] = ""
+                continue
+            block_indent = None
+        match = FINGERPRINT_KEY_RE.search(line)
+        if match:
+            value = line[match.end():].lstrip()
+            alias_match = YAML_ALIAS_RE.match(value)
+            if alias_match:
+                sensitive_aliases.add(alias_match.group("name"))
+            lines[j] = (f"{match.group('key').lower()}: "
+                        f"'[anonymized:{run_id}]'")
+            # Plain empty values, malformed folded continuations, and legal
+            # block scalars can all carry identity on subsequent indented
+            # lines.  Conservatively erase every more-indented continuation.
+            block_indent = leading
+    # A fingerprint can be expressed through a YAML alias while the secret
+    # appears on an innocently named anchor definition (`identity: &who
+    # Alice`).  Once a fingerprint references an alias, conservatively erase
+    # each matching anchor definition and any block-scalar continuation.
+    if sensitive_aliases:
+        anchor_block_indent = None
+        for index, line in enumerate(lines):
+            leading = len(line) - len(line.lstrip(" \t"))
+            if anchor_block_indent is not None:
+                if not line.strip() or leading > anchor_block_indent:
+                    lines[index] = ""
+                    continue
+                anchor_block_indent = None
+            anchor_match = YAML_ANCHOR_RE.search(line)
+            if (anchor_match is None
+                    or anchor_match.group("name") not in sensitive_aliases):
+                continue
+            lines[index] = f"anonymized_anchor: '[anonymized:{run_id}]'"
+            anchor_block_indent = leading
     body = "\n".join(lines)
-    body = re.sub(
-        r"^\*\*(Date|Researcher|Git Commit|Branch)\*\*:.*$",
-        lambda m: f"**{m.group(1)}**: [anonymized:{run_id}]",
+    body = BOLD_FINGERPRINT_RE.sub(
+        lambda match: (
+            f"**{match.group('label')}**: [anonymized:{run_id}]"),
         body,
-        flags=re.MULTILINE,
     )
     return body + ("\n" if not body.endswith("\n") else "")
 
 
 def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
-             scheduled=False):
+             scheduled=False, schedule_binding=None):
     arms = config.get("arms", {})
     if arm_name not in arms:
         # No record can be attributed to an unknown arm; fail with a
@@ -1188,12 +2001,50 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
         "interventions_log": [],
         "attempt": attempt,
     }
+    v2 = config.get("protocol_version", 1) == PILOT_V2_PROTOCOL_VERSION
+    if v2:
+        record.update({
+            "protocol_version": PILOT_V2_PROTOCOL_VERSION,
+            "environment_policy_id": PILOT_V2_ENVIRONMENT_POLICY_ID,
+            "failure_kind": None,
+            "artifact_gate": "not_evaluated",
+            "telemetry_policy_id": PILOT_V2_AGGREGATION_POLICY["telemetry"],
+            "telemetry_eligible": False,
+            "telemetry_exclusion_reason": "run_not_terminal",
+        })
+        if scheduled:
+            if not isinstance(schedule_binding, dict):
+                raise InfraFailure(
+                    "protocol v2 scheduled run has no immutable schedule "
+                    "binding"
+                )
+            binding_digest = schedule_binding.get("schedule_digest")
+            binding_index = schedule_binding.get("schedule_index")
+            if (not isinstance(binding_digest, str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", binding_digest)
+                    or isinstance(binding_index, bool)
+                    or not isinstance(binding_index, int)
+                    or binding_index < 0):
+                raise InfraFailure(
+                    "protocol v2 scheduled run has an invalid immutable "
+                    "schedule binding"
+                )
+            record.update({
+                "schedule_digest": binding_digest,
+                "schedule_index": binding_index,
+            })
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     worktree = None
     all_nodes = []
     effort_modes = set()
     started = None
+    # A timeout/registered abort can happen after the workflow has already
+    # written a document.  Protocol v2 keeps that terminal workflow outcome,
+    # but the produced document still owes the artifact gate and both judge
+    # roles.  Capture the failure here and finish harvesting the artifact
+    # before re-raising it as the final run status.
+    terminal_workflow_failure = None
     try:
         # Immutable bindings recorded in the run record itself: orphan
         # adoption after a crash trusts a record only when these match the
@@ -1250,21 +2101,25 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
                                  arm.get("effort", "default"))
         cmd = with_stream_json_transport(cmd)
         cmd = apply_sandbox(config, cmd, worktree, profile)
-        env = backend_env(profile)
+        env = backend_env(profile, config.get("protocol_version", 1))
         abort_exits = validate_abort_exits(config)
         before = snapshot_research(worktree)
-        started = time.time()
+        # Duration budgets and latency telemetry share one monotonic clock;
+        # wall-clock/NTP adjustments must neither extend the registered
+        # compute ceiling nor bias the latency pass bar.
+        started = time.monotonic()
         # ONE run-level deadline shared by the initial session and every
         # continuation: a per-session reset would grant stop-prone arms up
         # to (1 + MAX_CONTINUATIONS)x the registered compute ceiling.
         deadline = started + config["timeout_seconds"]
 
         def _spawn(prompt_text, resume=None):
-            remaining = deadline - time.time()
+            remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise WorkflowFailure(
                     f"run-level deadline of {config['timeout_seconds']}s "
-                    f"exhausted before the next session could start"
+                    f"exhausted before the next session could start",
+                    failure_kind="timeout",
                 )
             # A timeout/abort WorkflowFailure carries the partial transcript:
             # harvest its nodes before propagating so the counted failure
@@ -1276,28 +2131,87 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
                                      remaining, resume=resume,
                                      workflow_abort_exits=abort_exits)
             except WorkflowFailure as wf:
-                partial = parse_nodes_tolerant(wf.stdout)
-                if not partial:
-                    # A counted failure needs effective-runtime evidence
-                    # from THE SESSION THAT FAILED — nodes from earlier
-                    # sessions cannot vouch for a continuation that emitted
-                    # nothing. But a timeout/abort is also a counted-never-
-                    # replaced outcome, so it must not be silently re-
-                    # executed either: the run BLOCKS pending operator
-                    # investigation instead of biasing the cell one way or
-                    # the other.
+                try:
+                    partial = parse_nodes_tolerant(wf.stdout)
+                    if not partial:
+                        raise InfraFailure(
+                            "failed session emitted no accounting nodes")
+                    validate_models(partial, arm["model"])
+                    effort_capture = validate_efforts(
+                        partial, arm.get("effort", "default"))
+                    partial_accounting = account(partial)
+                    if (partial_accounting["subagent_launches"]
+                            > partial_accounting["subagent_children"]):
+                        raise InfraFailure(
+                            "subagent launch in the failed session has no "
+                            "model-bearing child accounting")
+                except InfraFailure as exc:
+                    # The timeout/abort was already observed and may never
+                    # be replaced. Any incomplete accounting or runtime
+                    # parity evidence also makes it uncountable, so this is
+                    # a terminal operator block — never an infrastructure
+                    # retry that would add a second workflow observation.
                     raise BlockingInfraFailure(
-                        f"workflow-shaped failure with no accounting nodes "
-                        f"from the failed session — no effective-runtime "
-                        f"parity evidence to count it, and timeouts/aborts "
-                        f"are never auto-replaced; run blocked pending "
-                        f"investigation ({wf})"
-                    ) from wf
-                validate_models(partial, arm["model"])
-                effort_modes.add(
-                    validate_efforts(partial, arm.get("effort", "default")))
+                        "workflow-shaped failure carried invalid accounting "
+                        "or incomplete runtime parity evidence; "
+                        "the observed timeout/abort cannot be counted or "
+                        f"rerun ({exc})",
+                        failure_kind=wf.failure_kind,
+                    ) from exc
+                effort_modes.add(effort_capture)
                 all_nodes.extend(partial)
                 raise
+
+        def _discover_artifact():
+            """Classify the slot's complete fresh-document population.
+
+            Empty/whitespace-only files are not documents and therefore keep
+            the driver looking for an artifact. More than one nonempty file
+            cannot be represented as the registered one-document run cell;
+            preserve byte-exact evidence and terminally block the round rather
+            than selecting a convenient winner.
+            """
+            nonempty = []
+            empty = []
+            for path in find_new_artifacts(worktree, before):
+                try:
+                    content = path.read_bytes()
+                except OSError as exc:
+                    raise BlockingInfraFailure(
+                        "fresh artifact population became unreadable after "
+                        "the backend ran; the observed slot cannot be rerun",
+                        failure_kind="artifact_contract",
+                    ) from exc
+                item = {
+                    "source_name": path.name,
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                    "bytes": len(content),
+                }
+                if content.strip():
+                    nonempty.append((path, content, item))
+                else:
+                    empty.append(item)
+            if empty:
+                record["empty_artifacts"] = empty
+            if len(nonempty) > 1:
+                preserved = []
+                for index, (_path, content, item) in enumerate(nonempty, 1):
+                    evidence_path = out / (
+                        f"run-{run_id}-extra-{index}.md")
+                    evidence_path.write_bytes(content)
+                    preserved.append({
+                        **item,
+                        "evidence_file": evidence_path.name,
+                    })
+                record["produced_artifacts"] = preserved
+                raise BlockingInfraFailure(
+                    f"workflow produced {len(nonempty)} nonempty research "
+                    f"documents for one registered schedule slot; the "
+                    f"harness never selects one post hoc and this round "
+                    f"cannot be resumed",
+                    failure_kind="artifact_contract",
+                )
+            return nonempty[0][0] if nonempty else None
 
         # Durable journal BEFORE the backend launches: if the harness dies
         # after the session completes but before the terminal record is
@@ -1307,30 +2221,55 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
         record["status"] = "in_progress"
         atomic_write_text(out / f"run-{run_id}.json",
                           json.dumps(record, indent=2) + "\n")
-        stdout = _spawn(prompt)
-        session_id, nodes, response = parse_transcript(stdout)
-        validate_models(nodes, arm["model"])
-        effort_modes.add(validate_efforts(nodes, arm.get("effort", "default")))
-        all_nodes.extend(nodes)
-        artifact = find_new_artifact(worktree, before)
-        while artifact is None and record["interventions"] < MAX_CONTINUATIONS:
+        artifact = None
+        session_id = None
+        response = ""
+        try:
+            stdout = _spawn(prompt)
+        except WorkflowFailure as exc:
+            terminal_workflow_failure = exc
+            response = parse_result_tolerant(exc.stdout)
+            artifact = _discover_artifact()
+        else:
+            session_id, nodes, response = parse_transcript(stdout)
+            validate_models(nodes, arm["model"])
+            effort_modes.add(validate_efforts(
+                nodes, arm.get("effort", "default")))
+            all_nodes.extend(nodes)
+            artifact = _discover_artifact()
+        while (terminal_workflow_failure is None
+               and artifact is None
+               and record["interventions"] < MAX_CONTINUATIONS):
             record["interventions"] += 1
             # The pre-artifact response IS the ritual-stop evidence: keep it
             # verbatim and tagged, or stops are uncountable afterwards.
             record["interventions_log"].append(classify_stop(response))
-            stdout = _spawn(CONTINUATION_MESSAGE, resume=session_id)
-            session_id, nodes, response = parse_transcript(stdout)
-            validate_models(nodes, arm["model"])
-            effort_modes.add(
-                validate_efforts(nodes, arm.get("effort", "default")))
-            all_nodes.extend(nodes)
-            artifact = find_new_artifact(worktree, before)
+            try:
+                stdout = _spawn(CONTINUATION_MESSAGE, resume=session_id)
+            except WorkflowFailure as exc:
+                terminal_workflow_failure = exc
+                response = parse_result_tolerant(exc.stdout)
+                artifact = _discover_artifact()
+            else:
+                session_id, nodes, response = parse_transcript(stdout)
+                validate_models(nodes, arm["model"])
+                effort_modes.add(
+                    validate_efforts(nodes, arm.get("effort", "default")))
+                all_nodes.extend(nodes)
+                artifact = _discover_artifact()
         if len(effort_modes) > 1:
-            raise InfraFailure(
-                "inconsistent effort capture across sessions — run invalidated"
-            )
+            message = (
+                "inconsistent effort capture across sessions — run "
+                "invalidated")
+            if terminal_workflow_failure is not None:
+                raise BlockingInfraFailure(
+                    f"{message}; the observed timeout/abort cannot be "
+                    f"counted or rerun",
+                    failure_kind=terminal_workflow_failure.failure_kind,
+                )
+            raise InfraFailure(message)
         record["effort_capture"] = effort_modes.pop()
-        record["wall_seconds"] = round(time.time() - started, 3)
+        record["wall_seconds"] = round(time.monotonic() - started, 3)
         record["accounting"] = account(all_nodes)
         record["nodes"] = all_nodes
         if artifact is None:
@@ -1339,14 +2278,28 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
             # intervention/ritual-stop metrics underreport by one.
             record["interventions_log"].append(
                 classify_stop(response, answered=False))
-        if arm.get("forbid_subagents") and record["accounting"]["subagents_spawned"]:
+        subagent_policy_failure = bool(
+            arm.get("forbid_subagents")
+            and record["accounting"]["subagents_spawned"])
+        if (v2 and subagent_policy_failure
+                and terminal_workflow_failure is not None):
+            # Deterministic combined-outcome precedence: a fully-accounted
+            # forbidden spawn is the primary registered ablation failure;
+            # retain the observed timeout/abort as secondary evidence.  This
+            # keeps the no-subagent gate internally consistent without
+            # erasing the backend termination that also happened.
+            record["secondary_failure_kind"] = (
+                terminal_workflow_failure.failure_kind)
+            record["secondary_failure"] = str(terminal_workflow_failure)
+        if subagent_policy_failure and not v2:
             # Pre-registered third-arm policy: the fleet-ablation arm may
             # not delegate at all, or its differences stop being
             # attributable to fleet removal. Counted, never replaced.
             raise WorkflowFailure(
                 f"arm `{arm_name}` spawned "
                 f"{record['accounting']['subagents_spawned']} subagent(s) — "
-                f"forbidden by the pre-registered no-subagent policy"
+                f"forbidden by the pre-registered no-subagent policy",
+                failure_kind="subagent_policy",
             )
         if (record["accounting"]["subagent_launches"]
                 > record["accounting"]["subagent_children"]):
@@ -1355,34 +2308,98 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
             # with NO model-bearing nodes: the tree cannot be validated
             # for runtime parity, so the run is invalid — never accepted
             # as completed on main-context evidence alone.
-            raise InfraFailure(
+            message = (
                 f"subagent launch evidence exceeds model-bearing child "
                 f"identities (launches="
                 f"{record['accounting']['subagent_launches']}, children="
                 f"{record['accounting']['subagent_children']}) — a spawned "
                 f"subagent's effective model cannot be validated; run "
-                f"invalidated"
-            )
+                f"invalidated")
+            if v2 and subagent_policy_failure:
+                raise BlockingInfraFailure(
+                    f"{message}; the forbidden launch is an observed "
+                    f"ablation-policy event but its runtime tree is "
+                    f"incomplete, so it cannot be counted or rerun",
+                    failure_kind="subagent_policy",
+                )
+            if terminal_workflow_failure is not None:
+                raise BlockingInfraFailure(
+                    f"{message}; the observed timeout/abort cannot be "
+                    f"counted or rerun",
+                    failure_kind=terminal_workflow_failure.failure_kind,
+                )
+            raise InfraFailure(message)
         if artifact is None:
+            if v2 and subagent_policy_failure:
+                raise WorkflowFailure(
+                    f"arm `{arm_name}` spawned "
+                    f"{record['accounting']['subagents_spawned']} "
+                    f"subagent(s) — forbidden by the pre-registered "
+                    f"no-subagent policy",
+                    failure_kind="subagent_policy",
+                )
+            if terminal_workflow_failure is not None:
+                raise terminal_workflow_failure
             raise WorkflowFailure(
-                f"no fresh research artifact after {MAX_CONTINUATIONS} continuations"
+                f"no fresh research artifact after {MAX_CONTINUATIONS} continuations",
+                failure_kind="missing_document",
             )
-        raw = artifact.read_text(encoding="utf-8")
-        (out / f"run-{run_id}-raw.md").write_text(raw, encoding="utf-8")
+        try:
+            raw_bytes = artifact.read_bytes()
+        except OSError as exc:
+            if terminal_workflow_failure is not None:
+                raise BlockingInfraFailure(
+                    "produced artifact became unreadable after a counted "
+                    "timeout/abort; the workflow outcome cannot be rerun "
+                    "and its artifact gate is indeterminate",
+                    failure_kind=terminal_workflow_failure.failure_kind,
+                ) from exc
+            raise InfraFailure(
+                f"cannot read produced artifact for validation: {exc}"
+            ) from exc
+        # Preserve byte-exact raw evidence even when the document is not
+        # UTF-8.  The diagnostic judge copy uses deterministic replacement
+        # characters; the validator's UTF-8 defect keeps it gate-failed.
+        (out / f"run-{run_id}-raw.md").write_bytes(raw_bytes)
+        raw = raw_bytes.decode("utf-8", "replace")
         # The artifact contract is enforced by the harness itself, not by
         # trusting the session to have followed its instructions: a fresh
         # document that violates the contract is a COUNTED workflow
         # failure — the workflow produced the wrong artifact — never a
         # completed, scoreable replicate. The raw copy above is preserved
         # as evidence.
-        contract_defects = artifact_validator.validate(
-            artifact,
-            expected_git_commit=_git(worktree, "rev-parse", "HEAD"),
-            expected_repository=task_target_repo(task_text, task_path),
-            enforce_filename=True,
-        )
+        try:
+            contract_defects = artifact_validator.validate(
+                artifact,
+                expected_git_commit=_git(worktree, "rev-parse", "HEAD"),
+                expected_repository=task_target_repo(task_text, task_path),
+                enforce_filename=True,
+            )
+        except BaseException as exc:
+            if terminal_workflow_failure is not None:
+                raise BlockingInfraFailure(
+                    "artifact validator crashed after a counted timeout/"
+                    "abort; the workflow outcome cannot be rerun and its "
+                    "artifact gate is indeterminate",
+                    failure_kind=terminal_workflow_failure.failure_kind,
+                ) from exc
+            raise InfraFailure("artifact validator crashed") from exc
+        if (not isinstance(contract_defects, list)
+                or any(not isinstance(defect, str) or not defect
+                       for defect in contract_defects)):
+            if terminal_workflow_failure is not None:
+                raise BlockingInfraFailure(
+                    "artifact validator returned indeterminate output after "
+                    "a counted timeout/abort; the workflow outcome cannot "
+                    "be rerun",
+                    failure_kind=terminal_workflow_failure.failure_kind,
+                )
+            raise InfraFailure(
+                "artifact validator returned indeterminate output")
         if contract_defects:
             record["artifact_defects"] = contract_defects
+            if v2:
+                record["artifact_gate"] = "failed"
             # Registered amendment (owner decision, 2026-07-28, recorded
             # before unsealing): the gate rejection stays a counted
             # workflow failure for the primary end-to-end outcome — no
@@ -1398,10 +2415,24 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
             ).hexdigest()
             shown = "; ".join(contract_defects[:5])
             more = " …" if len(contract_defects) > 5 else ""
+            if v2 and subagent_policy_failure:
+                raise WorkflowFailure(
+                    f"arm `{arm_name}` spawned "
+                    f"{record['accounting']['subagents_spawned']} "
+                    f"subagent(s) — forbidden by the pre-registered "
+                    f"no-subagent policy; produced artifact also failed "
+                    f"the artifact contract",
+                    failure_kind="subagent_policy",
+                )
+            if terminal_workflow_failure is not None:
+                raise terminal_workflow_failure
             raise WorkflowFailure(
                 f"artifact violates the research artifact contract: "
-                f"{shown}{more}"
+                f"{shown}{more}",
+                failure_kind="artifact_contract",
             )
+        if v2:
+            record["artifact_gate"] = "passed"
         anon_text = anonymize(raw, run_id)
         (out / f"run-{run_id}-anon.md").write_text(anon_text, encoding="utf-8")
         # The digest recorded here is what scoring later verifies: a scored
@@ -1409,14 +2440,27 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
         record["artifact_sha256"] = hashlib.sha256(
             anon_text.encode("utf-8")
         ).hexdigest()
+        if v2 and subagent_policy_failure:
+            raise WorkflowFailure(
+                f"arm `{arm_name}` spawned "
+                f"{record['accounting']['subagents_spawned']} subagent(s) — "
+                f"forbidden by the pre-registered no-subagent policy",
+                failure_kind="subagent_policy",
+            )
+        if terminal_workflow_failure is not None:
+            raise terminal_workflow_failure
         record["status"] = "completed"
     except WorkflowFailure as exc:
         record["status"] = "workflow_failure"
         record["failure"] = str(exc)
+        if v2:
+            record["failure_kind"] = exc.failure_kind
     except BlockingInfraFailure as exc:
         record["status"] = "infra_failure"
         record["blocking"] = True
         record["failure"] = str(exc)
+        if v2:
+            record["failure_kind"] = exc.failure_kind
     except InfraFailure as exc:
         record["status"] = "infra_failure"
         record["failure"] = str(exc)
@@ -1433,7 +2477,25 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
         if "effort_capture" not in record and len(effort_modes) == 1:
             record["effort_capture"] = effort_modes.pop()
         if started is not None and "wall_seconds" not in record:
-            record["wall_seconds"] = round(time.time() - started, 3)
+            record["wall_seconds"] = round(time.monotonic() - started, 3)
+        if v2:
+            final_workflow_outcome = record.get("status") in (
+                "completed", "workflow_failure")
+            complete_telemetry = (
+                isinstance(record.get("accounting"), dict)
+                and isinstance(record.get("wall_seconds"), (int, float))
+                and not isinstance(record.get("wall_seconds"), bool)
+            )
+            record["telemetry_eligible"] = bool(
+                final_workflow_outcome and complete_telemetry)
+            if record["telemetry_eligible"]:
+                record["telemetry_exclusion_reason"] = None
+            elif not final_workflow_outcome:
+                record["telemetry_exclusion_reason"] = (
+                    "not_a_final_workflow_outcome")
+            else:
+                record["telemetry_exclusion_reason"] = (
+                    "missing_accounting_or_wall_seconds")
         if worktree is not None:
             remove_worktree(repo_dir, worktree)
     atomic_write_text(out / f"run-{run_id}.json",
@@ -1442,7 +2504,8 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
 
 
 def run_task_with_retries(config, arm_name, task_path, repo_dir, output_dir,
-                          scheduled=False):
+                          scheduled=False, starting_attempt=1,
+                          schedule_binding=None):
     """Registered protocol: an infrastructure failure invalidates the run and
     the run is re-executed, automatically and bounded — workflow failures are
     counted, never replaced. Every attempt's record is written to disk."""
@@ -1457,10 +2520,19 @@ def run_task_with_retries(config, arm_name, task_path, repo_dir, output_dir,
             f"got {raw_retries!r}"
         )
     max_retries = raw_retries
+    if (isinstance(starting_attempt, bool)
+            or not isinstance(starting_attempt, int)
+            or not 1 <= starting_attempt <= max_retries + 1):
+        raise InfraFailure(
+            f"invalid starting infrastructure attempt "
+            f"{starting_attempt!r}; registered range is "
+            f"1..{max_retries + 1}"
+        )
     attempts = []
-    for attempt in range(1, max_retries + 2):
+    for attempt in range(starting_attempt, max_retries + 2):
         record = run_task(config, arm_name, task_path, repo_dir, output_dir,
-                          attempt=attempt, scheduled=scheduled)
+                          attempt=attempt, scheduled=scheduled,
+                          schedule_binding=schedule_binding)
         attempts.append(record)
         if record["status"] != "infra_failure":
             break
@@ -1498,6 +2570,15 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
         task_digests[task] = hashlib.sha256(read_task_bytes(task)).hexdigest()
     standard_topology = _standard_topology(config)
     if not allow_nonstandard:
+        if config.get("protocol_version", 1) == PILOT_V2_PROTOCOL_VERSION:
+            retries = config.get("max_infra_retries")
+            if (isinstance(retries, bool)
+                    or retries != DEFAULT_MAX_INFRA_RETRIES):
+                raise InfraFailure(
+                    "a standard protocol-v2 schedule requires "
+                    f"`max_infra_retries` exactly "
+                    f"{DEFAULT_MAX_INFRA_RETRIES}"
+                )
         if config.get("nonstandard_config"):
             raise InfraFailure(
                 "a standard (holdout) schedule cannot be generated from a "
@@ -1559,6 +2640,21 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
                     f"{seen_numbers[number]} and {task}"
                 )
             seen_numbers[number] = task
+            frontmatter = re.match(
+                r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|\Z)",
+                cov_text, re.DOTALL)
+            external_flag = bool(
+                frontmatter and re.search(
+                    r"^external-snapshots:\s*true\s*$",
+                    frontmatter.group(1), re.MULTILINE))
+            if (config.get("protocol_version", 1)
+                    == PILOT_V2_PROTOCOL_VERSION
+                    and number == 5 and not external_flag):
+                raise InfraFailure(
+                    f"{task}: registered archetype 5 must declare "
+                    f"`external-snapshots: true` so its sealed snapshot "
+                    f"and source-drift gates cannot be bypassed"
+                )
             full_repo = task_target_repo(cov_text, task)
             repo_name = canonical_repo_name(full_repo)
             if repo_name not in REGISTERED_HOLDOUT_REPOS:
@@ -1604,7 +2700,22 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
             )
         seal_doc_sched, sealed_files = parse_seal_manifest(seal_bytes,
                                                            seal_path)
-        validate_sealed_judge_config(config, seal_doc_sched)
+        validate_sealed_judge_config(
+            config, seal_doc_sched, seal_path, sealed_files)
+        if config.get("protocol_version", 1) == PILOT_V2_PROTOCOL_VERSION:
+            ablation_arms = [
+                arm for arm in config["arms"].values()
+                if arm.get("forbid_subagents")
+            ]
+            expected_ablation = [
+                Path(task).name
+                for task in ablation_arms[0].get("schedule_tasks", [])
+            ] if len(ablation_arms) == 1 else []
+            if seal_doc_sched.get("ablation_tasks") != expected_ablation:
+                raise InfraFailure(
+                    "protocol v2 seal `ablation_tasks` must exactly match "
+                    "the configured ablation schedule-task basenames"
+                )
         for task in tasks:
             if sealed_files.get(Path(task).name) != task_digests[task]:
                 raise InfraFailure(
@@ -1673,7 +2784,7 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
     rng.shuffle(entries)
     for index, entry in enumerate(entries):
         entry["index"] = index
-    return {
+    schedule = {
         "seed": seed,
         "replicates": replicates,
         "task_digests": task_digests,
@@ -1691,6 +2802,10 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
         "config_digest": config_digest(config),
         "entries": entries,
     }
+    if config.get("protocol_version", 1) == PILOT_V2_PROTOCOL_VERSION:
+        schedule["protocol_version"] = PILOT_V2_PROTOCOL_VERSION
+        schedule["environment_policy_id"] = PILOT_V2_ENVIRONMENT_POLICY_ID
+    return schedule
 
 
 def schedule_digest(schedule):
@@ -1741,9 +2856,49 @@ def verify_results_against_records(results, entries, out_dir, require_all):
                 f"manifest result {done.get('index')} does not match its "
                 f"immutable run record — edited manifest refused"
             )
+        if (run_record.get("protocol_version") == PILOT_V2_PROTOCOL_VERSION
+                or done.get("protocol_version") == PILOT_V2_PROTOCOL_VERSION):
+            for field in (
+                    "protocol_version", "environment_policy_id",
+                    "failure_kind", "artifact_gate",
+                    "telemetry_policy_id", "telemetry_eligible",
+                    "telemetry_exclusion_reason"):
+                if run_record.get(field) != done.get(field):
+                    raise InfraFailure(
+                        f"manifest result {done.get('index')} `{field}` "
+                        f"does not match its immutable run record — edited "
+                        f"manifest refused"
+                    )
+            if (run_record.get("schedule_index") != entry.get("index")
+                    or run_record.get("schedule_digest")
+                    != done.get("schedule_digest")):
+                raise InfraFailure(
+                    f"manifest result {done.get('index')} does not match "
+                    f"the run record's immutable schedule binding"
+                )
 
 
 def run_schedule(config, schedule_path, repos, output_dir, task_paths):
+    """Serialize one schedule output from state scan through final manifest.
+
+    Per-entry claim files remain durable audit evidence, but they are not the
+    concurrency primitive: PID claims have stale-claim ABA races and a late
+    winner can otherwise cross the scan-to-launch boundary.  One kernel lock
+    covers the complete output state machine and is released automatically on
+    process death.
+    """
+    out = Path(output_dir).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    lock = acquire_advisory_lock(
+        out / ".run-schedule.lock", "run-schedule output")
+    try:
+        return _run_schedule_locked(
+            config, schedule_path, repos, output_dir, task_paths)
+    finally:
+        release_advisory_lock(lock)
+
+
+def _run_schedule_locked(config, schedule_path, repos, output_dir, task_paths):
     """Execute a pre-registered schedule in its recorded order. The expected
     schedule is RECONSTRUCTED from the registered config, the operator-
     supplied task set, and the recorded seed/replicates — the schedule
@@ -1791,8 +2946,6 @@ def run_schedule(config, schedule_path, repos, output_dir, task_paths):
                 "mixed"
             )
         results = list(prior.get("results", []))
-        verify_results_against_records(results, entries, out,
-                                       require_all=False)
 
     def write_manifest(complete):
         manifest = {
@@ -1805,12 +2958,281 @@ def run_schedule(config, schedule_path, repos, output_dir, task_paths):
             "results": results,
             "complete": complete,
         }
+        if schedule.get("protocol_version") == PILOT_V2_PROTOCOL_VERSION:
+            manifest["protocol_version"] = PILOT_V2_PROTOCOL_VERSION
+            manifest["environment_policy_id"] = (
+                PILOT_V2_ENVIRONMENT_POLICY_ID)
         atomic_write_text(manifest_path,
                           json.dumps(manifest, indent=2) + "\n")
         return manifest
 
+    protocol_v2 = (
+        schedule.get("protocol_version") == PILOT_V2_PROTOCOL_VERSION)
+
+    def terminal_path_for(entry):
+        return out / (
+            f"schedule-entry-{entry['index']}-terminal-invalid.json")
+
+    def claim_path_for(entry):
+        return out / f"schedule-entry-{entry['index']}.claim"
+
+    def terminal_core_for(entry):
+        return {
+            "status": "terminal_invalid",
+            "protocol_version": PILOT_V2_PROTOCOL_VERSION,
+            "environment_policy_id": PILOT_V2_ENVIRONMENT_POLICY_ID,
+            "schedule_digest": sched_digest,
+            "config_digest": schedule["config_digest"],
+            "schedule_index": entry["index"],
+            "arm": entry["arm"],
+            "task": entry["task"],
+            "task_sha256": schedule["task_digests"][entry["task"]],
+        }
+
+    def refuse_terminal_invalid(entry):
+        terminal_path = terminal_path_for(entry)
+        terminal = load_json_object(
+            terminal_path, "terminal-invalid schedule record")
+        allowed_kinds = {
+            "ambiguous_post_launch",
+            "blocking_infrastructure_failure",
+            "duplicate_terminal_outcomes",
+            "infrastructure_retries_exhausted",
+            "invalid_attempt_history",
+            "orphan_artifact_material",
+        }
+        terminal_core = terminal_core_for(entry)
+        if (any(terminal.get(key) != value
+                for key, value in terminal_core.items())
+                or terminal.get("kind") not in allowed_kinds
+                or not isinstance(terminal.get("evidence"), list)):
+            raise InfraFailure(
+                f"terminal-invalid record for schedule entry "
+                f"{entry['index']} is corrupted; the round remains "
+                f"invalid and cannot be resumed"
+            )
+        raise InfraFailure(
+            f"protocol v2 schedule entry {entry['index']} is "
+            f"terminally invalid ({terminal['kind']}); this round "
+            f"cannot be resumed — create a fresh seal and schedule"
+        )
+
+    def terminally_invalidate(entry, kind, record_paths):
+        terminal_path = terminal_path_for(entry)
+        if _path_present(terminal_path):
+            refuse_terminal_invalid(entry)
+        evidence = []
+        seen_paths = set()
+        for record_path in sorted(record_paths, key=lambda p: p.name):
+            record_path = Path(record_path)
+            if record_path in seen_paths:
+                continue
+            seen_paths.add(record_path)
+            evidence.append(_evidence_descriptor(record_path))
+        terminal = {**terminal_core_for(entry), "kind": kind,
+                    "evidence": evidence}
+        atomic_write_text(
+            terminal_path, json.dumps(terminal, indent=2) + "\n")
+        write_manifest(False)
+        refuse_terminal_invalid(entry)
+
+    def bound_run_records(entry):
+        matched = []
+        for record_path in sorted(out.glob("run-*.json")):
+            if record_path.name.count("-") != 1:
+                continue
+            record = load_json_object(record_path, "run record")
+            if (record.get("schedule_digest") == sched_digest
+                    and record.get("schedule_index") == entry["index"]):
+                matched.append((record_path, record))
+        return matched
+
+    def bound_run_state(entry):
+        return {
+            path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+            for path, _record in bound_run_records(entry)
+        }
+
+    def audit_run_artifact_material():
+        """Reject copied artifact residue without one immutable run record.
+
+        A backend observation is not erased by deleting only its JSON record:
+        raw/anonymized/diagnostic copies still prove that a run happened.  Any
+        such orphan (or out-of-contract extra copy) terminally invalidates the
+        round before another backend can launch.
+        """
+        bad_paths = []
+        artifact_re = re.compile(
+            r"^run-([0-9a-f]{12})-(raw|anon|diag|extra-[1-9][0-9]*)\.md$")
+        record_re = re.compile(r"^run-([0-9a-f]{12})\.json$")
+        entry_by_index = {entry["index"]: entry for entry in entries}
+        for path in sorted(out.glob("run-*"), key=lambda item: item.name):
+            if not _safe_regular_file(path):
+                bad_paths.append(path)
+                continue
+            if path.suffix == ".json":
+                record_match = record_re.fullmatch(path.name)
+                if record_match is None:
+                    bad_paths.append(path)
+                    continue
+                try:
+                    record = load_json_object(path, "schedule run material")
+                except InfraFailure:
+                    bad_paths.append(path)
+                    continue
+                index = record.get("schedule_index")
+                entry = entry_by_index.get(index)
+                if (record.get("run_id") != record_match.group(1)
+                        or record.get("protocol_version")
+                        != PILOT_V2_PROTOCOL_VERSION
+                        or record.get("environment_policy_id")
+                        != PILOT_V2_ENVIRONMENT_POLICY_ID
+                        or record.get("schedule_digest") != sched_digest
+                        or record.get("config_digest")
+                        != schedule["config_digest"]
+                        or entry is None
+                        or record.get("arm") != entry["arm"]
+                        or record.get("task") != entry["task"]
+                        or record.get("task_sha256")
+                        != schedule["task_digests"][entry["task"]]):
+                    bad_paths.append(path)
+                continue
+            match = artifact_re.fullmatch(path.name)
+            if match is None:
+                bad_paths.append(path)
+                continue
+            run_id, kind = match.groups()
+            record_path = out / f"run-{run_id}.json"
+            if not record_path.exists() or kind.startswith("extra-"):
+                bad_paths.append(path)
+                continue
+            try:
+                record = load_json_object(record_path, "artifact run record")
+            except InfraFailure:
+                bad_paths.extend((record_path, path))
+                continue
+            if record.get("run_id") != run_id:
+                bad_paths.extend((record_path, path))
+                continue
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            if kind == "anon" and not (
+                    record.get("artifact_gate") == "passed"
+                    and record.get("artifact_sha256") == digest):
+                bad_paths.append(path)
+            elif kind == "diag" and not (
+                    record.get("artifact_gate") == "failed"
+                    and record.get("diagnostic_sha256") == digest):
+                bad_paths.append(path)
+        if bad_paths:
+            terminally_invalidate(
+                entries[0], "orphan_artifact_material", bad_paths)
+
+        # Claim files are also pre-launch evidence.  A directory or dangling
+        # symlink at a registered claim name must not vanish from `.exists()`
+        # checks and later permit a fresh backend observation after deletion.
+        for entry in entries:
+            claim_path = claim_path_for(entry)
+            if (_path_present(claim_path)
+                    and not _safe_regular_file(claim_path)):
+                terminally_invalidate(
+                    entry, "invalid_attempt_history", [claim_path])
+
+    # A complete manifest is not permission to ignore extra outcomes. A
+    # concurrent legacy resume may have produced another terminal record for
+    # the same slot after the manifest append. Audit every already-recorded
+    # slot before returning, and persist invalidation so deleting the extra
+    # record cannot make the round valid again.
+    if protocol_v2:
+        audit_run_artifact_material()
+        for entry in entries:
+            if _path_present(terminal_path_for(entry)):
+                refuse_terminal_invalid(entry)
+    verify_results_against_records(
+        results, entries, out, require_all=False)
+    if protocol_v2:
+        for entry, summary in zip(entries, results):
+            if _path_present(terminal_path_for(entry)):
+                refuse_terminal_invalid(entry)
+            matched = bound_run_records(entry)
+            expected_path = out / f"run-{summary.get('run_id')}.json"
+            final_attempt = summary.get("attempts")
+            bad_paths = []
+            prior_attempts = set()
+            duplicate_terminal = False
+            for record_path, record in matched:
+                if record_path == expected_path:
+                    continue
+                if (record.get("status") == "infra_failure"
+                        and isinstance(record.get("attempt"), int)
+                        and not isinstance(record.get("attempt"), bool)
+                        and isinstance(final_attempt, int)
+                        and 1 <= record["attempt"] < final_attempt
+                        and record["attempt"] not in prior_attempts
+                        and record.get("arm") == entry["arm"]
+                        and record.get("task") == entry["task"]
+                        and record.get("task_sha256")
+                        == schedule["task_digests"][entry["task"]]
+                        and record.get("config_digest")
+                        == schedule["config_digest"]
+                        and record.get("protocol_version")
+                        == PILOT_V2_PROTOCOL_VERSION
+                        and record.get("environment_policy_id")
+                        == PILOT_V2_ENVIRONMENT_POLICY_ID):
+                    prior_attempts.add(record["attempt"])
+                    continue
+                bad_paths.append(record_path)
+                if record.get("status") in (
+                        "completed", "workflow_failure"):
+                    duplicate_terminal = True
+            if (not isinstance(final_attempt, int)
+                    or isinstance(final_attempt, bool)
+                    or prior_attempts != set(range(1, final_attempt))):
+                bad_paths.extend(path for path, _record in matched
+                                 if path != expected_path)
+            claim_path = claim_path_for(entry)
+            if claim_path.exists():
+                bad_paths.append(claim_path)
+                duplicate_terminal = True
+            if bad_paths:
+                terminally_invalidate(
+                    entry,
+                    ("duplicate_terminal_outcomes" if duplicate_terminal
+                     else "invalid_attempt_history"),
+                    bad_paths,
+                )
+
     referenced_runs = {r.get("run_id") for r in results}
     for entry in entries[len(results):]:
+        terminal_path = terminal_path_for(entry)
+        claim_path = claim_path_for(entry)
+        stale_claim = False
+        if protocol_v2 and _path_present(terminal_path):
+            refuse_terminal_invalid(entry)
+        if protocol_v2 and _path_present(claim_path):
+            claim = load_json_object(claim_path, "schedule entry claim")
+            expected_claim = {
+                "status": "claimed",
+                "protocol_version": PILOT_V2_PROTOCOL_VERSION,
+                "schedule_digest": sched_digest,
+                "schedule_index": entry["index"],
+                "arm": entry["arm"],
+                "task": entry["task"],
+            }
+            if any(claim.get(key) != value
+                   for key, value in expected_claim.items()) \
+                    or isinstance(claim.get("pid"), bool) \
+                    or not isinstance(claim.get("pid"), int) \
+                    or claim["pid"] <= 0:
+                raise InfraFailure(
+                    f"schedule entry {entry['index']} has a corrupted "
+                    f"exclusive claim; no backend was launched"
+                )
+            if process_is_alive(claim.get("pid")):
+                raise InfraFailure(
+                    f"schedule entry {entry['index']} is owned by an "
+                    f"active concurrent resume; no backend was launched"
+                )
+            stale_claim = True
         # The registered holdout spans several repositories: each task is
         # routed to the clone registered for its own `target-repo`.
         entry_repo = resolve_repo(entry["task"], repos)
@@ -1822,10 +3244,22 @@ def run_schedule(config, schedule_path, repos, output_dir, task_paths):
         # referenced by the manifest) is adopted instead of launched again.
         orphans = []
         inflight = []
+        infra_attempts = []
+        observed_bound_state = {}
         for record_path in sorted(out.glob("run-*.json")):
             if record_path.name.count("-") != 1:
                 continue
             orphan = load_json_object(record_path, "run record")
+            if protocol_v2:
+                # A task/arm pair occurs in several replicates. Protocol v2
+                # therefore binds every attempt to this exact schedule slot;
+                # task-only matching would incorrectly consume retries from
+                # an earlier replicate of the same cell.
+                if (orphan.get("schedule_digest") != sched_digest
+                        or orphan.get("schedule_index") != entry["index"]):
+                    continue
+                observed_bound_state[record_path.name] = hashlib.sha256(
+                    record_path.read_bytes()).hexdigest()
             if (orphan.get("run_id") in referenced_runs
                     or orphan.get("arm") != entry["arm"]
                     or orphan.get("task") != entry["task"]
@@ -1847,7 +3281,17 @@ def run_schedule(config, schedule_path, repos, output_dir, task_paths):
                 # safely re-runnable — the schedule blocks for
                 # investigation.
                 inflight.append(record_path.name)
+            elif (protocol_v2
+                  and orphan.get("status") == "infra_failure"):
+                infra_attempts.append((record_path, orphan))
         if inflight:
+            if protocol_v2:
+                terminally_invalidate(
+                    entry,
+                    "ambiguous_post_launch",
+                    [out / name for name in inflight]
+                    + ([claim_path] if claim_path.exists() else []),
+                )
             write_manifest(False)
             raise InfraFailure(
                 f"schedule entry {entry['index']} ({entry['arm']} / "
@@ -1857,7 +3301,59 @@ def run_schedule(config, schedule_path, repos, output_dir, task_paths):
                 f"journal record(s) to explicitly authorize re-running "
                 f"this entry"
             )
+        starting_attempt = 1
+        if protocol_v2 and infra_attempts:
+            by_attempt = {}
+            invalid_history = False
+            for record_path, record in infra_attempts:
+                attempt = record.get("attempt")
+                if (isinstance(attempt, bool)
+                        or not isinstance(attempt, int)
+                        or not 1 <= attempt
+                        <= config.get(
+                            "max_infra_retries",
+                            DEFAULT_MAX_INFRA_RETRIES) + 1
+                        or attempt in by_attempt):
+                    invalid_history = True
+                    break
+                by_attempt[attempt] = (record_path, record)
+            ordered_attempts = sorted(by_attempt)
+            if ordered_attempts != list(
+                    range(1, len(ordered_attempts) + 1)):
+                invalid_history = True
+            if invalid_history:
+                terminally_invalidate(
+                    entry,
+                    "invalid_attempt_history",
+                    [path for path, _record in infra_attempts]
+                    + ([claim_path] if claim_path.exists() else []),
+                )
+            if any(record.get("blocking")
+                   for _path, record in infra_attempts):
+                terminally_invalidate(
+                    entry,
+                    "blocking_infrastructure_failure",
+                    [path for path, _record in infra_attempts]
+                    + ([claim_path] if claim_path.exists() else []),
+                )
+            starting_attempt = ordered_attempts[-1] + 1
+            if starting_attempt > config.get(
+                    "max_infra_retries", DEFAULT_MAX_INFRA_RETRIES) + 1:
+                terminally_invalidate(
+                    entry,
+                    "infrastructure_retries_exhausted",
+                    [path for path, _record in infra_attempts]
+                    + ([claim_path] if claim_path.exists() else []),
+                )
         if len(orphans) > 1:
+            if protocol_v2:
+                terminally_invalidate(
+                    entry,
+                    "duplicate_terminal_outcomes",
+                    [out / f"run-{record['run_id']}.json"
+                     for record in orphans]
+                    + ([claim_path] if claim_path.exists() else []),
+                )
             raise InfraFailure(
                 f"schedule entry {entry['index']} ({entry['arm']} / "
                 f"{entry['task']}) has {len(orphans)} unreferenced terminal "
@@ -1866,13 +3362,85 @@ def run_schedule(config, schedule_path, repos, output_dir, task_paths):
             )
         if orphans:
             final = orphans[0]
+            if (protocol_v2
+                    and final.get("attempt") != starting_attempt):
+                terminally_invalidate(
+                    entry,
+                    "invalid_attempt_history",
+                    [path for path, _record in infra_attempts]
+                    + [out / f"run-{final['run_id']}.json"]
+                    + ([claim_path] if claim_path.exists() else []),
+                )
+            if stale_claim:
+                claim_path.unlink()
         else:
-            final = run_task_with_retries(
-                config, entry["arm"], entry["task"], entry_repo, output_dir,
-                scheduled=True
-            )[-1]
+            if protocol_v2:
+                if stale_claim:
+                    claim_path.unlink()
+                claim = {
+                    "status": "claimed",
+                    "protocol_version": PILOT_V2_PROTOCOL_VERSION,
+                    "schedule_digest": sched_digest,
+                    "schedule_index": entry["index"],
+                    "arm": entry["arm"],
+                    "task": entry["task"],
+                    "pid": os.getpid(),
+                }
+                try:
+                    exclusive_write_text(
+                        claim_path, json.dumps(claim, indent=2) + "\n")
+                except FileExistsError as exc:
+                    raise InfraFailure(
+                        f"schedule entry {entry['index']} was claimed by "
+                        f"another concurrent resume; no backend was "
+                        f"launched"
+                    ) from exc
+                except OSError as exc:
+                    raise InfraFailure(
+                        f"cannot create exclusive claim for schedule entry "
+                        f"{entry['index']}: {exc}"
+                    ) from exc
+                try:
+                    current_bound_state = bound_run_state(entry)
+                except BaseException:
+                    claim_path.unlink(missing_ok=True)
+                    raise
+                if current_bound_state != observed_bound_state:
+                    claim_path.unlink(missing_ok=True)
+                    raise InfraFailure(
+                        f"schedule entry {entry['index']} changed while "
+                        f"its exclusive launch claim was acquired; no "
+                        f"backend was launched — resume to adopt or "
+                        f"classify the newly persisted state"
+                    )
+            try:
+                new_attempts = run_task_with_retries(
+                    config, entry["arm"], entry["task"], entry_repo,
+                    output_dir, scheduled=True,
+                    starting_attempt=starting_attempt,
+                    schedule_binding={
+                        "schedule_digest": sched_digest,
+                        "schedule_index": entry["index"],
+                    },
+                )
+            finally:
+                if protocol_v2:
+                    claim_path.unlink(missing_ok=True)
+            final = new_attempts[-1]
         if final["status"] == "infra_failure":
             # Entry unfinished: persist progress so a re-run resumes HERE.
+            if protocol_v2:
+                all_infra_paths = [
+                    path for path, _record in infra_attempts
+                ] + [out / f"run-{record['run_id']}.json"
+                     for record in new_attempts]
+                terminally_invalidate(
+                    entry,
+                    ("blocking_infrastructure_failure"
+                     if final.get("blocking")
+                     else "infrastructure_retries_exhausted"),
+                    all_infra_paths,
+                )
             write_manifest(False)
             reason = ("run blocked pending operator investigation — "
                       "workflow-shaped failure without runtime evidence"
@@ -1883,7 +3451,7 @@ def run_schedule(config, schedule_path, repos, output_dir, task_paths):
                 f"({entry['arm']} / {entry['task']}): {reason}; progress "
                 f"persisted — re-run --run-schedule to resume at this entry"
             )
-        results.append({
+        manifest_result = {
             "index": entry["index"],
             "arm": entry["arm"],
             "task": entry["task"],
@@ -1896,7 +3464,21 @@ def run_schedule(config, schedule_path, repos, output_dir, task_paths):
             # scoring side derives the diagnostic batch from this.
             "diagnostic_sha256": final.get("diagnostic_sha256"),
             "task_sha256": schedule["task_digests"][entry["task"]],
-        })
+        }
+        if final.get("protocol_version") == PILOT_V2_PROTOCOL_VERSION:
+            manifest_result.update({
+                "protocol_version": PILOT_V2_PROTOCOL_VERSION,
+                "schedule_digest": final.get("schedule_digest"),
+                "environment_policy_id": final.get(
+                    "environment_policy_id"),
+                "failure_kind": final.get("failure_kind"),
+                "artifact_gate": final.get("artifact_gate"),
+                "telemetry_policy_id": final.get("telemetry_policy_id"),
+                "telemetry_eligible": final.get("telemetry_eligible"),
+                "telemetry_exclusion_reason": final.get(
+                    "telemetry_exclusion_reason"),
+            })
+        results.append(manifest_result)
         referenced_runs.add(final["run_id"])
         write_manifest(False)
     return write_manifest(True)
@@ -1908,26 +3490,32 @@ def _fetch_live_source(fetch_cmd, url, timeout):
     `drift_fetch_cmd`. An operator-supplied local copy is never drift
     evidence — it could be the sealed snapshot itself."""
     dest_dir = Path(tempfile.mkdtemp(prefix="rpa-refetch-"))
-    dest = dest_dir / "fetched"
-    cmd = [part.replace("{url}", url).replace("{dest}", str(dest))
-           for part in fetch_cmd]
     try:
-        proc = subprocess.run(cmd, capture_output=True, timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
-        raise InfraFailure(f"live-source fetch timed out for {url}") from exc
-    except OSError as exc:
-        raise InfraFailure(
-            f"cannot execute drift_fetch_cmd for {url}: {exc}") from exc
-    if proc.returncode != 0:
-        raise InfraFailure(
-            f"live-source fetch failed for {url} (exit {proc.returncode}): "
-            f"{proc.stderr.decode('utf-8', 'replace')[:200]}"
-        )
-    try:
-        return dest.read_bytes()
-    except OSError as exc:
-        raise InfraFailure(
-            f"drift_fetch_cmd produced no file for {url}: {exc}") from exc
+        dest = dest_dir / "fetched"
+        cmd = [part.replace("{url}", url).replace("{dest}", str(dest))
+               for part in fetch_cmd]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            raise InfraFailure(
+                f"live-source fetch timed out for {url}") from exc
+        except OSError as exc:
+            raise InfraFailure(
+                f"cannot execute drift_fetch_cmd for {url}: {exc}") from exc
+        if proc.returncode != 0:
+            raise InfraFailure(
+                f"live-source fetch failed for {url} "
+                f"(exit {proc.returncode}): "
+                f"{proc.stderr.decode('utf-8', 'replace')[:200]}"
+            )
+        try:
+            return dest.read_bytes()
+        except OSError as exc:
+            raise InfraFailure(
+                f"drift_fetch_cmd produced no file for {url}: {exc}"
+            ) from exc
+    finally:
+        shutil.rmtree(dest_dir, ignore_errors=True)
 
 
 def _sealed_bytes(path, seal_files, key=None):
@@ -1948,8 +3536,53 @@ def _sealed_bytes(path, seal_files, key=None):
     return data
 
 
-def _read_sealed(path, seal_files):
-    return _sealed_bytes(path, seal_files).decode("utf-8")
+def _read_sealed(path, seal_files, key=None):
+    try:
+        return _sealed_bytes(path, seal_files, key=key).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise InfraFailure(
+            f"sealed judge input {Path(path).name} is not UTF-8"
+        ) from exc
+
+
+def _read_sealed_reference(registered_ref, seal_manifest_path, seal_files,
+                           what):
+    """Resolve and read a manifest-owned package-relative text artifact."""
+    package_root = Path(seal_manifest_path).resolve().parent
+    expected_path = package_root / str(registered_ref)
+    key = _sealed_association_key(
+        expected_path, registered_ref, seal_manifest_path, what)
+    text = _read_sealed(expected_path, seal_files, key=key)
+    if not text.strip():
+        raise InfraFailure(f"sealed {what} must be nonempty UTF-8 text")
+    return text, seal_files[key]
+
+
+def _sealed_association_key(supplied_path, registered_ref,
+                            seal_manifest_path, what):
+    """Bind an operator-supplied path to its exact package-relative seal
+    association. This supports nested refs without basename ambiguity and
+    consistently rejects copies or paths outside the verified package."""
+    if not isinstance(registered_ref, str) or not registered_ref:
+        raise InfraFailure(f"sealed {what} association is missing")
+    package_root = Path(seal_manifest_path).resolve().parent
+    expected = (package_root / registered_ref).resolve()
+    try:
+        expected.relative_to(package_root)
+    except ValueError as exc:
+        raise InfraFailure(
+            f"sealed {what} association is not package-relative") from exc
+    try:
+        actual = Path(supplied_path).resolve(strict=True)
+    except OSError as exc:
+        raise InfraFailure(f"cannot resolve supplied sealed {what}") from exc
+    if actual != expected:
+        raise InfraFailure(
+            f"supplied path is not the sealed {what} registered as package "
+            f"entry "
+            f"`{registered_ref}`"
+        )
+    return registered_ref
 
 
 def _sealed_snapshot_items(snap_root, seal_files):
@@ -2004,25 +3637,285 @@ def assert_blind_scorable(doc_path):
     # opening `---` must not smuggle researcher/commit/branch identity
     # past the blind judge. Overmatching refuses a scorable document
     # (operator re-anonymizes); undermatching unblinds the judge.
-    key_re = re.compile(
-        "^\\ufeff?\\s*(" + "|".join(FINGERPRINT_KEYS) + ")\\s*:",
-        re.IGNORECASE)
     for line in text.splitlines():
-        match = key_re.match(line)
+        explicit = FINGERPRINT_EXPLICIT_KEY_RE.match(line)
+        if explicit:
+            raise InfraFailure(
+                f"{doc_path}: explicit fingerprint key "
+                f"`{explicit.group('key').lower()}` is not anonymized — "
+                f"blind scoring refused")
+        match = FINGERPRINT_KEY_RE.search(line.lstrip("\ufeff"))
         if match and "[anonymized:" not in line:
             raise InfraFailure(
-                f"{doc_path}: fingerprint key `{match.group(1).lower()}` "
+                f"{doc_path}: fingerprint key "
+                f"`{match.group('key').lower()}` "
                 f"is not anonymized — blind scoring refused"
             )
-    for match in re.finditer(
-        r"^\*\*(Date|Researcher|Git Commit|Branch)\*\*:(.*)$", text, re.MULTILINE
-    ):
-        if "[anonymized:" not in match.group(2):
+    for match in BOLD_FINGERPRINT_RE.finditer(text):
+        if "[anonymized:" not in match.group(0):
             raise InfraFailure(
-                f"{doc_path}: fingerprint line `**{match.group(1)}**` is not "
+                f"{doc_path}: fingerprint line "
+                f"`**{match.group('label')}**` is not "
                 f"anonymized — blind scoring refused"
             )
     return text
+
+
+def _parse_judge_stream_tolerant(stdout):
+    """Recover auditable judge-attempt material even when the stream
+    transport itself is invalid. Contract validation still fails closed;
+    this helper never repairs response JSON."""
+    session_id = None
+    nodes = []
+    result_parts = []
+    stream_defects = []
+    for line_number, line in enumerate((stdout or "").splitlines(), 1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = _json_without_duplicate_keys(
+                line.encode("utf-8"), "judge stream event")
+        except InfraFailure as exc:
+            stream_defects.append(
+                f"stream line {line_number} is not valid JSON: {exc}")
+            continue
+        if not isinstance(event, dict):
+            stream_defects.append(
+                f"stream line {line_number} is not a JSON object")
+            continue
+        if "session_id" in event:
+            candidate = event["session_id"]
+            if not isinstance(candidate, str) or not candidate.strip():
+                stream_defects.append(
+                    f"stream line {line_number} has a non-string or empty "
+                    f"session_id")
+            elif session_id is None:
+                session_id = candidate
+            elif candidate != session_id:
+                stream_defects.append(
+                    f"stream line {line_number} conflicts with the first "
+                    f"session_id")
+        if event.get("type") == "result" and event.get("result") is not None:
+            result_parts.append(str(event["result"]))
+        try:
+            node = _node_from_event(event)
+        except InfraFailure as exc:
+            stream_defects.append(
+                f"stream line {line_number} has invalid accounting: {exc}")
+            continue
+        if node is not None:
+            nodes.append(node)
+    if session_id is None:
+        stream_defects.append("backend output contained no session_id")
+    if not nodes:
+        stream_defects.append("backend output contained no accounting nodes")
+    return session_id, nodes, "\n".join(result_parts), stream_defects
+
+
+def _validate_v2_attempt_record(record, expected):
+    """Validate an immutable attempt record during resume. Returns whether
+    the attempt contains the first acceptable role response."""
+    if not isinstance(record, dict):
+        raise InfraFailure("judge attempt record must be a JSON object")
+    for key, value in expected.items():
+        actual = (Path(record.get(key, "")).name
+                  if key == "doc" else record.get(key))
+        target = Path(value).name if key == "doc" else value
+        if actual != target:
+            raise InfraFailure(
+                f"judge attempt record `{key}` mismatch: expected "
+                f"{target!r}, got {actual!r}"
+            )
+    for key in ("profile", "cwd"):
+        if not isinstance(record.get(key), str) or not record[key]:
+            raise InfraFailure(
+                f"judge attempt record has no nonempty `{key}` binding")
+    launch_defects = record.get("launch_defects")
+    if (not isinstance(launch_defects, list)
+            or not all(isinstance(item, str) and item
+                       for item in launch_defects)):
+        raise InfraFailure("judge attempt has malformed launch_defects")
+
+    raw_stream = record.get("raw_stream")
+    external = record.get("raw_stream_external")
+    external_reason = record.get("raw_stream_external_reason")
+    if not isinstance(external, bool):
+        raise InfraFailure("judge attempt raw-stream storage mode is invalid")
+    if external:
+        if external_reason not in ("oversize", "non_utf8"):
+            raise InfraFailure(
+                "external judge raw stream has no valid storage reason")
+        if raw_stream is not None:
+            raise InfraFailure(
+                "external judge raw stream must not be duplicated inline")
+        sidecar = Path(expected["raw_stream_sidecar"])
+        if not sidecar.is_file() or sidecar.is_symlink():
+            raise InfraFailure(
+                "oversized judge raw-stream sidecar is missing or unsafe")
+        digest = hashlib.sha256()
+        raw_stream_bytes = 0
+        utf8_decoder = (
+            codecs.getincrementaldecoder("utf-8")()
+            if external_reason == "non_utf8" else None)
+        utf8_valid = True
+        try:
+            with sidecar.open("rb") as handle:
+                while True:
+                    chunk = handle.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                    raw_stream_bytes += len(chunk)
+                    if utf8_decoder is not None and utf8_valid:
+                        try:
+                            utf8_decoder.decode(chunk)
+                        except UnicodeDecodeError:
+                            utf8_valid = False
+                if utf8_decoder is not None and utf8_valid:
+                    try:
+                        utf8_decoder.decode(b"", final=True)
+                    except UnicodeDecodeError:
+                        utf8_valid = False
+        except OSError as exc:
+            raise InfraFailure(
+                "cannot verify external judge raw-stream sidecar") from exc
+        if external_reason == "oversize":
+            required_defect = (
+                f"judge raw stream exceeded "
+                f"{expected['raw_stream_limit_bytes']} bytes")
+            proven = raw_stream_bytes > expected["raw_stream_limit_bytes"]
+        else:
+            required_defect = "judge raw stream is not UTF-8"
+            proven = (
+                raw_stream_bytes <= expected["raw_stream_limit_bytes"]
+                and not utf8_valid)
+        if not proven or required_defect not in launch_defects:
+            raise InfraFailure(
+                "external judge raw stream does not prove its storage reason")
+        session_id, nodes, response, stream_defects = None, [], "", []
+        raw_digest = digest.hexdigest()
+    else:
+        if external_reason is not None:
+            raise InfraFailure(
+                "inline judge raw stream has an external storage reason")
+        if not isinstance(raw_stream, str):
+            raise InfraFailure("judge attempt record has no raw stream text")
+        encoded_stream = raw_stream.encode("utf-8")
+        raw_stream_bytes = len(encoded_stream)
+        if raw_stream_bytes > expected["raw_stream_limit_bytes"]:
+            raise InfraFailure("inline judge raw stream exceeds its bound")
+        if Path(expected["raw_stream_sidecar"]).exists():
+            raise InfraFailure(
+                "inline judge attempt unexpectedly has a raw-stream sidecar")
+        raw_digest = hashlib.sha256(encoded_stream).hexdigest()
+        session_id, nodes, response, stream_defects = (
+            _parse_judge_stream_tolerant(raw_stream))
+    if raw_digest != record.get("raw_stream_sha256"):
+        raise InfraFailure("judge attempt raw stream digest mismatch")
+    if record.get("raw_stream_bytes") != raw_stream_bytes:
+        raise InfraFailure("judge attempt raw stream byte count mismatch")
+    if record.get("session_id") != session_id:
+        raise InfraFailure("judge attempt session_id differs from raw stream")
+    if record.get("nodes") != nodes:
+        raise InfraFailure("judge attempt nodes differ from raw stream")
+    if record.get("response") != response:
+        raise InfraFailure("judge attempt response differs from raw stream")
+    if hashlib.sha256(response.encode("utf-8")).hexdigest() != record.get(
+            "response_sha256"):
+        raise InfraFailure("judge attempt response digest mismatch")
+
+    defects = list(launch_defects) + stream_defects
+    effort_capture = None
+    if nodes:
+        try:
+            validate_models(nodes, expected["judge_model"])
+            effort_capture = validate_efforts(
+                nodes, expected["judge_effort"])
+        except InfraFailure as exc:
+            defects.append(f"judge runtime parity failed: {exc}")
+    transport_invalid = bool(defects)
+    parsed = None
+    if not defects:
+        try:
+            parsed = judge_contract.validate_response(
+                response, expected["role"])
+        except judge_contract.JudgeResponseError as exc:
+            defects.append(str(exc))
+    valid = not defects
+    recomputed = {
+        "validation": {"valid": valid, "defects": defects},
+        "transport_invalid": transport_invalid,
+        "schema_valid": valid,
+        "effort_capture": effort_capture,
+        "accounting": account(nodes) if nodes else None,
+    }
+    for field, value in recomputed.items():
+        if record.get(field) != value:
+            raise InfraFailure(
+                f"judge attempt `{field}` differs from recomputation "
+                f"over its raw stream and launch defects"
+            )
+    derived_fields = {
+        "evidence_accuracy_numerator",
+        "evidence_accuracy_denominator",
+        "evidence_accuracy",
+    }
+    if valid:
+        if record.get("parsed_response") != parsed:
+            raise InfraFailure(
+                "judge attempt parsed_response differs from strict "
+                "re-validation"
+            )
+        if expected["role"] == "verifier":
+            numerator = parsed["supported_claims"]
+            denominator = parsed["verifiable_claims"]
+            accuracy = numerator / denominator if denominator else 0.0
+            derived = {
+                "evidence_accuracy_numerator": numerator,
+                "evidence_accuracy_denominator": denominator,
+                "evidence_accuracy": accuracy,
+            }
+            for field, value in derived.items():
+                if record.get(field) != value:
+                    raise InfraFailure(
+                        f"verifier attempt `{field}` differs from strict "
+                        f"recomputation"
+                    )
+        elif derived_fields.intersection(record):
+            raise InfraFailure(
+                "scorer attempt unexpectedly carries verifier-derived "
+                "metrics"
+            )
+    else:
+        if "parsed_response" in record or derived_fields.intersection(record):
+            raise InfraFailure(
+                "invalid judge attempt carries accepted parsed/derived data"
+            )
+    return valid
+
+
+def compose_v2_judge_prompt(judge_prompt, quality_rubric, response_schema,
+                            task_context, document):
+    """Compose every sealed protocol-v2 judge input in a fixed order."""
+    materials = {
+        "judge prompt": judge_prompt,
+        "quality rubric": quality_rubric,
+        "response schema": response_schema,
+        "task context": task_context,
+        "document": document,
+    }
+    for name, value in materials.items():
+        if not isinstance(value, str) or not value.strip():
+            raise InfraFailure(
+                f"protocol v2 {name} must be nonempty UTF-8 text")
+    return "\n\n".join((
+        judge_prompt,
+        "## Sealed quality rubric\n\n" + quality_rubric,
+        "## Required response schema\n\n" + response_schema,
+        "## Task-specific sealed context\n\n" + task_context,
+        "---\n\n" + document,
+    ))
 
 
 def score(config, doc_paths, judge_prompt_path, output_dir,
@@ -2031,6 +3924,43 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
           task_contexts=None, seal_manifest_path=None, task_snapshots=None,
           drift_report_path=None, score_task_paths=None,
           diagnostic_axis=False):
+    """Serialize one role/axis batch across its complete judge state machine."""
+    role = ("verifier" if (evidence_repo or evidence_repos is not None)
+            else "scorer")
+    axis = ("all-docs"
+            if config.get("protocol_version", 1)
+            == PILOT_V2_PROTOCOL_VERSION
+            else ("diagnostic" if diagnostic_axis else "primary"))
+    out = Path(output_dir).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    lock = acquire_advisory_lock(
+        out / f".scoring-{role}-{axis}.lock",
+        f"scoring {role}/{axis} batch",
+    )
+    try:
+        return _score_locked(
+            config, doc_paths, judge_prompt_path, output_dir,
+            evidence_repo=evidence_repo, evidence_sha=evidence_sha,
+            scoring_seed=scoring_seed, manifest_path=manifest_path,
+            allow_unscheduled=allow_unscheduled,
+            evidence_repos=evidence_repos, task_contexts=task_contexts,
+            seal_manifest_path=seal_manifest_path,
+            task_snapshots=task_snapshots,
+            drift_report_path=drift_report_path,
+            score_task_paths=score_task_paths,
+            diagnostic_axis=diagnostic_axis,
+        )
+    finally:
+        release_advisory_lock(lock)
+
+
+def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
+                  evidence_repo=None, evidence_sha=None, scoring_seed=None,
+                  manifest_path=None, allow_unscheduled=False,
+                  evidence_repos=None, task_contexts=None,
+                  seal_manifest_path=None, task_snapshots=None,
+                  drift_report_path=None, score_task_paths=None,
+                  diagnostic_axis=False):
     """One fresh pinned backend session per document. The judge's full
     response text is preserved on disk — it IS the scoring artifact. Judge
     prompts live in the sealed package and are passed in at runtime.
@@ -2038,13 +3968,24 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
     `scoring_seed`, so time-dependent judge/service drift cannot stay
     correlated with an arm, and the sequence stays reproducible.
 
-    Two roles: without `evidence_repo` the judge is a blind SCORER (empty
-    cwd outside the experiment tree, all inspection tools denied). With
-    `evidence_repo` + `evidence_sha` the judge is an evidence VERIFIER: its
-    cwd is a disposable worktree of the frozen evidence repo at the pinned
-    sha, read-only tools allowed, so file-and-line citations can actually
-    be checked. The two evidence arguments are all-or-nothing: one without
-    the other is an operator mistake, never a silent role choice."""
+    Two roles: without evidence inputs the judge is a blind SCORER (empty cwd
+    outside the experiment tree, all inspection tools denied). Unscheduled
+    verification uses `evidence_repo` + `evidence_sha`; manifest-bound
+    verification uses `evidence_repos` to route each task to its own pinned
+    checkout. The single-repo arguments are all-or-nothing: one without the
+    other is an operator mistake, never a silent role choice."""
+    protocol_version = config.get("protocol_version", 1)
+    v2 = protocol_version == PILOT_V2_PROTOCOL_VERSION
+    v2_schema_digests = {}
+    v2_schema_texts = {}
+    quality_rubric_text = None
+    quality_rubric_sha256 = None
+    judge_prompt_sha256 = None
+    if v2 and diagnostic_axis:
+        raise InfraFailure(
+            "protocol v2 has one `all-docs` axis for both judge roles; "
+            "`diagnostic_axis` is a protocol-v1-only mode"
+        )
     if bool(evidence_repo) != bool(evidence_sha):
         raise InfraFailure(
             "evidence_repo and evidence_sha must be supplied together "
@@ -2061,6 +4002,11 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             "score mode requires the schedule manifest so every scheduled "
             "replicate is scored exactly once — ad-hoc/dev scoring must be "
             "explicitly marked unscheduled"
+        )
+    if v2 and manifest_path is None:
+        raise InfraFailure(
+            "protocol v2 scoring is schedule- and seal-bound; unscheduled "
+            "judge batches are not protocol-valid"
         )
     if diagnostic_axis and manifest_path is None:
         raise InfraFailure(
@@ -2125,9 +4071,33 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
         # end-to-end outcome, but every produced document's CONTENT is
         # blind-scored on this separate diagnostic axis, so format
         # discipline and content quality are measured independently.
-        scoreable = [(r, f"run-{r['run_id']}-anon.md",
-                      r.get("artifact_sha256")) for r in completed]
-        if diagnostic_axis:
+        if v2:
+            scoreable = []
+            for result in manifest.get("results", []):
+                gate = result.get("artifact_gate")
+                if gate == "passed":
+                    if not result.get("artifact_sha256"):
+                        raise InfraFailure(
+                            "artifact-gate-passed v2 result has no bound "
+                            "anonymized artifact digest")
+                    scoreable.append((
+                        result, f"run-{result['run_id']}-anon.md",
+                        result["artifact_sha256"]))
+                elif gate == "failed":
+                    if not result.get("diagnostic_sha256"):
+                        raise InfraFailure(
+                            "artifact-gate-failed v2 result has no bound "
+                            "anonymized diagnostic artifact digest")
+                    scoreable.append((
+                        result, f"run-{result['run_id']}-diag.md",
+                        result["diagnostic_sha256"]))
+                elif gate != "not_evaluated":
+                    raise InfraFailure(
+                        f"v2 result has invalid artifact_gate {gate!r}")
+        else:
+            scoreable = [(r, f"run-{r['run_id']}-anon.md",
+                          r.get("artifact_sha256")) for r in completed]
+        if not v2 and diagnostic_axis:
             scoreable += [
                 (r, f"run-{r['run_id']}-diag.md",
                  r.get("diagnostic_sha256"))
@@ -2289,12 +4259,19 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             )
         seal_doc, seal_files = parse_seal_manifest(seal_bytes,
                                                    seal_manifest_path)
-        validate_sealed_judge_config(config, seal_doc)
+        schema_validation = validate_sealed_judge_config(
+            config, seal_doc, seal_manifest_path, seal_files,
+            include_schema_text=v2)
+        if v2:
+            v2_schema_digests, v2_schema_texts = schema_validation
+        else:
+            v2_schema_digests = schema_validation
         # The seal binds each task to ITS scoring context: a per-file hash
         # proves a context is sealed, not that it belongs to this task —
         # swapped mappings would judge replicates against another task's
         # ground truth.
         seal_assoc = seal_doc.get("task_contexts", {})
+        context_seal_keys = {}
         for assoc_doc, ctx_path in context_by_doc.items():
             assoc_task = Path(task_by_doc[assoc_doc]).name
             expected_ctx = seal_assoc.get(assoc_task)
@@ -2304,13 +4281,9 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                     f"task→context association — the seal must bind each "
                     f"task to its scoring context"
                 )
-            if Path(ctx_path).name != expected_ctx:
-                raise InfraFailure(
-                    f"{assoc_task}: supplied context "
-                    f"`{Path(ctx_path).name}` is not the sealed context "
-                    f"`{expected_ctx}` for this task — swapped contexts "
-                    f"refused"
-                )
+            context_seal_keys[assoc_doc] = _sealed_association_key(
+                ctx_path, expected_ctx, seal_manifest_path,
+                f"context for {assoc_task}")
         seal_prompts = seal_doc.get("judge_prompts", {})
         expected_prompt = seal_prompts.get(role)
         if not expected_prompt:
@@ -2318,17 +4291,32 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                 f"the sealed package records no judge prompt for role "
                 f"`{role}` — the seal must bind each role to its prompt"
             )
-        if Path(judge_prompt_path).name != expected_prompt:
+        prompt_seal_key = _sealed_association_key(
+            judge_prompt_path, expected_prompt, seal_manifest_path,
+            f"{role} judge prompt")
+        judge_prompt = _read_sealed(
+            judge_prompt_path, seal_files, key=prompt_seal_key)
+        if not judge_prompt.strip():
             raise InfraFailure(
-                f"supplied judge prompt `{Path(judge_prompt_path).name}` is "
-                f"not the sealed `{role}` prompt `{expected_prompt}` — "
-                f"role/prompt mixups refused"
-            )
-        judge_prompt = _read_sealed(judge_prompt_path, seal_files)
+                f"sealed {role} judge prompt must be nonempty UTF-8 text")
+        judge_prompt_sha256 = seal_files[prompt_seal_key]
+        if v2:
+            quality_rubric_text, quality_rubric_sha256 = (
+                _read_sealed_reference(
+                    seal_doc.get("quality_rubric"), seal_manifest_path,
+                    seal_files, "quality rubric"))
         sealed_context_texts = {
-            doc_name: _read_sealed(ctx_path, seal_files)
+            doc_name: _read_sealed(
+                ctx_path, seal_files, key=context_seal_keys[doc_name])
             for doc_name, ctx_path in context_by_doc.items()
         }
+        empty_contexts = [
+            doc_name for doc_name, text in sealed_context_texts.items()
+            if not text.strip()
+        ]
+        if empty_contexts:
+            raise InfraFailure(
+                "sealed task contexts must be nonempty UTF-8 text")
         # Registered source-drift gate, COMPUTED by the harness: a status
         # claim is not evidence. The operator's recorded re-fetch step
         # supplies the re-fetched copies; the harness diffs them against
@@ -2483,12 +4471,19 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
     # the first unjudged document (never re-judging finished ones), and a
     # COMPLETED batch refuses a second pass — re-judging would create
     # duplicate nondeterministic scores with no authoritative batch.
+    axis = ("all-docs" if v2 else
+            ("diagnostic" if diagnostic_axis else "primary"))
+    if v2 and role not in v2_schema_digests:
+        raise InfraFailure(
+            f"protocol v2 scoring has no validated sealed schema for "
+            f"role `{role}`"
+        )
     batch_identity = {
         "scoring_seed": scoring_seed,
         "manifest": str(manifest_path) if manifest_path is not None else None,
         "config_digest": config_digest(config),
         "role": role,
-        "axis": "diagnostic" if diagnostic_axis else "primary",
+        "axis": axis,
         # ORDERED as supplied: the seeded shuffle operates on the
         # caller's index order, so a reordered resume is a different
         # batch — sorting here would let it slip through.
@@ -2504,16 +4499,22 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             ).hexdigest(),
         },
     }
+    if v2:
+        batch_identity.update({
+            "protocol_version": PILOT_V2_PROTOCOL_VERSION,
+            "environment_policy_id": PILOT_V2_ENVIRONMENT_POLICY_ID,
+            "response_schema_version": judge_contract.RESPONSE_SCHEMA_VERSION,
+            "schema_sha256": v2_schema_digests[role],
+            "judge_prompt_sha256": judge_prompt_sha256,
+            "quality_rubric_sha256": quality_rubric_sha256,
+        })
     # Batch state is namespaced by role AND axis: the scorer pass, the
     # verifier pass, and the registered diagnostic-axis pass over the
     # same output directory must coexist — a completed primary batch
     # must not reject the diagnostic batch as already complete (nor an
     # interrupted one as a different identity).
-    axis = "diagnostic" if diagnostic_axis else "primary"
     scoring_manifest_path = out / f"scoring-{role}-{axis}-manifest.json"
-    if scoring_manifest_path.exists():
-        prior_batch = load_json_object(scoring_manifest_path,
-                                       "scoring batch manifest")
+    def resume_batch(prior_batch):
         if prior_batch.get("complete"):
             raise InfraFailure(
                 "the scoring batch in this output directory is already "
@@ -2526,11 +4527,42 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
                 "(seed/manifest/config/role/docs) — batches must not be "
                 "mixed"
             )
-        scoring_id = prior_batch["scoring_id"]
-        results = list(prior_batch.get("results", []))
+        prior_scoring_id = prior_batch.get("scoring_id")
+        if (not isinstance(prior_scoring_id, str) or not prior_scoring_id
+                or "/" in prior_scoring_id or "\\" in prior_scoring_id):
+            raise InfraFailure("existing scoring batch has an invalid id")
+        return prior_scoring_id, list(prior_batch.get("results", []))
+
+    if scoring_manifest_path.exists():
+        prior_batch = load_json_object(scoring_manifest_path,
+                                       "scoring batch manifest")
+        scoring_id, results = resume_batch(prior_batch)
     else:
         scoring_id = uuid.uuid4().hex[:8]
         results = []
+        initial_batch = {
+            "scoring_id": scoring_id,
+            "identity": batch_identity,
+            "results": results,
+            "complete": False,
+        }
+        try:
+            # Initial creation is itself the batch-id election. O_EXCL
+            # prevents two empty-directory invocations from choosing two
+            # scoring ids and both launching a full judge population.
+            exclusive_write_text(
+                scoring_manifest_path,
+                json.dumps(initial_batch, indent=2) + "\n",
+            )
+        except FileExistsError:
+            prior_batch = load_json_object(
+                scoring_manifest_path, "concurrently initialized scoring "
+                "batch manifest")
+            scoring_id, results = resume_batch(prior_batch)
+        except OSError as exc:
+            raise InfraFailure(
+                f"cannot initialize scoring batch exclusively: {exc}"
+            ) from exc
 
     def write_scoring_manifest(complete):
         atomic_write_text(scoring_manifest_path, json.dumps({
@@ -2540,13 +4572,706 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             "complete": complete,
         }, indent=2) + "\n")
 
-    # The scoring id must survive a crash BEFORE the first judge record is
-    # written: persist the (possibly empty) batch state up front, so a
-    # restart resumes under the same id and can discover orphaned judge
-    # records instead of re-judging a document under a fresh id.
-    write_scoring_manifest(False)
+    def v2_batch_invalid_path():
+        return out / f"scoring-{role}-{axis}-terminal-invalid.json"
+
+    def v2_refuse_batch_invalid():
+        invalid_path = v2_batch_invalid_path()
+        terminal = load_json_object(
+            invalid_path, "terminal-invalid scoring batch record")
+        expected = {
+            "status": "terminal_invalid",
+            "protocol_version": PILOT_V2_PROTOCOL_VERSION,
+            "environment_policy_id": PILOT_V2_ENVIRONMENT_POLICY_ID,
+            "role": role,
+            "axis": axis,
+            "scoring_id": scoring_id,
+            "identity_sha256": hashlib.sha256(json.dumps(
+                batch_identity, sort_keys=True).encode("utf-8")).hexdigest(),
+        }
+        if (any(terminal.get(key) != value
+                for key, value in expected.items())
+                or terminal.get("kind") != "foreign_batch_material"
+                or not isinstance(terminal.get("evidence"), list)):
+            raise InfraFailure(
+                "terminal-invalid scoring batch record is corrupted; the "
+                "batch remains invalid")
+        raise InfraFailure(
+            "protocol v2 scoring batch is terminally invalid (foreign or "
+            "out-of-protocol judge material); create a fresh seal and "
+            "scoring batch")
+
+    def v2_terminally_invalidate_batch(evidence_paths):
+        invalid_path = v2_batch_invalid_path()
+        if _path_present(invalid_path):
+            v2_refuse_batch_invalid()
+        evidence = [
+            _evidence_descriptor(path)
+            for path in sorted(set(evidence_paths), key=lambda item: item.name)
+        ]
+        terminal = {
+            "status": "terminal_invalid",
+            "protocol_version": PILOT_V2_PROTOCOL_VERSION,
+            "environment_policy_id": PILOT_V2_ENVIRONMENT_POLICY_ID,
+            "role": role,
+            "axis": axis,
+            "scoring_id": scoring_id,
+            "identity_sha256": hashlib.sha256(json.dumps(
+                batch_identity, sort_keys=True).encode("utf-8")).hexdigest(),
+            "kind": "foreign_batch_material",
+            "evidence": evidence,
+        }
+        atomic_write_text(
+            invalid_path, json.dumps(terminal, indent=2) + "\n")
+        write_scoring_manifest(False)
+        v2_refuse_batch_invalid()
+
+    def v2_audit_material_names():
+        """Reject any same-batch judge material outside registered slots."""
+        allowed = re.compile(
+            rf"^judge-{re.escape(scoring_id)}-(\d+)(?:\.json|"
+            rf"-exhausted\.json|-terminal-invalid\.json|"
+            rf"-attempt-(\d+)(?:\.json|\.pending|-raw-stream\.txt))$")
+        unexpected = []
+        for path in out.glob(f"judge-{scoring_id}-*"):
+            if not _safe_regular_file(path):
+                unexpected.append(path)
+                continue
+            match = allowed.fullmatch(path.name)
+            if not match:
+                unexpected.append(path)
+                continue
+            slot = int(match.group(1))
+            attempt = match.group(2)
+            if not 0 <= slot < len(doc_paths):
+                unexpected.append(path)
+            elif attempt is not None and not (
+                    1 <= int(attempt) <= PILOT_V2_MAX_JUDGE_ATTEMPTS):
+                unexpected.append(path)
+        if unexpected:
+            v2_terminally_invalidate_batch(unexpected)
+
+    # The scoring id was persisted by the exclusive batch-id election before
+    # the first judge record can be written. Existing incomplete manifests
+    # are never rewritten merely by opening them: a concurrent resume must
+    # not clobber progress written after its read.
+
+    def v2_attempt_expected(doc, slot, attempt):
+        doc_name = Path(doc).name
+        expected = {
+            "doc": str(doc),
+            "presentation_index": slot,
+            "scoring_id": scoring_id,
+            "role": role,
+            "axis": "all-docs",
+            "attempt": attempt,
+            "protocol_version": PILOT_V2_PROTOCOL_VERSION,
+            "environment_policy_id": PILOT_V2_ENVIRONMENT_POLICY_ID,
+            "response_schema_version": judge_contract.RESPONSE_SCHEMA_VERSION,
+            "schema_sha256": v2_schema_digests[role],
+            "judge_prompt_sha256": judge_prompt_sha256,
+            "quality_rubric_sha256": quality_rubric_sha256,
+            "config_digest": config_digest(config),
+            "backend_version": config.get("backend_version"),
+            "scoring_seed": scoring_seed,
+            "scheduled": manifest_path is not None,
+            "judge_model": judge_model,
+            "judge_effort": judge_effort,
+            "profile_settings": (
+                VERIFIER_SETTINGS if role == "verifier" else JUDGE_SETTINGS),
+            "task": (task_by_doc.get(doc_name)
+                     if task_by_doc is not None else None),
+            "task_context": (str(context_by_doc[doc_name])
+                             if context_by_doc is not None else None),
+            "seal_manifest": (str(seal_manifest_path)
+                              if seal_manifest_path is not None else None),
+            "snapshots": snapshot_by_doc.get(doc_name),
+            "source_drift": drift_notes.get(doc_name),
+            "raw_stream_limit_bytes": PILOT_V2_MAX_RAW_STREAM_BYTES,
+            "raw_stream_sidecar": str(
+                out / f"judge-{scoring_id}-{slot}-attempt-{attempt}-"
+                f"raw-stream.txt"),
+        }
+        if doc_evidence is not None:
+            expected["evidence_sha"] = doc_evidence[doc_name][1]
+        elif evidence_repo is not None:
+            expected["evidence_sha"] = evidence_sha
+        return expected
+
+    def v2_launch_attempt(doc, doc_text, slot, attempt, ev_repo, ev_sha):
+        """Launch and durably record one fresh v2 judge attempt. Known
+        transport/runtime/contract defects consume the attempt and are
+        retained; an unexpected harness crash leaves the pending journal."""
+        attempt_path = out / (
+            f"judge-{scoring_id}-{slot}-attempt-{attempt}.json")
+        pending_path = out / (
+            f"judge-{scoring_id}-{slot}-attempt-{attempt}.pending")
+        backend_version = verify_backend_version(config)
+        judge_root = Path(tempfile.mkdtemp(prefix="rpa-judge-"))
+        workdir = None
+        profile = None
+        try:
+            if ev_repo:
+                profile, _ = make_profile(
+                    judge_root, "judge", settings=VERIFIER_SETTINGS)
+                workdir = make_worktree(ev_repo, ev_sha, judge_root)
+                if Path(doc).name in snapshot_by_doc:
+                    snap_src = Path(snapshot_by_doc[Path(doc).name])
+                    snap_dest = workdir / "_sealed-snapshots"
+                    snap_dest.mkdir()
+                    for snap, rel, seal_key in _sealed_snapshot_items(
+                            snap_src, seal_files):
+                        dest = snap_dest / rel
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        dest.write_bytes(
+                            _sealed_bytes(snap, seal_files, key=seal_key))
+            else:
+                profile, _ = make_profile(
+                    judge_root, "judge", settings=JUDGE_SETTINGS)
+                workdir = judge_root / "workdir"
+                workdir.mkdir()
+
+            env = backend_env(profile, protocol_version)
+            sandboxed_cmd = apply_sandbox(
+                config, with_stream_json_transport(judge_cmd), workdir,
+                profile)
+            prompt = compose_v2_judge_prompt(
+                judge_prompt,
+                quality_rubric_text,
+                v2_schema_texts[role],
+                sealed_context_texts[Path(doc).name],
+                doc_text,
+            )
+            try:
+                exclusive_write_text(pending_path, json.dumps({
+                    **v2_attempt_expected(doc, slot, attempt),
+                    "status": "in_progress",
+                    "pid": os.getpid(),
+                }, indent=2) + "\n")
+            except FileExistsError as exc:
+                # Another resume won the only atomic launch claim. It may be
+                # live, so this process blocks without invalidating or
+                # overwriting its journal and, crucially, without launching
+                # a second nondeterministic judge session.
+                raise InfraFailure(
+                    f"judge slot {slot} attempt {attempt} is owned by a "
+                    f"concurrent resume; no judge session was launched"
+                ) from exc
+            except OSError as exc:
+                raise InfraFailure(
+                    f"cannot create exclusive judge claim for slot {slot}, "
+                    f"attempt {attempt}: {exc}"
+                ) from exc
+
+            sidecar_path = Path(v2_attempt_expected(
+                doc, slot, attempt)["raw_stream_sidecar"])
+            (stdout, raw_stream_bytes, raw_stream_sha256, launch_defects,
+             external_stream) = spawn_judge_session_capped(
+                    sandboxed_cmd, prompt, str(workdir), env,
+                    config["timeout_seconds"], sidecar_path,
+                    PILOT_V2_MAX_RAW_STREAM_BYTES)
+            if external_stream:
+                session_id, nodes, response, stream_defects = (
+                    None, [], "", [])
+            else:
+                session_id, nodes, response, stream_defects = (
+                    _parse_judge_stream_tolerant(stdout))
+            defects = launch_defects + stream_defects
+            effort_capture = None
+            if nodes:
+                try:
+                    validate_models(nodes, judge_model)
+                    effort_capture = validate_efforts(nodes, judge_effort)
+                except InfraFailure as exc:
+                    defects.append(f"judge runtime parity failed: {exc}")
+            non_schema_invalid = bool(defects)
+            parsed_response = None
+            if not defects:
+                try:
+                    parsed_response = judge_contract.validate_response(
+                        response, role)
+                except judge_contract.JudgeResponseError as exc:
+                    defects.append(str(exc))
+            valid = not defects
+            result = {
+                **v2_attempt_expected(doc, slot, attempt),
+                "session_id": session_id,
+                "profile": str(profile),
+                "cwd": str(workdir),
+                "backend_version": backend_version,
+                "scoring_seed": scoring_seed,
+                "scheduled": manifest_path is not None,
+                "judge_model": judge_model,
+                "judge_effort": judge_effort,
+                "task": (task_by_doc.get(Path(doc).name)
+                         if task_by_doc is not None else None),
+                "task_context": (
+                    str(context_by_doc[Path(doc).name])
+                    if context_by_doc is not None else None),
+                "seal_manifest": (str(seal_manifest_path)
+                                  if seal_manifest_path is not None else None),
+                "snapshots": snapshot_by_doc.get(Path(doc).name),
+                "source_drift": drift_notes.get(Path(doc).name),
+                "effort_capture": effort_capture,
+                "raw_stream": stdout,
+                "raw_stream_external": external_stream,
+                "raw_stream_external_reason": (
+                    "oversize" if external_stream and raw_stream_bytes
+                    > PILOT_V2_MAX_RAW_STREAM_BYTES
+                    else "non_utf8" if external_stream else None),
+                "raw_stream_bytes": raw_stream_bytes,
+                "raw_stream_sha256": raw_stream_sha256,
+                "nodes": nodes,
+                "launch_defects": launch_defects,
+                "response": response,
+                "response_sha256": hashlib.sha256(
+                    response.encode("utf-8")).hexdigest(),
+                "accounting": account(nodes) if nodes else None,
+                "schema_valid": valid,
+                "transport_invalid": non_schema_invalid,
+                "validation": {"valid": valid, "defects": defects},
+            }
+            if ev_repo:
+                result["evidence_sha"] = ev_sha
+            if valid:
+                result["parsed_response"] = parsed_response
+                if role == "verifier":
+                    numerator = parsed_response["supported_claims"]
+                    denominator = parsed_response["verifiable_claims"]
+                    result.update({
+                        "evidence_accuracy_numerator": numerator,
+                        "evidence_accuracy_denominator": denominator,
+                        "evidence_accuracy": (
+                            numerator / denominator if denominator else 0.0),
+                    })
+            try:
+                exclusive_write_text(
+                    attempt_path, json.dumps(result, indent=2) + "\n")
+            except FileExistsError:
+                collision_path = out / (
+                    f"judge-{scoring_id}-{slot}-attempt-{attempt}-"
+                    f"collision-{uuid.uuid4().hex[:8]}.json")
+                exclusive_write_text(
+                    collision_path, json.dumps(result, indent=2) + "\n")
+                pending_path.unlink(missing_ok=True)
+                v2_terminally_invalidate(
+                    doc, slot, "invalid_attempt_history",
+                    [attempt_path, collision_path])
+            pending_path.unlink(missing_ok=True)
+            return result
+        finally:
+            if ev_repo and workdir is not None:
+                remove_worktree(ev_repo, workdir)
+            shutil.rmtree(judge_root, ignore_errors=True)
+
+    def v2_attempt_material(slot):
+        return sorted(
+            out.glob(f"judge-{scoring_id}-{slot}-attempt-*"),
+            key=lambda path: path.name,
+        )
+
+    def v2_scan_attempts(doc, slot):
+        """Adopt a contiguous attempt prefix. A pending journal without its
+        attempt record blocks; a valid orphan is returned for promotion."""
+        # Raw-stream sidecars are immutable evidence belonging to exactly one
+        # persisted attempt record.  A sidecar cannot authorize a fresh
+        # launch when its record is missing: that would truncate/replace the
+        # only evidence that a previous launch happened.  Sidecars paired to
+        # inline records are rejected by `_validate_v2_attempt_record`; an
+        # external record is accepted only after that validator re-hashes and
+        # proves its declared storage reason.
+        for sidecar in sorted(out.glob(
+                f"judge-{scoring_id}-{slot}-attempt-*-raw-stream.txt")):
+            match = re.fullmatch(
+                rf"judge-{re.escape(scoring_id)}-{slot}-attempt-(\d+)-"
+                rf"raw-stream\.txt",
+                sidecar.name,
+            )
+            if match is None:
+                v2_terminally_invalidate(
+                    doc, slot, "invalid_attempt_history",
+                    v2_attempt_material(slot))
+            attempt_number = int(match.group(1))
+            attempt_path = out / (
+                f"judge-{scoring_id}-{slot}-attempt-"
+                f"{attempt_number}.json")
+            if not attempt_path.exists():
+                v2_terminally_invalidate(
+                    doc, slot, "invalid_attempt_history",
+                    v2_attempt_material(slot))
+        first_valid = None
+        first_missing = None
+        records = []
+        for attempt in range(1, PILOT_V2_MAX_JUDGE_ATTEMPTS + 1):
+            attempt_path = out / (
+                f"judge-{scoring_id}-{slot}-attempt-{attempt}.json")
+            pending_path = out / (
+                f"judge-{scoring_id}-{slot}-attempt-{attempt}.pending")
+            if not attempt_path.exists():
+                if pending_path.exists():
+                    try:
+                        pending = load_json_object(
+                            pending_path, "pending judge attempt claim")
+                    except InfraFailure:
+                        v2_terminally_invalidate(
+                            doc, slot, "invalid_attempt_history",
+                            v2_attempt_material(slot))
+                    expected_pending = {
+                        **v2_attempt_expected(doc, slot, attempt),
+                        "status": "in_progress",
+                    }
+                    pending_matches = all(
+                        pending.get(key) == value
+                        for key, value in expected_pending.items())
+                    if (pending_matches
+                            and process_is_alive(pending.get("pid"))):
+                        raise InfraFailure(
+                            f"judge slot {slot} attempt {attempt} is owned "
+                            f"by an active concurrent resume; no judge "
+                            f"session was launched"
+                        )
+                    v2_terminally_invalidate(
+                        doc, slot, "ambiguous_post_launch",
+                        [pending_path],
+                    )
+                first_missing = attempt
+                for later in range(
+                        attempt + 1, PILOT_V2_MAX_JUDGE_ATTEMPTS + 1):
+                    if ((out / f"judge-{scoring_id}-{slot}-attempt-"
+                         f"{later}.json").exists()
+                            or (out / f"judge-{scoring_id}-{slot}-attempt-"
+                                f"{later}.pending").exists()):
+                        v2_terminally_invalidate(
+                            doc, slot, "invalid_attempt_history",
+                            v2_attempt_material(slot))
+                break
+            try:
+                record = load_json_object(
+                    attempt_path, "judge attempt record")
+                valid = _validate_v2_attempt_record(
+                    record, v2_attempt_expected(doc, slot, attempt))
+            except (InfraFailure, OSError, ValueError, TypeError):
+                v2_terminally_invalidate(
+                    doc, slot, "invalid_attempt_history",
+                    v2_attempt_material(slot))
+            records.append(record)
+            if pending_path.exists():
+                try:
+                    pending = load_json_object(
+                        pending_path, "pending judge attempt claim")
+                except InfraFailure:
+                    v2_terminally_invalidate(
+                        doc, slot, "invalid_attempt_history",
+                        v2_attempt_material(slot))
+                expected_pending = {
+                    **v2_attempt_expected(doc, slot, attempt),
+                    "status": "in_progress",
+                }
+                if not all(pending.get(key) == value
+                           for key, value in expected_pending.items()):
+                    v2_terminally_invalidate(
+                        doc, slot, "invalid_attempt_history",
+                        v2_attempt_material(slot))
+                pending_path.unlink()
+            if valid:
+                if first_valid is not None:
+                    v2_terminally_invalidate(
+                        doc, slot, "invalid_attempt_history",
+                        v2_attempt_material(slot))
+                first_valid = record
+                for later in range(
+                        attempt + 1, PILOT_V2_MAX_JUDGE_ATTEMPTS + 1):
+                    if ((out / f"judge-{scoring_id}-{slot}-attempt-"
+                         f"{later}.json").exists()
+                            or (out / f"judge-{scoring_id}-{slot}-attempt-"
+                                f"{later}.pending").exists()):
+                        v2_terminally_invalidate(
+                            doc, slot, "invalid_attempt_history",
+                            v2_attempt_material(slot))
+                break
+        return first_valid, first_missing, records
+
+    def v2_invalid_path(slot):
+        return out / f"judge-{scoring_id}-{slot}-terminal-invalid.json"
+
+    def v2_terminal_core(doc, slot):
+        return {
+            "doc": str(doc),
+            "scoring_id": scoring_id,
+            "presentation_index": slot,
+            "role": role,
+            "axis": "all-docs",
+            "status": "terminal_invalid",
+            "protocol_version": PILOT_V2_PROTOCOL_VERSION,
+            "environment_policy_id": PILOT_V2_ENVIRONMENT_POLICY_ID,
+            "response_schema_version": judge_contract.RESPONSE_SCHEMA_VERSION,
+            "schema_sha256": v2_schema_digests[role],
+            "judge_prompt_sha256": judge_prompt_sha256,
+            "quality_rubric_sha256": quality_rubric_sha256,
+            "config_digest": config_digest(config),
+        }
+
+    def v2_refuse_terminal_invalid(doc, slot):
+        invalid_path = v2_invalid_path(slot)
+        terminal = load_json_object(
+            invalid_path, "terminal-invalid judge record")
+        expected = v2_terminal_core(doc, slot)
+        allowed_kinds = {
+            "ambiguous_post_launch",
+            "invalid_attempt_history",
+        }
+        if (any(terminal.get(key) != value
+                for key, value in expected.items())
+                or terminal.get("kind") not in allowed_kinds
+                or not isinstance(terminal.get("evidence"), list)):
+            raise InfraFailure(
+                f"terminal-invalid judge record for slot {slot} is "
+                f"corrupted; the batch remains invalid"
+            )
+        detail = ("ambiguous post-launch state"
+                  if terminal["kind"] == "ambiguous_post_launch"
+                  else terminal["kind"])
+        raise InfraFailure(
+            f"protocol v2 judge slot {slot} is terminally invalid "
+            f"({detail}); this batch cannot be "
+            f"resumed — create a fresh seal and scoring batch"
+        )
+
+    def v2_terminally_invalidate(doc, slot, kind, evidence_paths):
+        invalid_path = v2_invalid_path(slot)
+        if _path_present(invalid_path):
+            v2_refuse_terminal_invalid(doc, slot)
+        evidence = [
+            _evidence_descriptor(evidence_path)
+            for evidence_path in sorted(evidence_paths, key=lambda p: p.name)
+        ]
+        terminal = {
+            **v2_terminal_core(doc, slot),
+            "kind": kind,
+            "evidence": evidence,
+        }
+        atomic_write_text(invalid_path,
+                          json.dumps(terminal, indent=2) + "\n")
+        write_scoring_manifest(False)
+        v2_refuse_terminal_invalid(doc, slot)
+
+    def v2_exhaust(doc, slot, records):
+        exhausted_path = out / f"judge-{scoring_id}-{slot}-exhausted.json"
+        terminal = {
+            "doc": str(doc),
+            "scoring_id": scoring_id,
+            "presentation_index": slot,
+            "role": role,
+            "axis": "all-docs",
+            "protocol_version": PILOT_V2_PROTOCOL_VERSION,
+            "environment_policy_id": PILOT_V2_ENVIRONMENT_POLICY_ID,
+            "response_schema_version": judge_contract.RESPONSE_SCHEMA_VERSION,
+            "schema_sha256": v2_schema_digests[role],
+            "judge_prompt_sha256": judge_prompt_sha256,
+            "quality_rubric_sha256": quality_rubric_sha256,
+            "max_attempts": PILOT_V2_MAX_JUDGE_ATTEMPTS,
+            "attempt_response_sha256": [
+                record["response_sha256"] for record in records],
+            "status": "exhausted",
+        }
+        if exhausted_path.exists():
+            if load_json_object(
+                    exhausted_path, "judge exhaustion record") != terminal:
+                raise InfraFailure(
+                    f"judge exhaustion record for slot {slot} is corrupted")
+        else:
+            atomic_write_text(exhausted_path,
+                              json.dumps(terminal, indent=2) + "\n")
+        write_scoring_manifest(False)
+        raise InfraFailure(
+            f"protocol v2 judge attempts exhausted for slot {slot}; this "
+            f"terminal batch failure cannot be reset on resume"
+        )
+
+    def prepare_v1_judge_workspace(doc, ev_repo, ev_sha):
+        """Create one legacy judge workspace with fail-safe setup cleanup.
+
+        The paths remain in the judge record as freshness/placement
+        evidence, but the temporary filesystem state must not survive the
+        session.  Setup is kept in a helper so every exception between
+        ``mkdtemp`` and the backend launch removes both the registered git
+        worktree (when present) and its enclosing temporary root.
+        """
+        judge_root = Path(tempfile.mkdtemp(prefix="rpa-judge-"))
+        workdir = None
+        judge_settings = (
+            VERIFIER_SETTINGS if ev_repo else JUDGE_SETTINGS)
+        try:
+            if ev_repo:
+                profile, _ = make_profile(
+                    judge_root, "judge", settings=judge_settings)
+                workdir = make_worktree(ev_repo, ev_sha, judge_root)
+                if Path(doc).name in snapshot_by_doc:
+                    # Seal-verified frozen snapshots are placed INSIDE the
+                    # confined workdir so the sandboxed verifier can read
+                    # them. Directory layout is preserved and seal keys
+                    # are package-relative, so same-named files in
+                    # different subdirectories never overwrite each other.
+                    snap_src = Path(snapshot_by_doc[Path(doc).name])
+                    snap_dest = workdir / "_sealed-snapshots"
+                    snap_dest.mkdir()
+                    for snap, rel, seal_key in _sealed_snapshot_items(
+                            snap_src, seal_files):
+                        dest = snap_dest / rel
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        dest.write_bytes(
+                            _sealed_bytes(snap, seal_files, key=seal_key)
+                        )
+            else:
+                profile, _ = make_profile(
+                    judge_root, "judge", settings=judge_settings)
+                workdir = judge_root / "workdir"
+                workdir.mkdir()
+            env = backend_env(profile)
+            sandboxed_cmd = apply_sandbox(
+                config, with_stream_json_transport(judge_cmd), workdir,
+                profile)
+            # JSON round-tripping makes the audit snapshot independent of
+            # the mutable module-level settings dictionaries.
+            settings_snapshot = json.loads(json.dumps(judge_settings))
+            return (judge_root, profile, workdir, env, sandboxed_cmd,
+                    settings_snapshot)
+        except BaseException:
+            if ev_repo and workdir is not None:
+                remove_worktree(ev_repo, workdir)
+            shutil.rmtree(judge_root, ignore_errors=True)
+            raise
+
+    if v2:
+        if v2_batch_invalid_path().exists():
+            v2_refuse_batch_invalid()
+        v2_audit_material_names()
 
     for i, doc_index in enumerate(order):
+        if v2:
+            doc, doc_text = doc_paths[doc_index], doc_texts[doc_index]
+            canonical_path = out / f"judge-{scoring_id}-{i}.json"
+            if v2_invalid_path(i).exists():
+                v2_refuse_terminal_invalid(doc, i)
+            exhausted_path = out / (
+                f"judge-{scoring_id}-{i}-exhausted.json")
+            if exhausted_path.exists():
+                raise InfraFailure(
+                    f"protocol v2 judge attempts already exhausted for "
+                    f"slot {i}; terminal batch failure cannot be reset"
+                )
+            if Path(doc).name in inconclusive_docs:
+                attempt_material = list(out.glob(
+                    f"judge-{scoring_id}-{i}-attempt-*"))
+                if attempt_material:
+                    v2_terminally_invalidate(
+                        doc, i, "invalid_attempt_history", attempt_material)
+                result = {
+                    "doc": str(doc),
+                    "inconclusive": True,
+                    "reason": ("external source drift — task inconclusive "
+                               "per the registered protocol"),
+                    "source_drift": drift_notes.get(Path(doc).name),
+                    "task": (task_by_doc.get(Path(doc).name)
+                             if task_by_doc is not None else None),
+                    "scoring_seed": scoring_seed,
+                    "presentation_index": i,
+                    "scheduled": manifest_path is not None,
+                    "role": role,
+                    "axis": "all-docs",
+                    "protocol_version": PILOT_V2_PROTOCOL_VERSION,
+                    "environment_policy_id": PILOT_V2_ENVIRONMENT_POLICY_ID,
+                    "response_schema_version": (
+                        judge_contract.RESPONSE_SCHEMA_VERSION),
+                    "schema_sha256": v2_schema_digests[role],
+                    "judge_prompt_sha256": judge_prompt_sha256,
+                    "quality_rubric_sha256": quality_rubric_sha256,
+                }
+                if canonical_path.exists():
+                    try:
+                        canonical = load_json_object(
+                            canonical_path, "inconclusive judge record")
+                    except InfraFailure:
+                        v2_terminally_invalidate(
+                            doc, i, "invalid_attempt_history",
+                            [canonical_path])
+                    if canonical != result:
+                        v2_terminally_invalidate(
+                            doc, i, "invalid_attempt_history",
+                            [canonical_path])
+                else:
+                    atomic_write_text(canonical_path,
+                                      json.dumps(result, indent=2) + "\n")
+                if i < len(results):
+                    if results[i] != result:
+                        v2_terminally_invalidate(
+                            doc, i, "invalid_attempt_history",
+                            [canonical_path])
+                else:
+                    results.append(result)
+                    write_scoring_manifest(False)
+                continue
+
+            valid_attempt, first_missing, attempt_records = (
+                v2_scan_attempts(doc, i))
+            if valid_attempt is not None:
+                if canonical_path.exists():
+                    try:
+                        canonical = load_json_object(
+                            canonical_path, "canonical judge record")
+                    except InfraFailure:
+                        v2_terminally_invalidate(
+                            doc, i, "invalid_attempt_history",
+                            [canonical_path, *v2_attempt_material(i)])
+                    if canonical != valid_attempt:
+                        v2_terminally_invalidate(
+                            doc, i, "invalid_attempt_history",
+                            [canonical_path, *v2_attempt_material(i)])
+                else:
+                    atomic_write_text(
+                        canonical_path,
+                        json.dumps(valid_attempt, indent=2) + "\n")
+                if i < len(results):
+                    if results[i] != valid_attempt:
+                        v2_terminally_invalidate(
+                            doc, i, "invalid_attempt_history",
+                            [canonical_path, *v2_attempt_material(i)])
+                else:
+                    results.append(valid_attempt)
+                    write_scoring_manifest(False)
+                continue
+            if canonical_path.exists():
+                v2_terminally_invalidate(
+                    doc, i, "invalid_attempt_history",
+                    [canonical_path, *v2_attempt_material(i)])
+            if i < len(results):
+                v2_terminally_invalidate(
+                    doc, i, "invalid_attempt_history",
+                    [scoring_manifest_path, *v2_attempt_material(i)])
+            next_attempt = first_missing or (
+                PILOT_V2_MAX_JUDGE_ATTEMPTS + 1)
+            if next_attempt > PILOT_V2_MAX_JUDGE_ATTEMPTS:
+                v2_exhaust(doc, i, attempt_records)
+            if doc_evidence is not None:
+                ev_repo, ev_sha = doc_evidence[Path(doc).name]
+            else:
+                ev_repo, ev_sha = evidence_repo, evidence_sha
+            for attempt in range(
+                    next_attempt, PILOT_V2_MAX_JUDGE_ATTEMPTS + 1):
+                attempt_record = v2_launch_attempt(
+                    doc, doc_text, i, attempt, ev_repo, ev_sha)
+                attempt_records.append(attempt_record)
+                if attempt_record["validation"]["valid"]:
+                    atomic_write_text(
+                        canonical_path,
+                        json.dumps(attempt_record, indent=2) + "\n")
+                    results.append(attempt_record)
+                    write_scoring_manifest(False)
+                    break
+            else:
+                v2_exhaust(doc, i, attempt_records)
+            continue
+
         if i < len(results):
             # Judged before the interruption — never re-judged; but the
             # manifest entry is only trusted after it matches its atomic
@@ -2648,35 +5373,6 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
         # empty cwd and no inspection tools (JUDGE_SETTINGS); a verifier
         # gets a disposable worktree of THIS document's frozen evidence at
         # its pinned sha with read-only tools (VERIFIER_SETTINGS).
-        judge_root = Path(tempfile.mkdtemp(prefix="rpa-judge-"))
-        if ev_repo:
-            profile, _ = make_profile(judge_root, "judge",
-                                      settings=VERIFIER_SETTINGS)
-            workdir = make_worktree(ev_repo, ev_sha, judge_root)
-            if Path(doc).name in snapshot_by_doc:
-                # Seal-verified frozen snapshots are placed INSIDE the
-                # confined workdir so the sandboxed verifier can read them.
-                # Directory layout is preserved and seal keys are package-
-                # relative, so same-named files in different subdirectories
-                # stay distinct and never overwrite each other.
-                snap_src = Path(snapshot_by_doc[Path(doc).name])
-                snap_dest = workdir / "_sealed-snapshots"
-                snap_dest.mkdir()
-                for snap, rel, seal_key in _sealed_snapshot_items(
-                        snap_src, seal_files):
-                    dest = snap_dest / rel
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    dest.write_bytes(
-                        _sealed_bytes(snap, seal_files, key=seal_key)
-                    )
-        else:
-            profile, _ = make_profile(judge_root, "judge",
-                                      settings=JUDGE_SETTINGS)
-            workdir = judge_root / "workdir"
-            workdir.mkdir()
-        env = backend_env(profile)
-        sandboxed_cmd = apply_sandbox(
-            config, with_stream_json_transport(judge_cmd), workdir, profile)
         prompt_parts = [judge_prompt]
         if sealed_context_texts is not None:
             # Preloaded and seal-verified once, before any session: a file
@@ -2702,6 +5398,15 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             "axis": "diagnostic" if diagnostic_axis else "primary",
         }, indent=2) + "\n")
         try:
+            (judge_root, profile, workdir, env, sandboxed_cmd,
+             judge_settings) = prepare_v1_judge_workspace(
+                 doc, ev_repo, ev_sha)
+        except BaseException:
+            # Workspace preparation happens before the backend can launch;
+            # retiring this journal cannot authorize a duplicate session.
+            pending_path.unlink(missing_ok=True)
+            raise
+        try:
             try:
                 stdout = spawn_session(
                     sandboxed_cmd, prompt, str(workdir), env,
@@ -2719,6 +5424,7 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             finally:
                 if ev_repo:
                     remove_worktree(ev_repo, workdir)
+                shutil.rmtree(judge_root, ignore_errors=True)
         except InfraFailure:
             pending_path.unlink(missing_ok=True)
             raise
@@ -2747,6 +5453,7 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
             "presentation_index": i,
             "scheduled": manifest_path is not None,
             "judge_model": judge_model,
+            "judge_settings": judge_settings,
             "task": (task_by_doc.get(Path(doc).name)
                      if task_by_doc is not None else None),
             "task_context": (str(context_by_doc[Path(doc).name])
@@ -2767,10 +5474,31 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
         write_scoring_manifest(False)
         pending_path.unlink(missing_ok=True)
     judged = [r for r in results if not r.get("inconclusive")]
-    if len({r["session_id"] for r in judged}) != len(judged) or len(
-        {r["profile"] for r in judged}
-    ) != len(judged):
+    judged_sessions = [r.get("session_id") for r in judged]
+    judged_profiles = [r.get("profile") for r in judged]
+    if (any(not isinstance(value, str) or not value
+            for value in judged_sessions + judged_profiles)
+            or len(set(judged_sessions)) != len(judged_sessions)
+            or len(set(judged_profiles)) != len(judged_profiles)):
         raise InfraFailure("judge sessions were not fresh/isolated")
+    if v2:
+        v2_audit_material_names()
+        attempts = [
+            load_json_object(path, "judge attempt record")
+            for path in sorted(out.glob(
+                f"judge-{scoring_id}-*-attempt-*.json"))
+        ]
+        attempt_profiles = [r.get("profile") for r in attempts]
+        if (any(not profile for profile in attempt_profiles)
+                or len(set(attempt_profiles)) != len(attempt_profiles)):
+            raise InfraFailure(
+                "protocol v2 judge attempts did not use fresh profiles")
+        attempt_sessions = [r.get("session_id") for r in attempts
+                            if isinstance(r.get("session_id"), str)
+                            and r.get("session_id")]
+        if len(set(attempt_sessions)) != len(attempt_sessions):
+            raise InfraFailure(
+                "protocol v2 judge attempts reused a backend session")
     write_scoring_manifest(True)
     return results
 
@@ -2812,7 +5540,8 @@ def main():
                         help="score mode: explicitly allow ad-hoc/dev "
                              "scoring without a schedule manifest")
     parser.add_argument("--diagnostic-axis", action="store_true",
-                        help="score mode with --manifest: the registered "
+                        help="historical protocol-v1 score mode with "
+                             "--manifest: the registered "
                              "diagnostic content axis — the batch covers "
                              "every produced document (completed "
                              "replicates' anonymized artifacts PLUS "
@@ -2836,15 +5565,17 @@ def main():
     parser.add_argument("--drift-report",
                         help="score mode: JSON drift report from the "
                              "pre-score re-fetch of sealed external "
-                             "sources ({taskfile: {status: "
-                             "unchanged|drifted}}); drifted tasks are "
-                             "recorded inconclusive, never judged")
+                             "sources ({taskfile: {changed: {seal_key: "
+                             "{material: bool, rationale: str}}}}); "
+                             "materially drifted tasks are recorded "
+                             "inconclusive, never judged")
     parser.add_argument("--output", default="runs", help="output directory")
     parser.add_argument("--make-schedule", action="store_true",
                         help="write a pre-registered randomized schedule "
                              "(requires --config, --tasks, --seed)")
     parser.add_argument("--tasks", nargs="+",
-                        help="task files for --make-schedule")
+                        help="registered task files for --make-schedule, "
+                             "--run-schedule, or manifest-bound --score")
     parser.add_argument("--replicates", type=int, default=3,
                         help="replicates per arm/task cell (the protocol "
                              "fixes 3; other values need "
@@ -2860,7 +5591,7 @@ def main():
                         help="where --make-schedule writes the schedule")
     parser.add_argument("--run-schedule",
                         help="execute a pre-registered schedule file "
-                             "(requires --config, --repo)")
+                             "(requires --config, --repos, and --tasks)")
     args = parser.parse_args()
 
     if args.preflight:

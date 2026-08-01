@@ -13,15 +13,17 @@ is visible except what the session needs:
               directory's worktree (derived from `workdir/.git`, needed
               for the metadata script's git calls), and, when present,
               HOME/.ccr (the environment's TLS proxy CA bundle)
-  inherited:  /dev (device nodes), /proc (fresh mount when the kernel
-              allows, host bind otherwise); network is untouched
+  inherited:  /dev device nodes except a fresh private /dev/shm;
+              /proc is freshly mounted inside a private PID namespace
+              or the wrapper fails closed; network is untouched
 
 Everything else — other checkouts, sealed packages, ground truth,
 manifests, prior run outputs — is simply ABSENT from the mount tree,
-not merely unwritable. Implemented with util-linux `unshare` (user +
-mount namespaces) and a chroot assembled on a private tmpfs; no
-dependencies beyond util-linux, so the registered wrapper runs on any
-Linux with unprivileged user namespaces.
+not merely unwritable. Implemented with util-linux `unshare`/`mount`
+(user, mount, and PID namespaces), the system `git` CLI used to construct
+the pinned commit closure, and a chroot assembled on a private tmpfs. The
+registered wrapper therefore requires those tools plus working unprivileged
+user namespaces; readiness is proven before scored runs.
 
 Usage (the shape registered as `sandbox_cmd`; the runner appends the
 backend command after `--`):

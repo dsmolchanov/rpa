@@ -7,18 +7,26 @@ preflight on the throwaway task is still required once before baseline runs.
 """
 
 import hashlib
+import contextlib
+import io
 import json
 import os
+import random
 import subprocess
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
 
 import runner  # noqa: E402
+import judge_contract  # noqa: E402
+import mock_claude  # noqa: E402
+import aggregate_results  # noqa: E402
+import seal_package  # noqa: E402
 
 EXPECTED_TREE = {"input_tokens": 140, "output_tokens": 70, "tool_calls": 12}
 EXPECTED_MAIN = {"input_tokens": 100, "output_tokens": 50, "tool_calls": 7}
@@ -104,9 +112,15 @@ def write_task(workspace, label, sha):
 
 def run_case(workspace, mode, label=None, timeout=20, tamper=False,
              sha_override=None, seed_research=False, use_retries=False,
-             extra_env=None):
+             extra_env=None, protocol_v2=False):
     label = label or mode
     config, install = build_config(workspace, mode, timeout)
+    if protocol_v2:
+        config.update({
+            "protocol_version": runner.PILOT_V2_PROTOCOL_VERSION,
+            "max_judge_attempts": runner.PILOT_V2_MAX_JUDGE_ATTEMPTS,
+            "max_infra_retries": runner.DEFAULT_MAX_INFRA_RETRIES,
+        })
     if tamper:
         (install / "plugin.txt").write_text("tampered\n", encoding="utf-8")
     repo, sha = make_git_repo(workspace, label, seed_research=seed_research)
@@ -131,6 +145,672 @@ def run_case(workspace, mode, label=None, timeout=20, tamper=False,
 def check(name, condition, notes, detail=""):
     notes.append((name, "PASS" if condition else "FAIL", detail))
     return bool(condition)
+
+
+def make_v2_fixture(workspace, label, repo, target_sha,
+                    run_mode="normal", judge_mode="judge-auto",
+                    execute_run=True, timeout=20):
+    """Create one private-shaped, nonstandard v2 schedule in a temp tree.
+
+    Task, context, and prompt contents remain synthetic.  The fixture still
+    exercises the real seal/config/schedule/run-record bindings used by a
+    production batch; only the topology and replicate count are dev-marked.
+    """
+    root = Path(workspace) / f"v2-{label}"
+    sealed = root / "sealed"
+    sealed.mkdir(parents=True)
+    archetypes = {
+        1: "1 — subsystem-explanation",
+        2: "2 — subsystem-explanation, largest repo",
+        3: "3 — narrow where-is",
+        4: "4 — code + thoughts history",
+        5: "5 — external library context",
+        6: "6 — known-wrong premise",
+    }
+    tasks = {}
+    contexts = {}
+    for number in range(1, 7):
+        task_path = sealed / f"holdout-v2-{number}.md"
+        external_marker = (
+            "external-snapshots: true\n" if number == 5 else "")
+        task_path.write_text(
+            f"---\ntask-id: v2-{label}-{number}\n"
+            f"archetype: \"{archetypes[number]}\"\n"
+            f"target-repo: mock-repo\ntarget-sha: {target_sha}\n"
+            f"set: preflight-v2\n{external_marker}---\n\n"
+            f"## Task prompt\n\n"
+            f"Synthetic protocol-v2 task {label}-{number}.\n\n"
+            f"## Ground truth\n\n{SECRET}\n",
+            encoding="utf-8",
+        )
+        context_path = sealed / f"context-v2-{label}-{number}.md"
+        context_path.write_text(
+            f"SEALED-V2-CONTEXT {label}-{number}: synthetic prompt and "
+            f"ground truth.\n",
+            encoding="utf-8",
+        )
+        tasks[number] = task_path
+        contexts[number] = context_path
+    task = tasks[1]
+    context = contexts[1]
+    prompts = {
+        "scorer": sealed / f"scorer-prompt-v2-{label}.md",
+        "verifier": sealed / f"verifier-prompt-v2-{label}.md",
+    }
+    prompts["scorer"].write_text(
+        "SCORER-CONTRACT\nReturn exactly the sealed scorer JSON object.\n",
+        encoding="utf-8",
+    )
+    prompts["verifier"].write_text(
+        "VERIFIER-CONTRACT\nReturn exactly the sealed verifier JSON object.\n",
+        encoding="utf-8",
+    )
+    schemas = {
+        role: sealed / f"{role}-response-v2-{label}.json"
+        for role in ("scorer", "verifier")
+    }
+    for role, path in schemas.items():
+        path.write_text(
+            json.dumps(judge_contract.contract_schema(role),
+                       indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    rubric = sealed / f"quality-rubric-v2-{label}.md"
+    rubric.write_text(
+        "# Synthetic quality rubric\n\nScore only against sealed evidence.\n",
+        encoding="utf-8",
+    )
+    coverage = sealed / f"coverage-matrix-v2-{label}.json"
+    coverage.write_text(
+        json.dumps({
+            tasks[number].name: {"archetype": archetypes[number]}
+            for number in range(1, 7)
+        }, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    snapshot = sealed / "snapshots" / "reference.txt"
+    snapshot.parent.mkdir()
+    snapshot.write_text(
+        "Synthetic frozen external reference.\n", encoding="utf-8")
+
+    config, _ = build_config(workspace, run_mode, timeout=timeout)
+    judge_backend_cmd = [
+        sys.executable, str(HERE / "mock_claude.py"),
+        "--mode", judge_mode, "--effort", "{effort}",
+        "--prompt-receipt-file", str(root / "judge-prompt-receipt.txt"),
+    ]
+    if judge_mode == "judge-invalid-then-valid":
+        judge_backend_cmd.extend([
+            "--judge-state-file", str(root / "judge-state.txt")])
+    if judge_mode == "judge-background-child":
+        judge_backend_cmd.extend([
+            "--child-write-file", str(root / "judge-child-survived")])
+    config.update({
+        "protocol_version": runner.PILOT_V2_PROTOCOL_VERSION,
+        "max_judge_attempts": runner.PILOT_V2_MAX_JUDGE_ATTEMPTS,
+        "judge_backend_cmd": judge_backend_cmd,
+    })
+    if run_mode == "flaky-infra":
+        config["backend_cmd"].extend([
+            "--run-state-file", str(root / "run-state.txt")])
+    materials = [
+        *tasks.values(), *contexts.values(), *prompts.values(),
+        *schemas.values(), rubric, coverage, snapshot,
+    ]
+    file_digests = {
+        path.relative_to(sealed).as_posix(): hashlib.sha256(
+            path.read_bytes()).hexdigest()
+        for path in materials
+    }
+    seal = sealed / "seal-manifest.json"
+    seal.write_text(json.dumps({
+        "protocol_version": runner.PILOT_V2_PROTOCOL_VERSION,
+        "max_judge_attempts": runner.PILOT_V2_MAX_JUDGE_ATTEMPTS,
+        "judge_retry_policy": runner.PILOT_V2_JUDGE_RETRY_POLICY,
+        "aggregation_policy": runner.PILOT_V2_AGGREGATION_POLICY,
+        "judge_prompts": {
+            role: path.name for role, path in prompts.items()
+        },
+        "judge_response_schemas": {
+            role: path.name for role, path in schemas.items()
+        },
+        "quality_rubric": rubric.name,
+        "coverage_matrix": coverage.name,
+        "task_contexts": {
+            tasks[number].name: contexts[number].name
+            for number in range(1, 7)
+        },
+        "ablation_tasks": ["holdout-v2-1.md", "holdout-v2-3.md"],
+        "snapshot_sources": {
+            "snapshots/reference.txt":
+                "https://example.invalid/reference.txt",
+        },
+        "judge_config": {
+            "judge_backend_cmd": config["judge_backend_cmd"],
+            "judge_model": config["judge_model"],
+            "judge_effort": config["judge_effort"],
+        },
+        "files": file_digests,
+    }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    config["seal_manifest"] = str(seal)
+    config["seal_package_sha256"] = hashlib.sha256(
+        seal.read_bytes()).hexdigest()
+
+    schedule = runner.make_schedule(
+        config, [str(task)], 1, seed=31, allow_nonstandard=True)
+    schedule_path = root / "schedule.json"
+    schedule_path.write_text(
+        json.dumps(schedule, indent=2) + "\n", encoding="utf-8")
+    run_output = root / "runs"
+    manifest = None
+    manifest_path = run_output / "schedule-manifest.json"
+    docs = []
+    if execute_run:
+        manifest = runner.run_schedule(
+            config, schedule_path, {"mock-repo": str(repo)}, run_output,
+            [str(task)],
+        )
+        for result in manifest["results"]:
+            gate = result.get("artifact_gate")
+            if gate == "passed":
+                suffix = "anon"
+            elif gate == "failed":
+                suffix = "diag"
+            else:
+                continue
+            docs.append(run_output / f"run-{result['run_id']}-{suffix}.md")
+    return {
+        "root": root,
+        "config": config,
+        "task": task,
+        "context": context,
+        "prompts": prompts,
+        "schemas": schemas,
+        "rubric": rubric,
+        "seal": seal,
+        "schedule": schedule_path,
+        "run_output": run_output,
+        "manifest": manifest,
+        "manifest_path": manifest_path,
+        "docs": docs,
+        "repo": Path(repo),
+        "prompt_receipt": root / "judge-prompt-receipt.txt",
+    }
+
+
+def score_v2_fixture(fixture, role, output_dir):
+    kwargs = {
+        "scoring_seed": 37,
+        "manifest_path": fixture["manifest_path"],
+        "score_task_paths": [str(fixture["task"])],
+        "task_contexts": {
+            fixture["task"].name: str(fixture["context"]),
+        },
+        "seal_manifest_path": fixture["seal"],
+    }
+    if role == "verifier":
+        kwargs["evidence_repos"] = {"mock-repo": str(fixture["repo"])}
+    return runner.score(
+        fixture["config"], fixture["docs"], fixture["prompts"][role],
+        output_dir, **kwargs,
+    )
+
+
+def make_v2_aggregation_fixture(workspace, target_sha):
+    """Build the complete standard 42-run/84-judge aggregation population.
+
+    No backend is launched: deterministic immutable records stand in for the
+    already-completed private round.  The topology, seal, schedule, all-docs
+    judge manifests, and every aggregation binding are production-shaped.
+    """
+    root = Path(workspace) / "v2-aggregate-golden"
+    sealed = root / "sealed"
+    output = root / "output"
+    sealed.mkdir(parents=True)
+    output.mkdir()
+
+    task_meta = (
+        (1, "1 — subsystem-explanation", "dsmolchanov/rpa"),
+        (2, "2 — subsystem-explanation, largest repo", "dsmolchanov/neomenu"),
+        (3, "3 — narrow where-is", "dsmolchanov/rpa"),
+        (4, "4 — code + thoughts history", "dsmolchanov/neomenu"),
+        (5, "5 — external library context",
+         "dsmolchanov/livekit-voice-agent"),
+        (6, "6 — known-wrong premise",
+         "dsmolchanov/livekit-voice-agent"),
+    )
+    tasks = []
+    contexts = {}
+    for number, archetype, repository in task_meta:
+        task = sealed / f"holdout-v2-{number}.md"
+        external_marker = (
+            "external-snapshots: true\n" if number == 5 else "")
+        task.write_text(
+            f"---\ntask-id: aggregate-v2-{number}\n"
+            f"archetype: \"{archetype}\"\n"
+            f"target-repo: {repository}\ntarget-sha: {target_sha}\n"
+            f"set: aggregate-preflight\n{external_marker}---\n\n"
+            f"## Task prompt\n\n"
+            f"Synthetic aggregation task {number}.\n",
+            encoding="utf-8",
+        )
+        context = sealed / f"context-v2-{number}.md"
+        context.write_text(
+            f"Synthetic sealed context {number}; {SECRET}\n",
+            encoding="utf-8",
+        )
+        tasks.append(task)
+        contexts[task.name] = context
+
+    prompts = {}
+    schemas = {}
+    for role in ("scorer", "verifier"):
+        prompt = sealed / f"{role}-prompt-v2.md"
+        prompt.write_text(
+            f"{role.upper()}-CONTRACT: return strict JSON.\n",
+            encoding="utf-8",
+        )
+        prompts[role] = prompt
+        schema = sealed / f"{role}-response-v2.json"
+        schema.write_text(
+            json.dumps(judge_contract.contract_schema(role),
+                       indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        schemas[role] = schema
+    rubric = sealed / "quality-rubric-v2.md"
+    rubric.write_text(
+        "# Synthetic quality rubric\n\nScore only against sealed evidence.\n",
+        encoding="utf-8",
+    )
+    coverage = sealed / "coverage-matrix-v2.json"
+    coverage.write_text(
+        json.dumps({
+            task.name: {"archetype": task_meta[index][1]}
+            for index, task in enumerate(tasks)
+        }, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    snapshot = sealed / "snapshots" / "reference.txt"
+    snapshot.parent.mkdir()
+    snapshot.write_text(
+        "Synthetic frozen external reference.\n", encoding="utf-8")
+
+    installs = {}
+    for arm in ("baseline", "candidate", "ablation"):
+        install = root / f"install-{arm}"
+        install.mkdir()
+        (install / "plugin.txt").write_text(
+            "identical synthetic installation\n", encoding="utf-8")
+        installs[arm] = install
+
+    judge_cmd = [
+        sys.executable, str(HERE / "mock_claude.py"),
+        "--mode", "judge-auto", "--effort", "{effort}",
+    ]
+    config = {
+        "protocol_version": runner.PILOT_V2_PROTOCOL_VERSION,
+        "max_judge_attempts": runner.PILOT_V2_MAX_JUDGE_ATTEMPTS,
+        "arms": {},
+        "backend_cmd": [
+            sys.executable, str(HERE / "mock_claude.py"),
+            "--mode", "normal", "--plugin-dir", "{installation}",
+            "--effort", "{effort}",
+        ],
+        "judge_backend_cmd": judge_cmd,
+        "judge_model": "opus",
+        "judge_effort": "high",
+        "workflow_abort_exit_codes": [21],
+        "max_infra_retries": 2,
+        "timeout_seconds": 20,
+        "nonstandard_config": False,
+        "sandbox_cmd": [
+            sys.executable, str(HERE / "mock_sandbox.py"),
+            "{workdir}", "{profile}", "--",
+        ],
+        "drift_fetch_cmd": [
+            sys.executable, str(HERE / "mock_fetch.py"),
+            "{url}", "{dest}",
+        ],
+        "backend_version": "mock-claude 1.0.0",
+        "backend_version_cmd": [
+            sys.executable, str(HERE / "mock_claude.py"), "--version",
+        ],
+    }
+    for arm, install in installs.items():
+        config["arms"][arm] = {
+            "installation_dir": str(install),
+            "sha256": runner.hash_tree(install),
+            "model": "opus",
+            "effort": "high",
+            "entrypoint": "/mock-research",
+        }
+    config["arms"]["ablation"].update({
+        "forbid_subagents": True,
+        "schedule_tasks": [str(tasks[0]), str(tasks[2])],
+    })
+
+    materials = [*tasks, *contexts.values(), *prompts.values(),
+                 *schemas.values(), rubric, coverage, snapshot]
+    seal = sealed / "seal-manifest.json"
+    seal.write_text(json.dumps({
+        "protocol_version": runner.PILOT_V2_PROTOCOL_VERSION,
+        "max_judge_attempts": runner.PILOT_V2_MAX_JUDGE_ATTEMPTS,
+        "judge_retry_policy": runner.PILOT_V2_JUDGE_RETRY_POLICY,
+        "aggregation_policy": runner.PILOT_V2_AGGREGATION_POLICY,
+        "judge_prompts": {
+            role: path.name for role, path in prompts.items()
+        },
+        "judge_response_schemas": {
+            role: path.name for role, path in schemas.items()
+        },
+        "quality_rubric": rubric.name,
+        "coverage_matrix": coverage.name,
+        "task_contexts": {
+            task: path.name for task, path in contexts.items()
+        },
+        "ablation_tasks": [tasks[0].name, tasks[2].name],
+        "snapshot_sources": {
+            "snapshots/reference.txt":
+                "https://example.invalid/reference.txt",
+        },
+        "judge_config": {
+            "judge_backend_cmd": judge_cmd,
+            "judge_model": config["judge_model"],
+            "judge_effort": config["judge_effort"],
+        },
+        "files": {
+            path.relative_to(sealed).as_posix(): hashlib.sha256(
+                path.read_bytes()).hexdigest()
+            for path in materials
+        },
+    }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    config["seal_manifest"] = str(seal)
+    config["seal_package_sha256"] = hashlib.sha256(
+        seal.read_bytes()).hexdigest()
+    config_path = root / "runner-config.json"
+    config_path.write_text(
+        json.dumps(config, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    task_paths = [str(task) for task in tasks]
+    schedule = runner.make_schedule(config, task_paths, 3, seed=7301)
+    schedule_path = root / "schedule.json"
+    schedule_path.write_text(
+        json.dumps(schedule, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    summaries = []
+    doc_task = {}
+    for position, entry in enumerate(schedule["entries"]):
+        run_id = f"{position + 1:012x}"
+        doc_name = f"run-{run_id}-anon.md"
+        doc_bytes = f"# Synthetic aggregate document {position + 1}\n".encode()
+        (output / doc_name).write_bytes(doc_bytes)
+        (output / f"run-{run_id}-raw.md").write_bytes(doc_bytes)
+        tokens = {"baseline": 100, "candidate": 75, "ablation": 40}[
+            entry["arm"]]
+        wall = {"baseline": 10, "candidate": 8, "ablation": 5}[
+            entry["arm"]]
+        nodes = [{
+            "model": "opus",
+            "effort": "high",
+            "input_tokens": tokens - 10,
+            "output_tokens": 10,
+            "tool_calls": 1,
+            "subagent": False,
+            "subagent_id": None,
+            "subagent_launches": 0,
+        }]
+        record = {
+            "run_id": run_id,
+            "arm": entry["arm"],
+            "task": entry["task"],
+            "registered_model": config["arms"][entry["arm"]]["model"],
+            "effort": config["arms"][entry["arm"]]["effort"],
+            "installation_sha256": config["arms"][entry["arm"]]["sha256"],
+            "backend_version": config["backend_version"],
+            "entrypoint": config["arms"][entry["arm"]]["entrypoint"],
+            "standard_topology": True,
+            "target_sha": target_sha,
+            "attempt": 1,
+            "status": "completed",
+            "protocol_version": runner.PILOT_V2_PROTOCOL_VERSION,
+            "environment_policy_id": (
+                runner.PILOT_V2_ENVIRONMENT_POLICY_ID),
+            "schedule_digest": runner.schedule_digest(schedule),
+            "schedule_index": entry["index"],
+            "failure_kind": None,
+            "artifact_gate": "passed",
+            "artifact_sha256": hashlib.sha256(doc_bytes).hexdigest(),
+            "config_digest": runner.config_digest(config),
+            "task_sha256": schedule["task_digests"][entry["task"]],
+            "telemetry_policy_id": (
+                runner.PILOT_V2_AGGREGATION_POLICY["telemetry"]),
+            "telemetry_eligible": True,
+            "telemetry_exclusion_reason": None,
+            "wall_seconds": wall,
+            "accounting": runner.account(nodes),
+            "nodes": nodes,
+            "effort_capture": runner.validate_efforts(nodes, "high"),
+            "interventions": 0,
+            "interventions_log": [],
+        }
+        record_path = output / f"run-{run_id}.json"
+        record_path.write_text(
+            json.dumps(record, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        summaries.append({
+            "index": entry["index"],
+            "arm": entry["arm"],
+            "task": entry["task"],
+            "run_id": run_id,
+            "status": "completed",
+            "attempts": 1,
+            "artifact_sha256": record["artifact_sha256"],
+            "diagnostic_sha256": None,
+            "task_sha256": record["task_sha256"],
+            "protocol_version": runner.PILOT_V2_PROTOCOL_VERSION,
+            "environment_policy_id": (
+                runner.PILOT_V2_ENVIRONMENT_POLICY_ID),
+            "schedule_digest": record["schedule_digest"],
+            "failure_kind": None,
+            "artifact_gate": "passed",
+            "telemetry_policy_id": record["telemetry_policy_id"],
+            "telemetry_eligible": True,
+            "telemetry_exclusion_reason": None,
+        })
+        doc_task[doc_name] = entry["task"]
+
+    manifest = {
+        "protocol_version": runner.PILOT_V2_PROTOCOL_VERSION,
+        "environment_policy_id": runner.PILOT_V2_ENVIRONMENT_POLICY_ID,
+        "schedule": str(schedule_path),
+        "seed": schedule["seed"],
+        "schedule_digest": runner.schedule_digest(schedule),
+        "config_digest": runner.config_digest(config),
+        "replicates": 3,
+        "nonstandard": False,
+        "results": summaries,
+        "complete": True,
+    }
+    manifest_path = output / "schedule-manifest.json"
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    docs = [f"run-{summary['run_id']}-anon.md" for summary in summaries]
+    judge_manifests = {}
+    parsed_by_role = {
+        "scorer": judge_contract.validate_response(
+            json.dumps(mock_claude.SCORER_RESPONSE), "scorer"),
+        "verifier": judge_contract.validate_response(
+            json.dumps(mock_claude.VERIFIER_RESPONSE), "verifier"),
+    }
+    for role in ("scorer", "verifier"):
+        scoring_id = "5c0ae001" if role == "scorer" else "5c0ae002"
+        schema_sha = hashlib.sha256(schemas[role].read_bytes()).hexdigest()
+        response = json.dumps(parsed_by_role[role], sort_keys=True)
+        results = []
+        presentation_order = list(range(len(docs)))
+        random.Random(991).shuffle(presentation_order)
+        for presentation_index, doc_index in enumerate(presentation_order):
+            doc_name = docs[doc_index]
+            session_id = f"aggregate-{role}-{presentation_index:02d}"
+            raw_stream = "\n".join((
+                json.dumps({
+                    "type": "node",
+                    "model": config["judge_model"],
+                    "effort": config["judge_effort"],
+                    "tool_calls": 0,
+                    "usage": {"input_tokens": 10, "output_tokens": 5},
+                }, sort_keys=True),
+                json.dumps({
+                    "type": "result",
+                    "session_id": session_id,
+                    "result": response,
+                }, sort_keys=True),
+            ))
+            parsed_session, judge_nodes, parsed_response, stream_defects = (
+                runner._parse_judge_stream_tolerant(raw_stream)
+            )
+            if (parsed_session != session_id or parsed_response != response
+                    or stream_defects):
+                raise AssertionError("invalid synthetic v2 judge stream")
+            result = {
+                "doc": str(output / doc_name),
+                "presentation_index": presentation_index,
+                "scoring_id": scoring_id,
+                "role": role,
+                "axis": "all-docs",
+                "attempt": 1,
+                "protocol_version": runner.PILOT_V2_PROTOCOL_VERSION,
+                "environment_policy_id": (
+                    runner.PILOT_V2_ENVIRONMENT_POLICY_ID),
+                "response_schema_version": (
+                    judge_contract.RESPONSE_SCHEMA_VERSION),
+                "schema_sha256": schema_sha,
+                "judge_prompt_sha256": hashlib.sha256(
+                    prompts[role].read_bytes()).hexdigest(),
+                "quality_rubric_sha256": hashlib.sha256(
+                    rubric.read_bytes()).hexdigest(),
+                "config_digest": runner.config_digest(config),
+                "session_id": session_id,
+                "profile": str(
+                    root / f"isolated-{role}-{presentation_index}-profile"),
+                "cwd": str(
+                    root / f"isolated-{role}-{presentation_index}-workdir"),
+                "backend_version": config["backend_version"],
+                "scoring_seed": 991,
+                "scheduled": True,
+                "judge_model": config["judge_model"],
+                "judge_effort": config["judge_effort"],
+                "profile_settings": (
+                    runner.VERIFIER_SETTINGS
+                    if role == "verifier" else runner.JUDGE_SETTINGS
+                ),
+                "task": doc_task[doc_name],
+                "task_context": str(
+                    contexts[Path(doc_task[doc_name]).name]),
+                "seal_manifest": str(seal),
+                "snapshots": (
+                    str(snapshot.parent)
+                    if Path(doc_task[doc_name]).name
+                    == "holdout-v2-5.md" else None),
+                "source_drift": None,
+                "raw_stream_limit_bytes": (
+                    runner.PILOT_V2_MAX_RAW_STREAM_BYTES),
+                "raw_stream_sidecar": str(
+                    output / (
+                        f"judge-{scoring_id}-{presentation_index}-attempt-1-"
+                        "raw-stream.txt"
+                    )
+                ),
+                "raw_stream": raw_stream,
+                "raw_stream_external": False,
+                "raw_stream_external_reason": None,
+                "raw_stream_bytes": len(raw_stream.encode("utf-8")),
+                "raw_stream_sha256": hashlib.sha256(
+                    raw_stream.encode("utf-8")).hexdigest(),
+                "nodes": judge_nodes,
+                "launch_defects": [],
+                "response": response,
+                "response_sha256": hashlib.sha256(
+                    response.encode("utf-8")).hexdigest(),
+                "schema_valid": True,
+                "transport_invalid": False,
+                "effort_capture": runner.validate_efforts(
+                    judge_nodes, config["judge_effort"]),
+                "parsed_response": parsed_by_role[role],
+                "validation": {"valid": True, "defects": []},
+                "accounting": runner.account(judge_nodes),
+            }
+            if role == "verifier":
+                numerator = parsed_by_role[role]["supported_claims"]
+                denominator = parsed_by_role[role]["verifiable_claims"]
+                result.update({
+                    "evidence_sha": target_sha,
+                    "evidence_accuracy_numerator": numerator,
+                    "evidence_accuracy_denominator": denominator,
+                    "evidence_accuracy": (
+                        numerator / denominator if denominator else 0.0),
+                })
+            canonical_path = output / (
+                f"judge-{scoring_id}-{presentation_index}.json")
+            canonical_path.write_text(
+                json.dumps(result, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            (output / (
+                f"judge-{scoring_id}-{presentation_index}-attempt-1.json"
+            )).write_bytes(canonical_path.read_bytes())
+            results.append(result)
+        identity = {
+            "scoring_seed": 991,
+            "manifest": str(manifest_path),
+            "config_digest": runner.config_digest(config),
+            "role": role,
+            "axis": "all-docs",
+            "docs": docs,
+            "drift_decisions": {
+                "inconclusive": [],
+                "notes_digest": hashlib.sha256(b"{}").hexdigest(),
+            },
+            "protocol_version": runner.PILOT_V2_PROTOCOL_VERSION,
+            "environment_policy_id": (
+                runner.PILOT_V2_ENVIRONMENT_POLICY_ID),
+            "response_schema_version": judge_contract.RESPONSE_SCHEMA_VERSION,
+            "schema_sha256": schema_sha,
+            "judge_prompt_sha256": hashlib.sha256(
+                prompts[role].read_bytes()).hexdigest(),
+            "quality_rubric_sha256": hashlib.sha256(
+                rubric.read_bytes()).hexdigest(),
+        }
+        judge_manifest = output / (
+            f"scoring-{role}-all-docs-manifest.json")
+        judge_manifest.write_text(json.dumps({
+            "scoring_id": scoring_id,
+            "identity": identity,
+            "results": results,
+            "complete": True,
+        }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        judge_manifests[role] = judge_manifest
+
+    return {
+        "root": root,
+        "config": config,
+        "config_path": config_path,
+        "seal": seal,
+        "schedule": schedule_path,
+        "manifest": manifest_path,
+        "judge_manifests": judge_manifests,
+        "first_run_record": output / f"run-{summaries[0]['run_id']}.json",
+        "run_count": len(summaries),
+        "judge_count": len(docs) * 2,
+    }
 
 
 def run_preflight():
@@ -177,6 +857,76 @@ def run_preflight():
             and missing_verbose.returncode == 2
             and "requires --verbose" in missing_verbose.stderr
             and explicit_verbose.returncode == 0, notes)
+
+        # Protocol-v2 judge outputs are data, not prose to be recovered.
+        # Prove the public, seal-bound role contracts directly before the
+        # session/batch tests exercise their crash-safe retry integration.
+        scorer_json = json.dumps(mock_claude.SCORER_RESPONSE)
+        verifier_json = json.dumps(mock_claude.VERIFIER_RESPONSE)
+        scorer_parsed = judge_contract.validate_response(
+            scorer_json, "scorer")
+        verifier_parsed = judge_contract.validate_response(
+            verifier_json, "verifier")
+        invalid_judge_responses = [
+            ("scorer", f"```json\n{scorer_json}\n```"),
+            ("scorer", '{"summary":"a","summary":"b"}'),
+            ("scorer", scorer_json.replace('3.5', 'NaN', 1)),
+            ("scorer", scorer_json[:-1] + ',"extra":1}'),
+            ("scorer", scorer_json.replace('"total": 8.0',
+                                             '"total": 8.25')),
+            ("scorer", scorer_json.replace('"score": 3.5',
+                                             '"score": true', 1)),
+            ("verifier", verifier_json[:-1]
+             + ',"evidence_accuracy":0.5}'),
+            ("verifier", verifier_json.replace(
+                '"verifiable_claims": 2', '"verifiable_claims": 3')),
+        ]
+        contract_rejects = True
+        for role, response in invalid_judge_responses:
+            try:
+                judge_contract.validate_response(response, role)
+                contract_rejects = False
+            except judge_contract.JudgeResponseError:
+                pass
+        ok &= check(
+            "protocol-v2 judge schemas fail closed on malformed semantics",
+            scorer_parsed["total"] == 8
+            and verifier_parsed["supported_claims"] == 1
+            and contract_rejects
+            and judge_contract.contract_schema("scorer")[
+                "response_schema_version"]
+            == judge_contract.RESPONSE_SCHEMA_VERSION,
+            notes)
+
+        environment_canary_name = "RPA_UNRELATED_SECRET_CANARY"
+        environment_canary_before = os.environ.get(environment_canary_name)
+        auth_canary_name = "CLAUDE_SESSION_INGRESS_TOKEN"
+        auth_canary_before = os.environ.get(auth_canary_name)
+        try:
+            os.environ[environment_canary_name] = SECRET
+            os.environ[auth_canary_name] = "synthetic-auth-canary"
+            v2_environment = runner.backend_env(
+                ws, runner.PILOT_V2_PROTOCOL_VERSION)
+        finally:
+            if environment_canary_before is None:
+                os.environ.pop(environment_canary_name, None)
+            else:
+                os.environ[environment_canary_name] = environment_canary_before
+            if auth_canary_before is None:
+                os.environ.pop(auth_canary_name, None)
+            else:
+                os.environ[auth_canary_name] = auth_canary_before
+        ok &= check(
+            "protocol-v2 child environment excludes unrelated secret canaries",
+            environment_canary_name not in v2_environment
+            and SECRET not in v2_environment.values()
+            and v2_environment.get(auth_canary_name)
+            == "synthetic-auth-canary"
+            and v2_environment.get("RPA_ENVIRONMENT_POLICY")
+            == runner.PILOT_V2_ENVIRONMENT_POLICY_ID
+            and v2_environment.get("CLAUDE_CONFIG_DIR") == str(ws)
+            and v2_environment.get("TMPDIR") == "/tmp",
+            notes)
 
         # Sealed judge materials, created up front so every config
         # registers the same seal package hash (part of the config digest).
@@ -321,6 +1071,30 @@ def run_preflight():
             == ["plugins", "settings.json"],
             notes)
 
+        class MonotonicOnlyClock:
+            monotonic = staticmethod(time.monotonic)
+            sleep = staticmethod(time.sleep)
+
+            @staticmethod
+            def time():
+                raise AssertionError("run timing consulted the wall clock")
+
+        runner_time = runner.time
+        runner.time = MonotonicOnlyClock
+        try:
+            monotonic_record, _, _, _ = run_case(
+                ws, "normal", label="monotonic-clock")
+            monotonic_ok = (
+                monotonic_record.get("status") == "completed"
+                and monotonic_record.get("wall_seconds", -1) >= 0)
+        except AssertionError:
+            monotonic_ok = False
+        finally:
+            runner.time = runner_time
+        ok &= check(
+            "run deadline and latency telemetry use only monotonic time",
+            monotonic_ok, notes)
+
         record, _, _, _ = run_case(ws, "normal", label="tamper", tamper=True)
         ok &= check(
             "hash verification (tampered installation blocked as infra)",
@@ -370,6 +1144,102 @@ def run_preflight():
             and "broken effort capture" in record.get("failure", ""),
             notes)
 
+        strict_accounting = True
+        for accounting_mode in (
+                "bad-accounting-negative", "bad-accounting-fractional",
+                "bad-accounting-typed", "bad-accounting-missing",
+                "bad-accounting-zero"):
+            bad_accounting, _, _, _ = run_case(ws, accounting_mode)
+            accounting_failure = bad_accounting.get("failure", "")
+            strict_accounting &= (
+                bad_accounting.get("status") == "infra_failure"
+                and ("nonnegative integer" in accounting_failure
+                     or "usage must be an object" in accounting_failure
+                     or "missing mandatory" in accounting_failure
+                     or "positive model-token total" in accounting_failure))
+        ok &= check(
+            "backend accounting requires typed nonnegative integers",
+            strict_accounting, notes)
+
+        bad_assistant, _, _, _ = run_case(ws, "bad-assistant-message")
+        ok &= check(
+            "malformed assistant envelopes cannot hide before valid nodes",
+            bad_assistant.get("status") == "infra_failure"
+            and "assistant event message" in bad_assistant.get(
+                "failure", ""),
+            notes)
+
+        abort_bad_accounting, _, _, _ = run_case(
+            ws, "abort-bad-accounting", use_retries=True,
+            protocol_v2=True)
+        ok &= check(
+            "invalid accounting on observed abort blocks without retry",
+            abort_bad_accounting.get("status") == "infra_failure"
+            and abort_bad_accounting.get("blocking") is True
+            and abort_bad_accounting.get("attempt") == 1
+            and "invalid accounting" in abort_bad_accounting.get(
+                "failure", ""),
+            notes)
+
+        abort_bad_assistant, _, _, _ = run_case(
+            ws, "abort-bad-assistant-message", use_retries=True,
+            protocol_v2=True)
+        abort_malformed_stream, _, _, _ = run_case(
+            ws, "abort-malformed-stream", use_retries=True,
+            protocol_v2=True)
+        ok &= check(
+            "partial abort accounting rejects malformed stream evidence",
+            all(
+                record.get("status") == "infra_failure"
+                and record.get("blocking") is True
+                and record.get("attempt") == 1
+                and "invalid accounting" in record.get("failure", "")
+                for record in (
+                    abort_bad_assistant, abort_malformed_stream)),
+            notes)
+
+        judge_bad_accounting_stream = "\n".join((
+            json.dumps({"type": "system", "session_id": "bad-acct"}),
+            json.dumps({
+                "type": "node", "model": "opus", "effort": "high",
+                "tool_calls": True,
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            }),
+            json.dumps({
+                "type": "result", "session_id": "bad-acct",
+                "result": "{}",
+            }),
+        ))
+        (_sid, _nodes, _response,
+         judge_accounting_defects) = runner._parse_judge_stream_tolerant(
+             judge_bad_accounting_stream)
+        judge_bad_assistant_stream = "\n".join((
+            json.dumps({"type": "system", "session_id": "bad-msg"}),
+            json.dumps({
+                "type": "assistant", "session_id": "bad-msg",
+                "message": None,
+            }),
+            json.dumps({
+                "type": "node", "model": "opus", "effort": "high",
+                "tool_calls": 0,
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            }),
+            json.dumps({
+                "type": "result", "session_id": "bad-msg",
+                "result": "{}",
+            }),
+        ))
+        (_sid, _nodes, _response,
+         judge_assistant_defects) = runner._parse_judge_stream_tolerant(
+             judge_bad_assistant_stream)
+        ok &= check(
+            "judge accounting/envelope defects consume an invalid attempt",
+            any("invalid accounting" in defect
+                for defect in judge_accounting_defects)
+            and any("assistant event message" in defect
+                    for defect in judge_assistant_defects),
+            notes)
+
         record, _, _, _ = run_case(ws, "real-stream")
         ok &= check(
             "real Claude stream parsed (cached input categories counted)",
@@ -410,10 +1280,13 @@ def run_preflight():
             and record.get("effort_capture") == "per_node",
             notes, json.dumps(record.get("accounting", {}).get("tree")))
 
-        record, _, _, _ = run_case(ws, "abort-wrong-model")
+        record, _, _, _ = run_case(
+            ws, "abort-wrong-model", use_retries=True, protocol_v2=True)
         ok &= check(
-            "runtime drift in partial transcript invalidates (not counted)",
+            "partial runtime drift blocks the observed abort without retry",
             record["status"] == "infra_failure"
+            and record.get("blocking") is True
+            and record.get("attempt") == 1
             and "differ from registered" in record.get("failure", ""),
             notes)
 
@@ -483,6 +1356,42 @@ def run_preflight():
             "launch without model-bearing child invalidates the run",
             record["status"] == "infra_failure"
             and "cannot be validated" in record.get("failure", ""),
+            notes)
+
+        config, _ = build_config(ws, "launch-no-child")
+        config.update({
+            "protocol_version": runner.PILOT_V2_PROTOCOL_VERSION,
+            "max_judge_attempts": runner.PILOT_V2_MAX_JUDGE_ATTEMPTS,
+            "max_infra_retries": runner.DEFAULT_MAX_INFRA_RETRIES,
+        })
+        config["arms"]["mock"]["forbid_subagents"] = True
+        v2_lnc = runner.run_task_with_retries(
+            config, "mock", task_lnc, repo, ws / "out-v2-lnc")[-1]
+        ok &= check(
+            "v2 ablation launch without child blocks at first observation",
+            v2_lnc.get("status") == "infra_failure"
+            and v2_lnc.get("blocking") is True
+            and v2_lnc.get("attempt") == 1
+            and v2_lnc.get("failure_kind") == "subagent_policy"
+            and v2_lnc.get("telemetry_eligible") is False,
+            notes)
+
+        config, _ = build_config(ws, "abort-after-artifact")
+        config.update({
+            "protocol_version": runner.PILOT_V2_PROTOCOL_VERSION,
+            "max_judge_attempts": runner.PILOT_V2_MAX_JUDGE_ATTEMPTS,
+            "max_infra_retries": runner.DEFAULT_MAX_INFRA_RETRIES,
+        })
+        config["arms"]["mock"]["forbid_subagents"] = True
+        combo = runner.run_task_with_retries(
+            config, "mock", task_lnc, repo, ws / "out-v2-policy-abort")[-1]
+        ok &= check(
+            "v2 combined policy+abort uses registered policy precedence",
+            combo.get("status") == "workflow_failure"
+            and combo.get("failure_kind") == "subagent_policy"
+            and combo.get("secondary_failure_kind") == "abort"
+            and combo.get("artifact_gate") == "passed"
+            and combo.get("telemetry_eligible") is True,
             notes)
 
         config, _ = build_config(ws, "normal")
@@ -1220,6 +2129,21 @@ def run_preflight():
             record["status"] == "workflow_failure" and child_dead,
             notes)
 
+        bg_cfg, _ = build_config(ws, "background-child-success")
+        bg_marker = ws / "background-child-survived"
+        bg_cfg["backend_cmd"].extend([
+            "--child-write-file", str(bg_marker)])
+        bg_repo, bg_sha = make_git_repo(ws, "background-child")
+        bg_task = write_task(ws, "background-child", bg_sha)
+        bg_record = runner.run_task(
+            bg_cfg, "mock", bg_task, bg_repo, ws / "out-background-child")
+        time.sleep(1.2)
+        ok &= check(
+            "successful run parent cannot leave a background tool child",
+            bg_record.get("status") == "completed"
+            and not bg_marker.exists(),
+            notes)
+
         # A workflow-shaped failure (timeout/abort) with an empty transcript
         # can neither be counted (no parity evidence) nor auto-re-executed
         # (counted failures are never replaced): it must BLOCK — one
@@ -1232,6 +2156,208 @@ def run_preflight():
             and record.get("artifact_defects"),
             notes)
 
+        abort_doc, abort_doc_out, _, _ = run_case(
+            ws, "abort-after-artifact", label="abort-after-artifact-v2",
+            protocol_v2=True)
+        ok &= check(
+            "protocol-v2 abort preserves and gates an already-written document",
+            abort_doc.get("status") == "workflow_failure"
+            and abort_doc.get("failure_kind") == "abort"
+            and abort_doc.get("artifact_gate") == "passed"
+            and isinstance(abort_doc.get("artifact_sha256"), str)
+            and len(list(abort_doc_out.glob("run-*-anon.md"))) == 1
+            and len(list(abort_doc_out.glob("run-*-raw.md"))) == 1,
+            notes)
+
+        timeout_doc, timeout_doc_out, _, _ = run_case(
+            ws, "timeout-after-artifact",
+            label="timeout-after-artifact-v2", timeout=2,
+            protocol_v2=True)
+        ok &= check(
+            "protocol-v2 timeout preserves and gates an already-written document",
+            timeout_doc.get("status") == "workflow_failure"
+            and timeout_doc.get("failure_kind") == "timeout"
+            and timeout_doc.get("artifact_gate") == "passed"
+            and isinstance(timeout_doc.get("artifact_sha256"), str)
+            and len(list(timeout_doc_out.glob("run-*-anon.md"))) == 1,
+            notes)
+
+        artifact_repo, artifact_sha = make_git_repo(
+            ws, "artifact-outcome-judging")
+        produced_doc_judging = True
+        for label, mode, mode_timeout in (
+                ("abort-doc-judged", "abort-after-artifact", 20),
+                ("timeout-doc-judged", "timeout-after-artifact", 2)):
+            fixture = make_v2_fixture(
+                ws, label, artifact_repo, artifact_sha,
+                run_mode=mode, timeout=mode_timeout)
+            judge_out = fixture["root"] / "judges"
+            scorer_rows = score_v2_fixture(fixture, "scorer", judge_out)
+            verifier_rows = score_v2_fixture(fixture, "verifier", judge_out)
+            summary = fixture["manifest"]["results"][0]
+            produced_doc_judging &= (
+                summary.get("status") == "workflow_failure"
+                and summary.get("failure_kind")
+                == ("abort" if "abort" in mode else "timeout")
+                and summary.get("artifact_gate") == "passed"
+                and len(fixture["docs"]) == 1
+                and fixture["docs"][0].name.endswith("-anon.md")
+                and len(scorer_rows) == len(verifier_rows) == 1
+                and scorer_rows[0].get("doc") == verifier_rows[0].get("doc")
+            )
+        ok &= check(
+            "timeout/abort documents reach both protocol-v2 judge roles",
+            produced_doc_judging, notes)
+
+        non_utf8, non_utf8_out, _, _ = run_case(
+            ws, "bad-utf8-artifact", label="bad-utf8-artifact-v2",
+            protocol_v2=True)
+        non_utf8_raw = next(non_utf8_out.glob("run-*-raw.md"), None)
+        non_utf8_diag = next(non_utf8_out.glob("run-*-diag.md"), None)
+        ok &= check(
+            "non-UTF-8 produced document is a gate failure with raw evidence",
+            non_utf8.get("status") == "workflow_failure"
+            and non_utf8.get("failure_kind") == "artifact_contract"
+            and non_utf8.get("artifact_gate") == "failed"
+            and any("cannot read document" in defect
+                    for defect in non_utf8.get("artifact_defects", []))
+            and non_utf8_raw is not None
+            and b"\xff" in non_utf8_raw.read_bytes()
+            and non_utf8_diag is not None
+            and "\ufffd" in non_utf8_diag.read_text(encoding="utf-8"),
+            notes)
+
+        validator_cfg, _ = build_config(ws, "normal")
+        validator_cfg.update({
+            "protocol_version": runner.PILOT_V2_PROTOCOL_VERSION,
+            "max_judge_attempts": runner.PILOT_V2_MAX_JUDGE_ATTEMPTS,
+            "max_infra_retries": runner.DEFAULT_MAX_INFRA_RETRIES,
+        })
+        validator_repo, validator_sha = make_git_repo(ws, "validator-crash")
+        validator_task = write_task(ws, "validator-crash", validator_sha)
+        original_validator = runner.artifact_validator.validate
+        try:
+            def crash_validator(*_args, **_kwargs):
+                raise RuntimeError("synthetic validator crash")
+
+            runner.artifact_validator.validate = crash_validator
+            validator_crash = runner.run_task(
+                validator_cfg, "mock", validator_task, validator_repo,
+                ws / "out-validator-crash")
+            runner.artifact_validator.validate = lambda *_args, **_kwargs: None
+            validator_indeterminate = runner.run_task(
+                validator_cfg, "mock", validator_task, validator_repo,
+                ws / "out-validator-indeterminate")
+        finally:
+            runner.artifact_validator.validate = original_validator
+        ok &= check(
+            "validator crash or indeterminate output is infrastructure failure",
+            validator_crash.get("status") == "infra_failure"
+            and "validator crashed" in validator_crash.get("failure", "")
+            and validator_indeterminate.get("status") == "infra_failure"
+            and "indeterminate" in validator_indeterminate.get("failure", ""),
+            notes)
+
+        aborted_stop, _, _, _ = run_case(
+            ws, "abort-after-stop", label="abort-after-stop-v2",
+            protocol_v2=True)
+        aborted_stops = aborted_stop.get("interventions_log", [])
+        ok &= check(
+            "partial result before abort is preserved as unanswered stop",
+            aborted_stop.get("status") == "workflow_failure"
+            and aborted_stop.get("failure_kind") == "abort"
+            and len(aborted_stops) == 1
+            and aborted_stops[0].get("answered") is False
+            and "provide the research query" in aborted_stops[0].get(
+                "response", "")
+            and aborted_stops[0].get("classification") == "statement",
+            notes)
+
+        empty_doc, empty_doc_out, _, _ = run_case(
+            ws, "empty-artifact", label="empty-artifact-v2",
+            protocol_v2=True)
+        ok &= check(
+            "whitespace-only fresh Markdown is a no-document outcome",
+            empty_doc.get("status") == "workflow_failure"
+            and empty_doc.get("failure_kind") == "missing_document"
+            and empty_doc.get("artifact_gate") == "not_evaluated"
+            and empty_doc.get("empty_artifacts")
+            and not list(empty_doc_out.glob("run-*-anon.md"))
+            and not list(empty_doc_out.glob("run-*-diag.md")),
+            notes)
+
+        multiple_fixture = make_v2_fixture(
+            ws, "multiple-artifacts", artifact_repo, artifact_sha,
+            run_mode="multiple-artifacts", execute_run=False)
+        try:
+            runner.run_schedule(
+                multiple_fixture["config"], multiple_fixture["schedule"],
+                {"mock-repo": str(artifact_repo)},
+                multiple_fixture["run_output"],
+                [str(multiple_fixture["task"])],
+            )
+            multiple_blocked = False
+        except runner.InfraFailure as exc:
+            multiple_blocked = "terminally invalid" in str(exc)
+        multiple_records = list(
+            multiple_fixture["run_output"].glob("run-*.json"))
+        multiple_record = (json.loads(multiple_records[0].read_text(
+            encoding="utf-8")) if len(multiple_records) == 1 else {})
+        ok &= check(
+            "multiple nonempty documents terminally invalidate the round",
+            multiple_blocked
+            and multiple_record.get("status") == "infra_failure"
+            and multiple_record.get("blocking") is True
+            and len(multiple_record.get("produced_artifacts", [])) == 2
+            and len(list(multiple_fixture["run_output"].glob(
+                "run-*-extra-*.md"))) == 2
+            and (multiple_fixture["run_output"]
+                 / "schedule-entry-0-terminal-invalid.json").exists(),
+            notes)
+
+        wrong_run_material_ok = True
+        for material_kind in ("directory-record", "dangling-raw"):
+            fixture = make_v2_fixture(
+                ws, f"wrong-run-{material_kind}", artifact_repo,
+                artifact_sha, execute_run=False)
+            if material_kind == "directory-record":
+                wrong_path = fixture["run_output"] / "run-deadbeefcafe.json"
+                wrong_path.mkdir(parents=True)
+            else:
+                fixture["run_output"].mkdir(parents=True)
+                wrong_path = (
+                    fixture["run_output"] / "run-deadbeefcafe-raw.md")
+                wrong_path.symlink_to(
+                    fixture["root"] / "missing-run-material")
+            try:
+                runner.run_schedule(
+                    fixture["config"], fixture["schedule"],
+                    {"mock-repo": str(artifact_repo)},
+                    fixture["run_output"], [str(fixture["task"])])
+                first_block = False
+            except runner.InfraFailure as exc:
+                first_block = "terminally invalid" in str(exc)
+            marker = (fixture["run_output"]
+                      / "schedule-entry-0-terminal-invalid.json")
+            if wrong_path.is_dir() and not wrong_path.is_symlink():
+                wrong_path.rmdir()
+            else:
+                wrong_path.unlink()
+            try:
+                runner.run_schedule(
+                    fixture["config"], fixture["schedule"],
+                    {"mock-repo": str(artifact_repo)},
+                    fixture["run_output"], [str(fixture["task"])])
+                resume_block = False
+            except runner.InfraFailure as exc:
+                resume_block = "terminally invalid" in str(exc)
+            wrong_run_material_ok &= (
+                first_block and resume_block and marker.is_file()
+                and not list(fixture["run_output"].glob("run-*-anon.md")))
+        ok &= check(
+            "wrong-type run records/artifacts durably block before launch",
+            wrong_run_material_ok, notes)
+
         fn_doc = ws / "notes.md"
         fn_doc.write_text(
             (HERE / "fixtures" / "artifact-valid.md").read_text(
@@ -1243,6 +2369,37 @@ def run_preflight():
                                encoding="utf-8")
         fn_good = runner.artifact_validator.validate(
             fn_good_doc, enforce_filename=True)
+        alias_doc = ws / "2026-07-27-alias-frontmatter.md"
+        alias_text = fn_doc.read_text(encoding="utf-8").replace(
+            "researcher: Fixture Researcher",
+            "identity: &who Fixture Researcher\nresearcher: *who",
+            1,
+        ).replace("---\n", "--- \t\n", 2)
+        alias_doc.write_text(alias_text, encoding="utf-8")
+        alias_gate_defects = runner.artifact_validator.validate(
+            alias_doc, enforce_filename=True)
+        # With PyYAML, the legal anchor/alias must pass.  The documented
+        # dependency-free fallback intentionally accepts only flat scalar
+        # mappings and may reject this richer YAML; preflight must remain
+        # host-agnostic while blinding remains mandatory in either mode.
+        alias_gate_ok = (
+            not alias_gate_defects
+            if runner.artifact_validator.yaml is not None
+            else any("indicator-bearing" in defect
+                     for defect in alias_gate_defects))
+        alias_anon = runner.anonymize(alias_text, "alias")
+        alias_anon_doc = ws / "alias-frontmatter-anon.md"
+        alias_anon_doc.write_text(alias_anon, encoding="utf-8")
+        try:
+            runner.assert_blind_scorable(alias_anon_doc)
+            alias_blind_ok = True
+        except runner.InfraFailure:
+            alias_blind_ok = False
+        ok &= check(
+            "YAML aliases blind safely under full/strict-fallback parsing",
+            alias_gate_ok and alias_blind_ok
+            and "Fixture Researcher" not in alias_anon,
+            notes)
         anon_marker_doc = ws / "2026-07-26-marker-raw.md"
         anon_marker_doc.write_text(
             fn_doc.read_text(encoding="utf-8").replace(
@@ -1347,6 +2504,55 @@ def run_preflight():
             encoding="utf-8")
         unq_bad = va_noyaml.validate(unq_doc)
         fallback_valid_ok = not va_noyaml.validate(fn_doc)
+        alias_literal_doc = ws / "2026-07-27-alias-literal.md"
+        alias_literal_doc.write_text(
+            alias_text.replace(
+                "**Researcher**: Fixture Researcher",
+                "**Researcher**: *who",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        alias_fallback_bad = va_noyaml.validate(alias_literal_doc)
+        alias_full_bad = runner.artifact_validator.validate(
+            alias_literal_doc)
+        spaced_date_doc = ws / "2026-07-27-spaced-date.md"
+        spaced_date_doc.write_text(
+            fn_doc.read_text(encoding="utf-8").replace(
+                "date: 2026-07-27T00:00:00Z",
+                "date: 2026-07-27 00:00:00 +0200", 1).replace(
+                "**Date**: 2026-07-27T00:00:00Z",
+                "**Date**: 2026-07-27 00:00:00 +0200", 1),
+            encoding="utf-8",
+        )
+        spaced_date_full_ok = not runner.artifact_validator.validate(
+            spaced_date_doc)
+        spaced_date_fallback_ok = not va_noyaml.validate(spaced_date_doc)
+        scalar_cross_parser_ok = True
+        for index, scalar in enumerate((
+                "Fixture Researcher # comment",
+                "Fixture Researcher: admin",
+                "Fixture Researcher {x: y}",
+                "Fixture\tResearcher",
+                "2026-01-01")):
+            scalar_doc = ws / f"2026-07-27-scalar-{index}.md"
+            scalar_doc.write_text(
+                fn_doc.read_text(encoding="utf-8").replace(
+                    "researcher: Fixture Researcher",
+                    f"researcher: {scalar}", 1).replace(
+                    "**Researcher**: Fixture Researcher",
+                    f"**Researcher**: {scalar}", 1),
+                encoding="utf-8",
+            )
+            fallback_defects = va_noyaml.validate(scalar_doc)
+            full_defects = runner.artifact_validator.validate(scalar_doc)
+            scalar_cross_parser_ok &= (
+                any(("non-plain value" in defect
+                     or "start alphabetically" in defect
+                     or "contains a tab" in defect)
+                    for defect in fallback_defects)
+                and (runner.artifact_validator.yaml is None
+                     or bool(full_defects)))
         boolid_doc = ws / "2026-07-26-boolid.md"
         boolid_doc.write_text(
             fn_doc.read_text(encoding="utf-8").replace(
@@ -1373,6 +2579,22 @@ def run_preflight():
             encoding="utf-8")
         flowbool_bad = runner.artifact_validator.validate(flowbool_doc)
         flowbool_fallback_bad = va_noyaml.validate(flowbool_doc)
+        flowempty_doc = ws / "2026-07-26-flowempty.md"
+        flowempty_doc.write_text(
+            fn_doc.read_text(encoding="utf-8").replace(
+                "tags: [research, fixture]",
+                "tags: [research,,fixture]", 1),
+            encoding="utf-8")
+        flowempty_bad = runner.artifact_validator.validate(flowempty_doc)
+        flowempty_fallback_bad = va_noyaml.validate(flowempty_doc)
+        flowdate_doc = ws / "2026-07-26-flowdate.md"
+        flowdate_doc.write_text(
+            fn_doc.read_text(encoding="utf-8").replace(
+                "tags: [research, fixture]",
+                "tags: [2026-01-01]", 1),
+            encoding="utf-8")
+        flowdate_bad = runner.artifact_validator.validate(flowdate_doc)
+        flowdate_fallback_bad = va_noyaml.validate(flowdate_doc)
         oldname_doc = ws / "2025-01-01-old-topic.md"
         oldname_doc.write_text(fn_doc.read_text(encoding="utf-8"),
                                encoding="utf-8")
@@ -1437,6 +2659,11 @@ def run_preflight():
             and any("## Summary" in e for e in hashhead_bad)
             and any("unmatched quote" in e for e in unq_bad)
             and fallback_valid_ok
+            and any("indicator-bearing" in e
+                    for e in alias_fallback_bad)
+            and (runner.artifact_validator.yaml is None or alias_full_bad)
+            and spaced_date_full_ok and spaced_date_fallback_ok
+            and scalar_cross_parser_ok
             and any("researcher" in e and "must be a string" in e
                     for e in boolid_bad)
             and any("researcher" in e and "must be a string" in e
@@ -1445,6 +2672,11 @@ def run_preflight():
             and any("tags" in e for e in flowmap_fallback_bad)
             and any("tags" in e for e in flowbool_bad)
             and any("tags" in e for e in flowbool_fallback_bad)
+            and flowempty_bad
+            and any("empty item" in e for e in flowempty_fallback_bad)
+            and flowdate_bad
+            and any("start alphabetically" in e
+                    for e in flowdate_fallback_bad)
             and any("does not match the metadata timestamp" in e
                     for e in oldname_bad)
             and quotejunk_bad
@@ -1467,12 +2699,12 @@ def run_preflight():
                                   cwd=det_wt, capture_output=True,
                                   text=True)
         runner.remove_worktree(det_repo, det_wt)
-        branch_lines = [l for l in meta_out.stdout.splitlines()
-                        if l.startswith("Current Branch Name:")]
-        dt_lines = [l for l in meta_out.stdout.splitlines()
-                    if l.startswith("Current Date/Time (TZ):")]
-        fn_lines = [l for l in meta_out.stdout.splitlines()
-                    if l.startswith("Timestamp For Filename:")]
+        branch_lines = [line for line in meta_out.stdout.splitlines()
+                        if line.startswith("Current Branch Name:")]
+        dt_lines = [line for line in meta_out.stdout.splitlines()
+                    if line.startswith("Current Date/Time (TZ):")]
+        fn_lines = [line for line in meta_out.stdout.splitlines()
+                    if line.startswith("Timestamp For Filename:")]
         # Both formatted values must come from ONE clock reading — two
         # `date` calls can straddle midnight and split the metadata
         # timestamp and filename date across days.
@@ -1892,13 +3124,15 @@ def run_preflight():
         iso_ok = True
         for r in results:
             cwd = Path(r["cwd"])
-            settings = json.loads(
-                (Path(r["profile"]) / "settings.json").read_text(encoding="utf-8"))
+            profile = Path(r["profile"])
+            settings = r.get("judge_settings", {})
             iso_ok &= not str(cwd).startswith(str(ws))
-            iso_ok &= list(cwd.iterdir()) == []
+            iso_ok &= not cwd.exists()
+            iso_ok &= not profile.exists()
             iso_ok &= bool(settings.get("permissions", {}).get("deny"))
         ok &= check(
-            "blind judge isolated (empty cwd outside run tree, fs tools denied)",
+            "blind judge isolated and temp root removed (outside run tree, "
+            "fs tools denied)",
             iso_ok, notes)
         try:
             runner.score(config, docs, judge, judge_out, scoring_seed=5,
@@ -2086,11 +3320,118 @@ def run_preflight():
             off_ok = "not anonymized" in str(exc)
         anon_bom = runner.anonymize(
             "\ufeff---\nresearcher: Real Name\n---\n\nbody\n", "tid")
+        complex_fingerprint = (
+            "---\n'researcher': Quoted Secret\nbranch: >\n"
+            "  Block Scalar Secret\nlast_updated_by: |\n"
+            "  Another Secret\n---\n\nbody\n")
+        complex_doc = ws / "complex-fingerprint.md"
+        complex_doc.write_text(complex_fingerprint, encoding="utf-8")
+        try:
+            runner.assert_blind_scorable(complex_doc)
+            complex_raw_refused = False
+        except runner.InfraFailure as exc:
+            complex_raw_refused = "not anonymized" in str(exc)
+        complex_anon = runner.anonymize(complex_fingerprint, "complex")
+        complex_anon_doc = ws / "complex-fingerprint-anon.md"
+        complex_anon_doc.write_text(complex_anon, encoding="utf-8")
+        try:
+            runner.assert_blind_scorable(complex_anon_doc)
+            complex_anon_accepted = True
+        except runner.InfraFailure:
+            complex_anon_accepted = False
+        explicit_fingerprint = (
+            "---\n? researcher\n: Explicit Secret\n"
+            "? [branch]\n: Block Branch Secret\n"
+            "- ? researcher\n  : List Explicit Secret\n"
+            "{? branch: Flow Explicit Secret}\n"
+            "last_updated_by: !!str |\n  Tagged Block Secret\n"
+            "**RESEARCHER**: Bold Case Secret\n"
+            "**Last-Updated-By**: Bold Updated Secret\n"
+            "# malformed frontmatter without a closing delimiter\n")
+        explicit_doc = ws / "explicit-fingerprint.md"
+        explicit_doc.write_text(explicit_fingerprint, encoding="utf-8")
+        try:
+            runner.assert_blind_scorable(explicit_doc)
+            explicit_raw_refused = False
+        except runner.InfraFailure as exc:
+            explicit_raw_refused = "fingerprint key" in str(exc)
+        explicit_anon = runner.anonymize(
+            explicit_fingerprint, "explicit")
+        explicit_anon_doc = ws / "explicit-fingerprint-anon.md"
+        explicit_anon_doc.write_text(explicit_anon, encoding="utf-8")
+        try:
+            runner.assert_blind_scorable(explicit_anon_doc)
+            explicit_anon_accepted = True
+        except runner.InfraFailure:
+            explicit_anon_accepted = False
+        nested_delimiter_fingerprint = (
+            "---\nresearcher: |\n  Alice\n  ---\n"
+            "  SecretSurname\n- researcher: Sequence Secret\n"
+            "---\n\nbody\n")
+        nested_delimiter_doc = ws / "nested-delimiter-fingerprint.md"
+        nested_delimiter_doc.write_text(
+            nested_delimiter_fingerprint, encoding="utf-8")
+        try:
+            runner.assert_blind_scorable(nested_delimiter_doc)
+            nested_delimiter_raw_refused = False
+        except runner.InfraFailure as exc:
+            nested_delimiter_raw_refused = "not anonymized" in str(exc)
+        nested_delimiter_anon = runner.anonymize(
+            nested_delimiter_fingerprint, "nested")
+        nested_delimiter_anon_doc = (
+            ws / "nested-delimiter-fingerprint-anon.md")
+        nested_delimiter_anon_doc.write_text(
+            nested_delimiter_anon, encoding="utf-8")
+        try:
+            runner.assert_blind_scorable(nested_delimiter_anon_doc)
+            nested_delimiter_anon_accepted = True
+        except runner.InfraFailure:
+            nested_delimiter_anon_accepted = False
         ok &= check(
-            "fingerprints behind BOM/offset frontmatter refused and masked",
+            "all YAML fingerprint spellings are refused and fully masked",
             bom_ok and off_ok
             and "Real Name" not in anon_bom
-            and "[anonymized:tid]" in anon_bom,
+            and "[anonymized:tid]" in anon_bom
+            and complex_raw_refused and complex_anon_accepted
+            and "Quoted Secret" not in complex_anon
+            and "Block Scalar Secret" not in complex_anon
+            and "Another Secret" not in complex_anon
+            and "[anonymized:complex]" in complex_anon
+            and explicit_raw_refused and explicit_anon_accepted
+            and "Explicit Secret" not in explicit_anon
+            and "Block Branch Secret" not in explicit_anon
+            and "List Explicit Secret" not in explicit_anon
+            and "Flow Explicit Secret" not in explicit_anon
+            and "Tagged Block Secret" not in explicit_anon
+            and "Bold Case Secret" not in explicit_anon
+            and "Bold Updated Secret" not in explicit_anon
+            and "[anonymized:explicit]" in explicit_anon
+            and nested_delimiter_raw_refused
+            and nested_delimiter_anon_accepted
+            and "Alice" not in nested_delimiter_anon
+            and "SecretSurname" not in nested_delimiter_anon
+            and "Sequence Secret" not in nested_delimiter_anon
+            and "[anonymized:nested]" in nested_delimiter_anon,
+            notes)
+
+        malformed_alias_fingerprint = (
+            "---\nidentity: &who Malformed Alias Secret\n"
+            "researcher: *who\n"
+            "# malformed frontmatter without a closing delimiter\n")
+        malformed_alias_anon = runner.anonymize(
+            malformed_alias_fingerprint, "malformed-alias")
+        malformed_alias_doc = ws / "malformed-alias-anon.md"
+        malformed_alias_doc.write_text(
+            malformed_alias_anon, encoding="utf-8")
+        try:
+            runner.assert_blind_scorable(malformed_alias_doc)
+            malformed_alias_ok = True
+        except runner.InfraFailure:
+            malformed_alias_ok = False
+        ok &= check(
+            "malformed fingerprint aliases erase their anchor definitions",
+            malformed_alias_ok
+            and "Malformed Alias Secret" not in malformed_alias_anon,
             notes)
         pend_out = ws / "judge-batch-pending"
         p1 = runner.score(config, docs, judge, pend_out, scoring_seed=5,
@@ -2895,9 +4236,8 @@ def run_preflight():
         finally:
             os.environ.pop("MOCK_ECHO_DIR", None)
         listing = (echo_dir / "cwd-listing.txt").read_text(encoding="utf-8")
-        vdeny = json.loads(
-            (Path(vres[0]["profile"]) / "settings.json").read_text(
-                encoding="utf-8")).get("permissions", {}).get("deny", [])
+        vdeny = vres[0].get("judge_settings", {}).get(
+            "permissions", {}).get("deny", [])
         sandbox_echo = (echo_dir / "sandbox.txt").read_text(
             encoding="utf-8").strip()
         ok &= check(
@@ -2906,11 +4246,1319 @@ def run_preflight():
             and vres[0].get("evidence_sha") == ev_sha
             and "README.md" in listing
             and not Path(vres[0]["cwd"]).exists()
+            and not Path(vres[0]["profile"]).exists()
             and "Read" not in vdeny and "Bash" in vdeny and "Write" in vdeny,
             notes)
         ok &= check(
             "judge session sandbox confined to its evidence worktree",
             sandbox_echo == vres[0].get("cwd"),
+            notes)
+
+        # Protocol v2 is intentionally exercised through manifest-bound
+        # nonstandard schedules, not through direct/unscheduled scoring.
+        # These fixtures cover the same seal, record, and retry boundaries
+        # as holdout while keeping synthetic preflight small and offline.
+        repo_v2, sha_v2 = make_git_repo(ws, "protocol-v2")
+
+        # A process may die cleanly between two infrastructure attempts.
+        # The next invocation must consume the persisted attempt-1 record
+        # and continue at attempt 2, never restart a fresh 1..3 budget.
+        v2_partial = make_v2_fixture(
+            ws, "partial-infra", repo_v2, sha_v2,
+            run_mode="flaky-infra", execute_run=False)
+        partial_schedule = json.loads(
+            v2_partial["schedule"].read_text(encoding="utf-8"))
+        partial_digest = runner.schedule_digest(partial_schedule)
+        partial_first = runner.run_task(
+            v2_partial["config"], "mock", v2_partial["task"], repo_v2,
+            v2_partial["run_output"], attempt=1, scheduled=True,
+            schedule_binding={
+                "schedule_digest": partial_digest,
+                "schedule_index": 0,
+            },
+        )
+        partial_manifest = runner.run_schedule(
+            v2_partial["config"], v2_partial["schedule"],
+            {"mock-repo": str(repo_v2)}, v2_partial["run_output"],
+            [str(v2_partial["task"])],
+        )
+        partial_records = [
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in sorted(v2_partial["run_output"].glob("run-*.json"))
+            if path.name.count("-") == 1
+        ]
+        ok &= check(
+            "protocol-v2 retry budget persists across schedule resume",
+            partial_first.get("status") == "infra_failure"
+            and partial_manifest.get("complete") is True
+            and partial_manifest["results"][0].get("attempts") == 2
+            and sorted(record.get("attempt") for record in partial_records)
+            == [1, 2],
+            notes)
+
+        v2_infra_exhaust = make_v2_fixture(
+            ws, "run-infra-exhaust", repo_v2, sha_v2,
+            run_mode="infra-crash", execute_run=False)
+        try:
+            runner.run_schedule(
+                v2_infra_exhaust["config"], v2_infra_exhaust["schedule"],
+                {"mock-repo": str(repo_v2)},
+                v2_infra_exhaust["run_output"],
+                [str(v2_infra_exhaust["task"])],
+            )
+            run_exhaust_first = False
+        except runner.InfraFailure as exc:
+            run_exhaust_first = "terminally invalid" in str(exc)
+        run_terminal = (v2_infra_exhaust["run_output"]
+                        / "schedule-entry-0-terminal-invalid.json")
+        exhaust_before = {
+            path.name: path.read_bytes()
+            for path in sorted(v2_infra_exhaust["run_output"].glob("*.json"))
+        }
+        try:
+            runner.run_schedule(
+                v2_infra_exhaust["config"], v2_infra_exhaust["schedule"],
+                {"mock-repo": str(repo_v2)},
+                v2_infra_exhaust["run_output"],
+                [str(v2_infra_exhaust["task"])],
+            )
+            run_exhaust_resume = False
+        except runner.InfraFailure as exc:
+            run_exhaust_resume = "cannot be resumed" in str(exc)
+        exhaust_after = {
+            path.name: path.read_bytes()
+            for path in sorted(v2_infra_exhaust["run_output"].glob("*.json"))
+        }
+        ok &= check(
+            "protocol-v2 run retry exhaustion is terminal across resume",
+            run_exhaust_first and run_exhaust_resume
+            and json.loads(run_terminal.read_text(
+                encoding="utf-8")).get("kind")
+            == "infrastructure_retries_exhausted"
+            and len([name for name in exhaust_before
+                     if name.startswith("run-")]) == 3
+            and exhaust_after == exhaust_before,
+            notes)
+
+        v2_ambiguous = make_v2_fixture(
+            ws, "run-ambiguous", repo_v2, sha_v2,
+            run_mode="normal", execute_run=False)
+        ambiguous_schedule = json.loads(
+            v2_ambiguous["schedule"].read_text(encoding="utf-8"))
+        ambiguous_digest = runner.schedule_digest(ambiguous_schedule)
+        ambiguous_journal = v2_ambiguous["run_output"] / (
+            "run-a11b1a11b1a1.json")
+        ambiguous_journal.parent.mkdir(parents=True)
+        ambiguous_journal.write_text(json.dumps({
+            "run_id": "a11b1a11b1a1",
+            "arm": "mock",
+            "task": str(v2_ambiguous["task"]),
+            "attempt": 1,
+            "status": "in_progress",
+            "protocol_version": runner.PILOT_V2_PROTOCOL_VERSION,
+            "environment_policy_id": runner.PILOT_V2_ENVIRONMENT_POLICY_ID,
+            "schedule_digest": ambiguous_digest,
+            "schedule_index": 0,
+            "task_sha256": ambiguous_schedule["task_digests"][
+                str(v2_ambiguous["task"])],
+            "config_digest": runner.config_digest(v2_ambiguous["config"]),
+        }, indent=2) + "\n", encoding="utf-8")
+        try:
+            runner.run_schedule(
+                v2_ambiguous["config"], v2_ambiguous["schedule"],
+                {"mock-repo": str(repo_v2)}, v2_ambiguous["run_output"],
+                [str(v2_ambiguous["task"])],
+            )
+            run_ambiguous_first = False
+        except runner.InfraFailure as exc:
+            run_ambiguous_first = "ambiguous_post_launch" in str(exc)
+        run_invalid = (v2_ambiguous["run_output"]
+                       / "schedule-entry-0-terminal-invalid.json")
+        ambiguous_journal.unlink()
+        try:
+            runner.run_schedule(
+                v2_ambiguous["config"], v2_ambiguous["schedule"],
+                {"mock-repo": str(repo_v2)}, v2_ambiguous["run_output"],
+                [str(v2_ambiguous["task"])],
+            )
+            run_ambiguous_resume = False
+        except runner.InfraFailure as exc:
+            run_ambiguous_resume = "cannot be resumed" in str(exc)
+        ok &= check(
+            "protocol-v2 ambiguous run journal terminally invalidates round",
+            run_ambiguous_first and run_ambiguous_resume
+            and run_invalid.exists()
+            and not list(v2_ambiguous["run_output"].glob("run-*.json")),
+            notes)
+
+        v2_residue = make_v2_fixture(
+            ws, "run-artifact-residue", repo_v2, sha_v2,
+            run_mode="normal")
+        residue_summary = v2_residue["manifest"]["results"][0]
+        residue_record = (v2_residue["run_output"]
+                          / f"run-{residue_summary['run_id']}.json")
+        residue_record.unlink()
+        try:
+            runner.run_schedule(
+                v2_residue["config"], v2_residue["schedule"],
+                {"mock-repo": str(repo_v2)}, v2_residue["run_output"],
+                [str(v2_residue["task"])],
+            )
+            residue_first = False
+        except runner.InfraFailure as exc:
+            residue_first = "orphan_artifact_material" in str(exc)
+        residue_marker = (v2_residue["run_output"]
+                          / "schedule-entry-0-terminal-invalid.json")
+        for residue_artifact in v2_residue["run_output"].glob("run-*.md"):
+            residue_artifact.unlink()
+        try:
+            runner.run_schedule(
+                v2_residue["config"], v2_residue["schedule"],
+                {"mock-repo": str(repo_v2)}, v2_residue["run_output"],
+                [str(v2_residue["task"])],
+            )
+            residue_resume = False
+        except runner.InfraFailure as exc:
+            residue_resume = "cannot be resumed" in str(exc)
+        ok &= check(
+            "orphan run artifact residue irreversibly invalidates round",
+            residue_first and residue_resume and residue_marker.exists()
+            and not list(v2_residue["run_output"].glob("run-*.json")),
+            notes)
+
+        v2_concurrent_run = make_v2_fixture(
+            ws, "run-concurrent", repo_v2, sha_v2,
+            run_mode="slow-normal", execute_run=False)
+
+        def concurrent_run_schedule():
+            try:
+                return runner.run_schedule(
+                    v2_concurrent_run["config"],
+                    v2_concurrent_run["schedule"],
+                    {"mock-repo": str(repo_v2)},
+                    v2_concurrent_run["run_output"],
+                    [str(v2_concurrent_run["task"])],
+                )
+            except runner.InfraFailure as exc:
+                return exc
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            concurrent_run_outcomes = list(pool.map(
+                lambda _index: concurrent_run_schedule(), range(2)))
+        concurrent_run_records = [
+            path for path in v2_concurrent_run["run_output"].glob(
+                "run-*.json") if path.name.count("-") == 1
+        ]
+        concurrent_run_manifest = json.loads(
+            v2_concurrent_run["manifest_path"].read_text(encoding="utf-8"))
+        ok &= check(
+            "protocol-v2 output advisory lock blocks concurrent schedule",
+            sum(isinstance(item, dict) for item in concurrent_run_outcomes) == 1
+            and sum(isinstance(item, runner.InfraFailure)
+                    for item in concurrent_run_outcomes) == 1
+            and concurrent_run_manifest.get("complete") is True
+            and len(concurrent_run_records) == 1
+            and not list(v2_concurrent_run["run_output"].glob("*.claim")),
+            notes)
+
+        v2_valid = make_v2_fixture(
+            ws, "valid", repo_v2, sha_v2,
+            run_mode="normal", judge_mode="judge-auto")
+        v2_judge_out = v2_valid["root"] / "judges"
+        v2_scorer = score_v2_fixture(
+            v2_valid, "scorer", v2_judge_out)
+        scorer_prompt_receipt = v2_valid["prompt_receipt"].read_text(
+            encoding="utf-8").strip()
+        v2_verifier = score_v2_fixture(
+            v2_valid, "verifier", v2_judge_out)
+        verifier_prompt_receipt = v2_valid["prompt_receipt"].read_text(
+            encoding="utf-8").strip()
+        expected_prompt_receipts = {}
+        for judge_role in ("scorer", "verifier"):
+            composed = runner.compose_v2_judge_prompt(
+                v2_valid["prompts"][judge_role].read_text(encoding="utf-8"),
+                v2_valid["rubric"].read_text(encoding="utf-8"),
+                v2_valid["schemas"][judge_role].read_text(encoding="utf-8"),
+                v2_valid["context"].read_text(encoding="utf-8"),
+                v2_valid["docs"][0].read_text(encoding="utf-8"),
+            )
+            expected_prompt_receipts[judge_role] = hashlib.sha256(
+                composed.encode("utf-8")).hexdigest()
+        v2_scorer_manifest = (
+            v2_judge_out / "scoring-scorer-all-docs-manifest.json")
+        v2_verifier_manifest = (
+            v2_judge_out / "scoring-verifier-all-docs-manifest.json")
+        ok &= check(
+            "protocol-v2 scorer and verifier accept sealed all-docs JSON",
+            len(v2_scorer) == len(v2_verifier) == 1
+            and v2_scorer[0].get("role") == "scorer"
+            and v2_verifier[0].get("role") == "verifier"
+            and v2_scorer[0].get("axis") == "all-docs"
+            and v2_verifier[0].get("axis") == "all-docs"
+            and v2_scorer[0].get("protocol_version") == 2
+            and v2_verifier[0].get("protocol_version") == 2
+            and v2_scorer[0].get("attempt") == 1
+            and v2_verifier[0].get("attempt") == 1
+            and v2_scorer[0].get("parsed_response", {}).get("total") == 8
+            and v2_verifier[0].get("evidence_accuracy") == 0.5
+            and scorer_prompt_receipt
+            == expected_prompt_receipts["scorer"]
+            and verifier_prompt_receipt
+            == expected_prompt_receipts["verifier"]
+            and json.loads(v2_scorer_manifest.read_text(
+                encoding="utf-8"))["complete"] is True
+            and json.loads(v2_verifier_manifest.read_text(
+                encoding="utf-8"))["complete"] is True,
+            notes)
+
+        v2_background_judge = make_v2_fixture(
+            ws, "judge-background-child", repo_v2, sha_v2,
+            run_mode="normal", judge_mode="judge-background-child")
+        background_judge_rows = score_v2_fixture(
+            v2_background_judge, "scorer",
+            v2_background_judge["root"] / "judges")
+        time.sleep(1.2)
+        ok &= check(
+            "successful judge parent cannot leave a background tool child",
+            len(background_judge_rows) == 1
+            and background_judge_rows[0].get("schema_valid") is True
+            and not (v2_background_judge["root"]
+                     / "judge-child-survived").exists(),
+            notes)
+
+        v2_duplicate = make_v2_fixture(
+            ws, "duplicate-terminal", repo_v2, sha_v2,
+            run_mode="normal", judge_mode="judge-auto")
+        duplicate_summary = v2_duplicate["manifest"]["results"][0]
+        canonical_duplicate_source = (
+            v2_duplicate["run_output"]
+            / f"run-{duplicate_summary['run_id']}.json")
+        duplicate_record = json.loads(
+            canonical_duplicate_source.read_text(encoding="utf-8"))
+        duplicate_record["run_id"] = "d00bd00bd00b"
+        duplicate_path = (
+            v2_duplicate["run_output"] / "run-d00bd00bd00b.json")
+        duplicate_path.write_text(
+            json.dumps(duplicate_record, indent=2) + "\n",
+            encoding="utf-8")
+        try:
+            runner.run_schedule(
+                v2_duplicate["config"], v2_duplicate["schedule"],
+                {"mock-repo": str(repo_v2)}, v2_duplicate["run_output"],
+                [str(v2_duplicate["task"])],
+            )
+            duplicate_terminal_first = False
+        except runner.InfraFailure as exc:
+            duplicate_terminal_first = (
+                "duplicate_terminal_outcomes" in str(exc))
+        duplicate_invalid_path = (
+            v2_duplicate["run_output"]
+            / "schedule-entry-0-terminal-invalid.json")
+        duplicate_path.unlink()
+        try:
+            runner.run_schedule(
+                v2_duplicate["config"], v2_duplicate["schedule"],
+                {"mock-repo": str(repo_v2)}, v2_duplicate["run_output"],
+                [str(v2_duplicate["task"])],
+            )
+            duplicate_terminal_resume = False
+        except runner.InfraFailure as exc:
+            duplicate_terminal_resume = "cannot be resumed" in str(exc)
+        ok &= check(
+            "protocol-v2 duplicate terminal run persists invalidation",
+            duplicate_terminal_first and duplicate_terminal_resume
+            and duplicate_invalid_path.exists(),
+            notes)
+
+        v2_concurrent_judge = make_v2_fixture(
+            ws, "judge-concurrent", repo_v2, sha_v2,
+            run_mode="normal", judge_mode="judge-slow-auto")
+        concurrent_judge_out = v2_concurrent_judge["root"] / "judges"
+
+        def concurrent_score():
+            try:
+                return score_v2_fixture(
+                    v2_concurrent_judge, "scorer", concurrent_judge_out)
+            except runner.InfraFailure as exc:
+                return exc
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            concurrent_judge_outcomes = list(pool.map(
+                lambda _index: concurrent_score(), range(2)))
+        concurrent_judge_manifest = json.loads(
+            (concurrent_judge_out
+             / "scoring-scorer-all-docs-manifest.json").read_text(
+                 encoding="utf-8"))
+        concurrent_scoring_id = concurrent_judge_manifest["scoring_id"]
+        concurrent_attempts = list(concurrent_judge_out.glob(
+            f"judge-{concurrent_scoring_id}-0-attempt-*.json"))
+        ok &= check(
+            "protocol-v2 role/axis advisory lock blocks concurrent scoring",
+            sum(isinstance(item, list)
+                for item in concurrent_judge_outcomes) == 1
+            and sum(isinstance(item, runner.InfraFailure)
+                    for item in concurrent_judge_outcomes) == 1
+            and concurrent_judge_manifest.get("complete") is True
+            and len(concurrent_attempts) == 1,
+            notes)
+
+        v2_gate = make_v2_fixture(
+            ws, "gate-failed", repo_v2, sha_v2,
+            run_mode="bad-artifact", judge_mode="judge-auto")
+        gate_summary = v2_gate["manifest"]["results"][0]
+        v2_gate_out = v2_gate["root"] / "judges"
+        gate_scorer = score_v2_fixture(v2_gate, "scorer", v2_gate_out)
+        gate_verifier = score_v2_fixture(v2_gate, "verifier", v2_gate_out)
+        ok &= check(
+            "protocol-v2 gate-failed document reaches both judge roles",
+            gate_summary.get("status") == "workflow_failure"
+            and gate_summary.get("failure_kind") == "artifact_contract"
+            and gate_summary.get("artifact_gate") == "failed"
+            and len(gate_scorer) == len(gate_verifier) == 1
+            and gate_scorer[0].get("role") == "scorer"
+            and gate_verifier[0].get("role") == "verifier"
+            and gate_scorer[0].get("axis") == "all-docs"
+            and gate_verifier[0].get("axis") == "all-docs"
+            and Path(gate_scorer[0]["doc"]).name.endswith("-diag.md")
+            and gate_scorer[0]["doc"] == gate_verifier[0]["doc"],
+            notes)
+
+        telemetry_ok = True
+        for fixture, expected_status, expected_gate, expected_kind in (
+            (v2_valid, "completed", "passed", None),
+            (v2_gate, "workflow_failure", "failed", "artifact_contract"),
+        ):
+            summary = fixture["manifest"]["results"][0]
+            run_record = json.loads(
+                (fixture["run_output"]
+                 / f"run-{summary['run_id']}.json").read_text(
+                     encoding="utf-8"))
+            telemetry_ok &= (
+                summary.get("protocol_version") == 2
+                and run_record.get("protocol_version") == 2
+                and summary.get("status") == expected_status
+                and run_record.get("status") == expected_status
+                and summary.get("artifact_gate") == expected_gate
+                and run_record.get("artifact_gate") == expected_gate
+                and summary.get("failure_kind") == expected_kind
+                and run_record.get("failure_kind") == expected_kind
+                and summary.get("telemetry_policy_id")
+                == runner.PILOT_V2_AGGREGATION_POLICY["telemetry"]
+                and run_record.get("telemetry_policy_id")
+                == runner.PILOT_V2_AGGREGATION_POLICY["telemetry"]
+                and summary.get("telemetry_eligible") is True
+                and run_record.get("telemetry_eligible") is True
+                and summary.get("telemetry_exclusion_reason") is None
+                and run_record.get("telemetry_exclusion_reason") is None
+                and isinstance(run_record.get("accounting", {}).get("tree"),
+                               dict)
+                and isinstance(run_record.get("wall_seconds"), (int, float))
+            )
+        ok &= check(
+            "protocol-v2 final outcomes carry reconciled telemetry fields",
+            telemetry_ok, notes)
+
+        v2_retry = make_v2_fixture(
+            ws, "retry", repo_v2, sha_v2,
+            run_mode="normal", judge_mode="judge-invalid-then-valid")
+        retry_out = v2_retry["root"] / "judges"
+        retry_state = v2_retry["root"] / "judge-state.txt"
+        retry_results = score_v2_fixture(
+            v2_retry, "scorer", retry_out)
+        try:
+            retry_manifest_path = (
+                retry_out / "scoring-scorer-all-docs-manifest.json")
+            retry_manifest = json.loads(
+                retry_manifest_path.read_text(encoding="utf-8"))
+            retry_id = retry_manifest["scoring_id"]
+            attempt_paths = sorted(retry_out.glob(
+                f"judge-{retry_id}-0-attempt-*.json"))
+            attempt_records = [json.loads(path.read_text(encoding="utf-8"))
+                               for path in attempt_paths]
+            canonical_path = retry_out / f"judge-{retry_id}-0.json"
+            canonical_record = json.loads(
+                canonical_path.read_text(encoding="utf-8"))
+            immutable_attempts = {
+                path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in attempt_paths
+            }
+            retry_two_ok = (
+                len(retry_results) == 1
+                and retry_results[0].get("attempt") == 2
+                and len(attempt_records) == 2
+                and attempt_records[0].get("attempt") == 1
+                and attempt_records[0].get("schema_valid") is False
+                and attempt_records[0].get("validation", {}).get("valid")
+                is False
+                and attempt_records[1].get("attempt") == 2
+                and attempt_records[1].get("schema_valid") is True
+                and attempt_records[1].get("validation", {}).get("valid")
+                is True
+                and canonical_record == attempt_records[1]
+                and retry_state.read_text(encoding="utf-8") == "2"
+            )
+
+            # Simulate the crash window after the valid attempt file lands
+            # but before its canonical promotion and batch-manifest append.
+            retry_manifest["complete"] = False
+            retry_manifest["results"] = []
+            retry_manifest_path.write_text(
+                json.dumps(retry_manifest), encoding="utf-8")
+            canonical_path.unlink()
+            adopted_results = score_v2_fixture(
+                v2_retry, "scorer", retry_out)
+            immutable_after = {
+                path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in sorted(retry_out.glob(
+                    f"judge-{retry_id}-0-attempt-*.json"))
+            }
+            orphan_ok = (
+                len(adopted_results) == 1
+                and adopted_results[0] == attempt_records[1]
+                and json.loads(canonical_path.read_text(
+                    encoding="utf-8")) == attempt_records[1]
+                and immutable_after == immutable_attempts
+                and retry_state.read_text(encoding="utf-8") == "2"
+            )
+        finally:
+            retry_state.unlink(missing_ok=True)
+        ok &= check(
+            "protocol-v2 invalid response retries then accepts attempt two",
+            retry_two_ok, notes)
+        ok &= check(
+            "protocol-v2 valid orphan attempt adopted without relaunch",
+            orphan_ok, notes)
+
+        v2_exhausted = make_v2_fixture(
+            ws, "exhausted", repo_v2, sha_v2,
+            run_mode="normal", judge_mode="judge-invalid")
+        exhausted_out = v2_exhausted["root"] / "judges"
+        try:
+            score_v2_fixture(v2_exhausted, "scorer", exhausted_out)
+            first_exhausted = False
+        except runner.InfraFailure as exc:
+            first_exhausted = "attempts exhausted" in str(exc)
+        exhausted_manifest = json.loads(
+            (exhausted_out
+             / "scoring-scorer-all-docs-manifest.json").read_text(
+                 encoding="utf-8"))
+        exhausted_id = exhausted_manifest["scoring_id"]
+        exhausted_attempts = sorted(exhausted_out.glob(
+            f"judge-{exhausted_id}-0-attempt-*.json"))
+        terminal_path = (
+            exhausted_out / f"judge-{exhausted_id}-0-exhausted.json")
+        terminal = json.loads(terminal_path.read_text(encoding="utf-8"))
+        exhausted_bytes = {
+            path.name: path.read_bytes()
+            for path in [*exhausted_attempts, terminal_path]
+        }
+        try:
+            score_v2_fixture(v2_exhausted, "scorer", exhausted_out)
+            terminal_resume = False
+        except runner.InfraFailure as exc:
+            terminal_resume = "already exhausted" in str(exc)
+        exhausted_after = {
+            path.name: path.read_bytes()
+            for path in [*sorted(exhausted_out.glob(
+                f"judge-{exhausted_id}-0-attempt-*.json")), terminal_path]
+        }
+        ok &= check(
+            "protocol-v2 exhaustion is terminal after three attempts",
+            first_exhausted and terminal_resume
+            and len(exhausted_attempts) == 3
+            and all(json.loads(path.read_text(
+                encoding="utf-8"))["validation"]["valid"] is False
+                    for path in exhausted_attempts)
+            and terminal.get("status") == "exhausted"
+            and terminal.get("max_attempts") == 3
+            and len(terminal.get("attempt_response_sha256", [])) == 3
+            and exhausted_after == exhausted_bytes
+            and not list(exhausted_out.glob(
+                f"judge-{exhausted_id}-0-attempt-4.*")),
+            notes)
+
+        pending_out = v2_valid["root"] / "pending-judges"
+        score_v2_fixture(v2_valid, "scorer", pending_out)
+        pending_manifest_path = (
+            pending_out / "scoring-scorer-all-docs-manifest.json")
+        pending_manifest = json.loads(
+            pending_manifest_path.read_text(encoding="utf-8"))
+        pending_id = pending_manifest["scoring_id"]
+        pending_manifest["complete"] = False
+        pending_manifest["results"] = []
+        pending_manifest_path.write_text(
+            json.dumps(pending_manifest), encoding="utf-8")
+        (pending_out / f"judge-{pending_id}-0.json").unlink()
+        (pending_out / f"judge-{pending_id}-0-attempt-1.json").unlink()
+        pending_attempt = (
+            pending_out / f"judge-{pending_id}-0-attempt-1.pending")
+        pending_attempt.write_text("{}\n", encoding="utf-8")
+        try:
+            score_v2_fixture(v2_valid, "scorer", pending_out)
+            v2_pending_ok = False
+        except runner.InfraFailure as exc:
+            v2_pending_ok = "ambiguous post-launch state" in str(exc)
+        judge_invalid = (pending_out
+                         / f"judge-{pending_id}-0-terminal-invalid.json")
+        pending_attempt.unlink()
+        try:
+            score_v2_fixture(v2_valid, "scorer", pending_out)
+            v2_pending_resume = False
+        except runner.InfraFailure as exc:
+            v2_pending_resume = "cannot be resumed" in str(exc)
+        ok &= check(
+            "protocol-v2 ambiguous judge attempt terminally blocks resume",
+            v2_pending_ok and v2_pending_resume and judge_invalid.exists()
+            and not list(pending_out.glob(
+                f"judge-{pending_id}-0-attempt-*.json")),
+            notes)
+
+        corrupt_out = v2_valid["root"] / "corrupt-attempt-judges"
+        score_v2_fixture(v2_valid, "scorer", corrupt_out)
+        corrupt_manifest_path = (
+            corrupt_out / "scoring-scorer-all-docs-manifest.json")
+        corrupt_manifest = json.loads(
+            corrupt_manifest_path.read_text(encoding="utf-8"))
+        corrupt_id = corrupt_manifest["scoring_id"]
+        corrupt_manifest.update({"complete": False, "results": []})
+        corrupt_manifest_path.write_text(
+            json.dumps(corrupt_manifest), encoding="utf-8")
+        (corrupt_out / f"judge-{corrupt_id}-0.json").unlink()
+        corrupt_attempt = (
+            corrupt_out / f"judge-{corrupt_id}-0-attempt-1.json")
+        corrupt_attempt.write_text("{}\n", encoding="utf-8")
+        try:
+            score_v2_fixture(v2_valid, "scorer", corrupt_out)
+            corrupt_attempt_blocked = False
+        except runner.InfraFailure as exc:
+            corrupt_attempt_blocked = "invalid_attempt_history" in str(exc)
+        corrupt_marker = (
+            corrupt_out / f"judge-{corrupt_id}-0-terminal-invalid.json")
+        corrupt_attempt.unlink()
+        try:
+            score_v2_fixture(v2_valid, "scorer", corrupt_out)
+            corrupt_delete_resume = False
+        except runner.InfraFailure as exc:
+            corrupt_delete_resume = "cannot be resumed" in str(exc)
+        ok &= check(
+            "corrupt persisted judge attempt irreversibly invalidates batch",
+            corrupt_attempt_blocked and corrupt_delete_resume
+            and corrupt_marker.exists()
+            and not list(corrupt_out.glob(
+                f"judge-{corrupt_id}-0-attempt-*.json")),
+            notes)
+
+        extra_out = v2_valid["root"] / "extra-attempt-judges"
+        score_v2_fixture(v2_valid, "scorer", extra_out)
+        extra_manifest_path = (
+            extra_out / "scoring-scorer-all-docs-manifest.json")
+        extra_manifest = json.loads(
+            extra_manifest_path.read_text(encoding="utf-8"))
+        extra_id = extra_manifest["scoring_id"]
+        extra_manifest["complete"] = False
+        extra_manifest_path.write_text(
+            json.dumps(extra_manifest), encoding="utf-8")
+        extra_attempt = extra_out / f"judge-{extra_id}-0-attempt-4.json"
+        extra_attempt.write_text("{}\n", encoding="utf-8")
+        try:
+            score_v2_fixture(v2_valid, "scorer", extra_out)
+            extra_material_blocked = False
+        except runner.InfraFailure as exc:
+            extra_material_blocked = "terminally invalid" in str(exc)
+        batch_marker = (
+            extra_out / "scoring-scorer-all-docs-terminal-invalid.json")
+        extra_attempt.unlink()
+        try:
+            score_v2_fixture(v2_valid, "scorer", extra_out)
+            extra_material_resume = False
+        except runner.InfraFailure as exc:
+            extra_material_resume = "terminally invalid" in str(exc)
+        ok &= check(
+            "out-of-protocol judge material terminally invalidates batch",
+            extra_material_blocked and extra_material_resume
+            and batch_marker.exists(),
+            notes)
+
+        wrong_judge_material_ok = True
+        for material_kind in (
+                "directory-attempt", "dangling-pending",
+                "dangling-sidecar", "orphan-sidecar"):
+            fixture = make_v2_fixture(
+                ws, f"wrong-judge-{material_kind}", repo_v2, sha_v2,
+                run_mode="normal", judge_mode="judge-invalid-then-valid")
+            judge_out = fixture["root"] / "judges-wrong-material"
+            score_v2_fixture(fixture, "scorer", judge_out)
+            judge_manifest_path = (
+                judge_out / "scoring-scorer-all-docs-manifest.json")
+            judge_manifest = json.loads(
+                judge_manifest_path.read_text(encoding="utf-8"))
+            judge_id = judge_manifest["scoring_id"]
+            judge_manifest.update({"complete": False, "results": []})
+            judge_manifest_path.write_text(
+                json.dumps(judge_manifest), encoding="utf-8")
+            (judge_out / f"judge-{judge_id}-0.json").unlink()
+            for attempt_path in judge_out.glob(
+                    f"judge-{judge_id}-0-attempt-*.json"):
+                attempt_path.unlink()
+            if material_kind == "directory-attempt":
+                wrong_path = (
+                    judge_out / f"judge-{judge_id}-0-attempt-1.json")
+                wrong_path.mkdir()
+            elif material_kind == "dangling-pending":
+                wrong_path = (
+                    judge_out / f"judge-{judge_id}-0-attempt-1.pending")
+                wrong_path.symlink_to(
+                    fixture["root"] / "missing-judge-pending")
+            else:
+                wrong_path = judge_out / (
+                    f"judge-{judge_id}-0-attempt-1-raw-stream.txt")
+                if material_kind == "dangling-sidecar":
+                    wrong_path.symlink_to(
+                        fixture["root"] / "missing-judge-sidecar")
+                else:
+                    wrong_path.write_text(
+                        "orphan launch evidence\n", encoding="utf-8")
+            state_path = fixture["root"] / "judge-state.txt"
+            state_before = state_path.read_bytes()
+            try:
+                score_v2_fixture(fixture, "scorer", judge_out)
+                first_block = False
+            except runner.InfraFailure as exc:
+                first_block = "terminally invalid" in str(exc)
+            batch_invalid = (
+                judge_out
+                / "scoring-scorer-all-docs-terminal-invalid.json")
+            slot_invalid = (
+                judge_out / f"judge-{judge_id}-0-terminal-invalid.json")
+            durable_marker = (
+                slot_invalid if material_kind == "orphan-sidecar"
+                else batch_invalid)
+            if wrong_path.is_dir() and not wrong_path.is_symlink():
+                wrong_path.rmdir()
+            else:
+                wrong_path.unlink()
+            try:
+                score_v2_fixture(fixture, "scorer", judge_out)
+                resume_block = False
+            except runner.InfraFailure as exc:
+                resume_block = "terminally invalid" in str(exc)
+            wrong_judge_material_ok &= (
+                first_block and resume_block and durable_marker.is_file()
+                and state_path.read_bytes() == state_before)
+        ok &= check(
+            "wrong-type/orphan judge material durably blocks before launch",
+            wrong_judge_material_ok, notes)
+
+        scorer_schema = v2_valid["schemas"]["scorer"]
+        original_schema = scorer_schema.read_bytes()
+        try:
+            scorer_schema.write_text("{}\n", encoding="utf-8")
+            try:
+                score_v2_fixture(
+                    v2_valid, "scorer", v2_valid["root"] / "schema-drift")
+                schema_drift_ok = False
+            except runner.InfraFailure as exc:
+                schema_drift_ok = (
+                    "response schema" in str(exc)
+                    or "atomic seal package" in str(exc))
+        finally:
+            scorer_schema.write_bytes(original_schema)
+        original_seal = v2_valid["seal"].read_bytes()
+        try:
+            v2_valid["seal"].write_bytes(original_seal + b"\n")
+            try:
+                score_v2_fixture(
+                    v2_valid, "scorer", v2_valid["root"] / "seal-drift")
+                v2_seal_drift_ok = False
+            except runner.InfraFailure as exc:
+                v2_seal_drift_ok = "seal_package_sha256" in str(exc)
+        finally:
+            v2_valid["seal"].write_bytes(original_seal)
+        ok &= check(
+            "protocol-v2 schema and package-seal drift fail closed",
+            schema_drift_ok and v2_seal_drift_ok, notes)
+
+        aggregate_fixture = make_v2_aggregation_fixture(ws, sha_v2)
+        source_seal = json.loads(
+            aggregate_fixture["seal"].read_text(encoding="utf-8"))
+        builder_package = aggregate_fixture["root"] / "builder-package"
+        builder_package.mkdir()
+        for relative in source_seal["files"]:
+            source = aggregate_fixture["seal"].parent / relative
+            destination = builder_package / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(source.read_bytes())
+        builder_metadata = aggregate_fixture["root"] / "builder-metadata.json"
+        builder_metadata.write_text(
+            json.dumps({
+                key: value for key, value in source_seal.items()
+                if key != "files"
+            }, ensure_ascii=False, allow_nan=False, indent=2,
+                sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        built_registration = seal_package.build_package(
+            builder_package, builder_metadata)
+        verified_registration = seal_package.verify_package(
+            builder_package, builder_package / seal_package.MANIFEST_NAME)
+        extra_package_file = builder_package / "unregistered-extra.txt"
+        extra_package_file.write_text("extra\n", encoding="utf-8")
+        try:
+            seal_package.verify_package(
+                builder_package,
+                builder_package / seal_package.MANIFEST_NAME)
+            extra_file_rejected = False
+        except seal_package.SealError:
+            extra_file_rejected = True
+        extra_package_file.unlink()
+        query_package = aggregate_fixture["root"] / "query-source-package"
+        query_package.mkdir()
+        for relative in source_seal["files"]:
+            source = aggregate_fixture["seal"].parent / relative
+            destination = query_package / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(source.read_bytes())
+        query_snapshot = query_package / "snapshots" / "reference.txt"
+        query_snapshot.parent.mkdir(parents=True, exist_ok=True)
+        query_snapshot.write_text("snapshot\n", encoding="utf-8")
+        query_metadata_doc = {
+            key: value for key, value in source_seal.items()
+            if key != "files"
+        }
+        query_metadata_doc["snapshot_sources"] = {
+            "snapshots/reference.txt":
+                "https://example.invalid/reference?access=credential"
+        }
+        query_metadata = (
+            aggregate_fixture["root"] / "query-source-metadata.json")
+        query_metadata.write_text(
+            json.dumps(query_metadata_doc, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        try:
+            seal_package.build_package(query_package, query_metadata)
+            query_source_rejected = False
+        except seal_package.SealError:
+            query_source_rejected = True
+        sanitized_registration = json.dumps(
+            built_registration, sort_keys=True, allow_nan=False)
+        ok &= check(
+            "atomic seal builder verifies package and refuses extras/query URLs",
+            built_registration == verified_registration
+            and built_registration.get("holdout_tasks")
+            == list(seal_package.HOLDOUT_TASKS)
+            and len(built_registration.get("seal_package_sha256", "")) == 64
+            and extra_file_rejected
+            and query_source_rejected
+            and str(aggregate_fixture["root"])
+            not in sanitized_registration
+            and SECRET not in sanitized_registration,
+            notes)
+        aggregate = aggregate_results.aggregate(
+            aggregate_fixture["config_path"],
+            aggregate_fixture["manifest"],
+            aggregate_fixture["judge_manifests"]["scorer"],
+            aggregate_fixture["judge_manifests"]["verifier"],
+            aggregate_fixture["seal"],
+        )
+        serialized_aggregate = json.dumps(
+            aggregate, sort_keys=True, allow_nan=False)
+        ok &= check(
+            "protocol-v2 golden aggregation covers standard 42/84 population",
+            aggregate_fixture["run_count"] == 42
+            and aggregate_fixture["judge_count"] == 84
+            and aggregate.get("verdict") == "pass"
+            and aggregate.get("holdout", {}).get("token_savings") == {
+                "numerator": 1, "denominator": 4, "decimal": "0.25",
+            }
+            and aggregate.get("holdout", {}).get("wall_time_savings") == {
+                "numerator": 1, "denominator": 5, "decimal": "0.2",
+            }
+            and aggregate.get("ablation", {}).get(
+                "redundancy_established") is True
+            and aggregate.get("ablation", {}).get("status") == "established"
+            and aggregate.get("population", {}).get(
+                "scheduled_final_runs") == 42
+            and len(aggregate.get("input_sha256", {}).get(
+                "judge_records", [])) == 84
+            and str(aggregate_fixture["root"]) not in serialized_aggregate
+            and SECRET not in serialized_aggregate
+            and "Synthetic aggregate document" not in serialized_aggregate,
+            notes)
+
+        def aggregate_golden():
+            return aggregate_results.aggregate(
+                aggregate_fixture["config_path"],
+                aggregate_fixture["manifest"],
+                aggregate_fixture["judge_manifests"]["scorer"],
+                aggregate_fixture["judge_manifests"]["verifier"],
+                aggregate_fixture["seal"],
+            )
+
+        aggregate_output = aggregate_fixture["manifest"].parent
+        source_run = aggregate_fixture["first_run_record"]
+        source_run_doc = json.loads(source_run.read_text(encoding="utf-8"))
+
+        duplicate_run_path = aggregate_output / "run-eeeeeeeeeeee.json"
+        duplicate_run = dict(source_run_doc)
+        duplicate_run["run_id"] = "eeeeeeeeeeee"
+        duplicate_run_path.write_text(
+            json.dumps(duplicate_run, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        try:
+            aggregate_golden()
+            duplicate_terminal_rejected = False
+        except runner.InfraFailure:
+            duplicate_terminal_rejected = True
+        finally:
+            duplicate_run_path.unlink()
+
+        foreign_run_path = aggregate_output / "run-ffffffffffff.json"
+        foreign_run = dict(source_run_doc)
+        foreign_run.update({
+            "run_id": "ffffffffffff",
+            "schedule_digest": "0" * 64,
+        })
+        foreign_run_path.write_text(
+            json.dumps(foreign_run, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        try:
+            aggregate_golden()
+            foreign_run_rejected = False
+        except runner.InfraFailure:
+            foreign_run_rejected = True
+        finally:
+            foreign_run_path.unlink()
+
+        claim_path = aggregate_output / "schedule-entry-0.claim"
+        claim_path.write_text("{}\n", encoding="utf-8")
+        try:
+            aggregate_golden()
+            aggregate_claim_rejected = False
+        except runner.InfraFailure:
+            aggregate_claim_rejected = True
+        finally:
+            claim_path.unlink()
+        terminal_marker_path = (
+            aggregate_output / "schedule-entry-0-terminal-invalid.json")
+        terminal_marker_path.write_text("{}\n", encoding="utf-8")
+        try:
+            aggregate_golden()
+            aggregate_terminal_marker_rejected = False
+        except runner.InfraFailure:
+            aggregate_terminal_marker_rejected = True
+        finally:
+            terminal_marker_path.unlink()
+        ok &= check(
+            "protocol-v2 aggregation audits exact run-directory material",
+            duplicate_terminal_rejected and foreign_run_rejected
+            and aggregate_claim_rejected
+            and aggregate_terminal_marker_rejected,
+            notes)
+
+        orphan_artifact_names = (
+            "run-cafebabecafe-raw.md",
+            "run-cafebabecafe-anon.md",
+            "run-cafebabecafe-diag.md",
+            "run-cafebabecafe-extra-1.md",
+            f"run-{source_run_doc['run_id']}-extra-1.md",
+            f"run-{source_run_doc['run_id']}-diag.md",
+        )
+        orphan_artifact_rejections = []
+        for artifact_name in orphan_artifact_names:
+            artifact_path = aggregate_output / artifact_name
+            artifact_path.write_text(
+                "# Residual observed artifact\n", encoding="utf-8")
+            try:
+                aggregate_golden()
+                orphan_artifact_rejections.append(False)
+            except runner.InfraFailure:
+                orphan_artifact_rejections.append(True)
+            finally:
+                artifact_path.unlink()
+
+        source_raw_path = aggregate_output / (
+            f"run-{source_run_doc['run_id']}-raw.md")
+        source_raw_bytes = source_raw_path.read_bytes()
+        source_raw_path.unlink()
+        try:
+            aggregate_golden()
+            missing_raw_rejected = False
+        except runner.InfraFailure:
+            missing_raw_rejected = True
+        finally:
+            source_raw_path.write_bytes(source_raw_bytes)
+        ok &= check(
+            "protocol-v2 aggregation allowlists exact run artifacts",
+            all(orphan_artifact_rejections)
+            and len(orphan_artifact_rejections) == len(orphan_artifact_names)
+            and missing_raw_rejected,
+            notes)
+
+        retry_manifest_path = aggregate_fixture["manifest"]
+        retry_manifest_bytes = retry_manifest_path.read_bytes()
+        retry_final_bytes = source_run.read_bytes()
+        retry_prior_path = aggregate_output / "run-dddddddddddd.json"
+        try:
+            retry_manifest_doc = json.loads(
+                retry_manifest_bytes.decode("utf-8"))
+            retry_manifest_doc["results"][0]["attempts"] = 2
+            retry_manifest_path.write_text(
+                json.dumps(retry_manifest_doc, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            retry_final = json.loads(retry_final_bytes.decode("utf-8"))
+            retry_final["attempt"] = 2
+            source_run.write_text(
+                json.dumps(retry_final, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            retry_prior = dict(retry_final)
+            retry_prior.update({
+                "run_id": "dddddddddddd",
+                "attempt": 1,
+                "status": "infra_failure",
+                "failure_kind": None,
+                "artifact_gate": "not_evaluated",
+                "artifact_sha256": None,
+                "diagnostic_sha256": None,
+                "telemetry_eligible": False,
+                "telemetry_exclusion_reason": "not_a_final_workflow_outcome",
+            })
+            retry_prior_path.write_text(
+                json.dumps(retry_prior, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            contiguous_retry_accepted = (
+                aggregate_golden().get("verdict") == "pass")
+            retry_prior_path.unlink()
+            try:
+                aggregate_golden()
+                missing_retry_rejected = False
+            except runner.InfraFailure:
+                missing_retry_rejected = True
+        finally:
+            retry_prior_path.unlink(missing_ok=True)
+            retry_manifest_path.write_bytes(retry_manifest_bytes)
+            source_run.write_bytes(retry_final_bytes)
+        ok &= check(
+            "protocol-v2 aggregation requires contiguous infra retry history",
+            contiguous_retry_accepted and missing_retry_rejected,
+            notes)
+
+        seeded_manifest_path = aggregate_fixture["judge_manifests"]["scorer"]
+        seeded_manifest_bytes = seeded_manifest_path.read_bytes()
+        try:
+            seeded_manifest = json.loads(
+                seeded_manifest_bytes.decode("utf-8"))
+            seeded_docs = seeded_manifest["identity"]["docs"]
+            seeded_docs[0], seeded_docs[1] = seeded_docs[1], seeded_docs[0]
+            seeded_manifest_path.write_text(
+                json.dumps(seeded_manifest, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            try:
+                aggregate_golden()
+                seeded_mapping_rejected = False
+            except runner.InfraFailure:
+                seeded_mapping_rejected = True
+        finally:
+            seeded_manifest_path.write_bytes(seeded_manifest_bytes)
+        ok &= check(
+            "protocol-v2 aggregation recomputes seeded judge presentation",
+            seeded_mapping_rejected, notes)
+
+        ritual_manifest = json.loads(
+            aggregate_fixture["manifest"].read_text(encoding="utf-8"))
+        ritual_summary = next(
+            item for item in ritual_manifest["results"]
+            if item["arm"] == "candidate")
+        ritual_path = aggregate_output / (
+            f"run-{ritual_summary['run_id']}.json")
+        ritual_bytes = ritual_path.read_bytes()
+        try:
+            ritual_record = json.loads(ritual_bytes.decode("utf-8"))
+            statement_stops = [
+                runner.classify_stop(text, answered=True)
+                for text in (
+                    "Hello.",
+                    "Please provide the query.",
+                    "I need confirmation before I proceed.",
+                )
+            ]
+            ritual_record["interventions"] = len(statement_stops)
+            ritual_record["interventions_log"] = statement_stops
+            ritual_path.write_text(
+                json.dumps(ritual_record, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            ritual_aggregate = aggregate_golden()
+            statement_ritual_stops_counted = (
+                ritual_aggregate.get("verdict") == "fail"
+                and ritual_aggregate.get("gates", {}).get(
+                    "ritual_stops", {}).get("count") == 3
+            )
+        finally:
+            ritual_path.write_bytes(ritual_bytes)
+        ok &= check(
+            "protocol-v2 ritual gate counts statement-shaped stops",
+            statement_ritual_stops_counted, notes)
+
+        baseline_manifest_path = aggregate_fixture["manifest"]
+        baseline_manifest_bytes = baseline_manifest_path.read_bytes()
+        baseline_manifest = json.loads(
+            baseline_manifest_bytes.decode("utf-8"))
+        baseline_summary = next(
+            item for item in baseline_manifest["results"]
+            if item["arm"] == "baseline")
+        baseline_path = aggregate_output / (
+            f"run-{baseline_summary['run_id']}.json")
+        baseline_bytes = baseline_path.read_bytes()
+        try:
+            baseline_record = json.loads(baseline_bytes.decode("utf-8"))
+            baseline_record.update({
+                "status": "workflow_failure",
+                "failure_kind": "timeout",
+            })
+            baseline_path.write_text(
+                json.dumps(baseline_record, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            baseline_summary.update({
+                "status": "workflow_failure",
+                "failure_kind": "timeout",
+            })
+            baseline_manifest_path.write_text(
+                json.dumps(baseline_manifest, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            baseline_aggregate = aggregate_golden()
+            baseline_task_name = Path(baseline_record["task"]).name
+            produced_timeout_excluded = (
+                baseline_aggregate.get("population", {}).get(
+                    "scoreable_documents") == 42
+                and baseline_aggregate.get("population", {}).get(
+                    "conclusive_tasks") == 5
+                and baseline_aggregate.get("population", {}).get(
+                    "excluded_tasks", {}).get(baseline_task_name)
+                == "baseline_no_document"
+            )
+        finally:
+            baseline_manifest_path.write_bytes(baseline_manifest_bytes)
+            baseline_path.write_bytes(baseline_bytes)
+        ok &= check(
+            "protocol-v2 baseline terminal failure excludes produced-doc task",
+            produced_timeout_excluded, notes)
+
+        protected_output_ok = True
+        aggregate_cli_args = [
+            "--config", str(aggregate_fixture["config_path"]),
+            "--manifest", str(aggregate_fixture["manifest"]),
+            "--scorer-manifest", str(
+                aggregate_fixture["judge_manifests"]["scorer"]),
+            "--verifier-manifest", str(
+                aggregate_fixture["judge_manifests"]["verifier"]),
+            "--seal-manifest", str(aggregate_fixture["seal"]),
+        ]
+        for protected_path in (
+                aggregate_fixture["first_run_record"],
+                aggregate_fixture["seal"]):
+            before = protected_path.read_bytes()
+            with contextlib.redirect_stdout(io.StringIO()):
+                return_code = aggregate_results.main([
+                    *aggregate_cli_args, "--output", str(protected_path)])
+            protected_output_ok &= (
+                return_code == 2 and protected_path.read_bytes() == before)
+        ok &= check(
+            "protocol-v2 aggregate output cannot overwrite input material",
+            protected_output_ok, notes)
+
+        foreign_judge = (
+            aggregate_fixture["manifest"].parent
+            / "judge-deadbeef-0.json")
+        foreign_judge.write_text("{}\n", encoding="utf-8")
+        try:
+            aggregate_results.aggregate(
+                aggregate_fixture["config_path"],
+                aggregate_fixture["manifest"],
+                aggregate_fixture["judge_manifests"]["scorer"],
+                aggregate_fixture["judge_manifests"]["verifier"],
+                aggregate_fixture["seal"],
+            )
+            foreign_judge_rejected = False
+        except runner.InfraFailure as exc:
+            foreign_judge_rejected = "unregistered scoring batch" in str(exc)
+        finally:
+            foreign_judge.unlink()
+        ok &= check(
+            "protocol-v2 aggregation rejects foreign judge batch material",
+            foreign_judge_rejected, notes)
+
+        scorer_batch = json.loads(
+            aggregate_fixture["judge_manifests"]["scorer"].read_text(
+                encoding="utf-8"))
+        scorer_batch_id = scorer_batch["scoring_id"]
+        same_batch_residue_names = (
+            f"judge-{scorer_batch_id}-0-attempt-4.json",
+            f"judge-{scorer_batch_id}-42.json",
+            f"judge-{scorer_batch_id}-0-exhausted.json",
+            f"judge-{scorer_batch_id}-0-terminal-invalid.json",
+            f"judge-{scorer_batch_id}-0-attempt-2.pending",
+            f"judge-{scorer_batch_id}-0-attempt-1-raw-stream.txt",
+        )
+        same_batch_residue_rejections = []
+        for residue_name in same_batch_residue_names:
+            residue_path = aggregate_output / residue_name
+            residue_path.write_text("{}\n", encoding="utf-8")
+            try:
+                aggregate_golden()
+                same_batch_residue_rejections.append(False)
+            except runner.InfraFailure:
+                same_batch_residue_rejections.append(True)
+            finally:
+                residue_path.unlink()
+        ok &= check(
+            "protocol-v2 aggregation rejects same-batch judge residue",
+            all(same_batch_residue_rejections)
+            and len(same_batch_residue_rejections)
+            == len(same_batch_residue_names),
+            notes)
+
+        aggregate_task5 = (
+            aggregate_fixture["root"] / "sealed" / "holdout-v2-5.md")
+        aggregate_task5_bytes = aggregate_task5.read_bytes()
+        try:
+            aggregate_task5.write_text(
+                aggregate_task5_bytes.decode("utf-8").replace(
+                    "external-snapshots: true\n", ""),
+                encoding="utf-8")
+            aggregate_tasks = [
+                str(aggregate_fixture["root"] / "sealed"
+                    / f"holdout-v2-{number}.md")
+                for number in range(1, 7)
+            ]
+            try:
+                runner.make_schedule(
+                    aggregate_fixture["config"], aggregate_tasks, 3,
+                    seed=7301)
+                external_flag_rejected = False
+            except runner.InfraFailure as exc:
+                external_flag_rejected = "external-snapshots" in str(exc)
+        finally:
+            aggregate_task5.write_bytes(aggregate_task5_bytes)
+        ok &= check(
+            "protocol-v2 archetype 5 cannot bypass snapshot drift gate",
+            external_flag_rejected, notes)
+
+        scorer_manifest_path = aggregate_fixture["judge_manifests"]["scorer"]
+        scorer_manifest_bytes = scorer_manifest_path.read_bytes()
+        scorer_manifest_doc = json.loads(scorer_manifest_bytes.decode("utf-8"))
+        scorer_id = scorer_manifest_doc["scoring_id"]
+        scorer_canonical_path = scorer_manifest_path.parent / (
+            f"judge-{scorer_id}-0.json")
+        scorer_attempt_path = scorer_manifest_path.parent / (
+            f"judge-{scorer_id}-0-attempt-1.json")
+        scorer_canonical_bytes = scorer_canonical_path.read_bytes()
+        scorer_attempt_bytes = scorer_attempt_path.read_bytes()
+        try:
+            tampered_result = dict(scorer_manifest_doc["results"][0])
+            tampered_result["profile_settings"] = {}
+            scorer_manifest_doc["results"][0] = tampered_result
+            scorer_manifest_path.write_text(
+                json.dumps(scorer_manifest_doc, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            tampered_bytes = (
+                json.dumps(tampered_result, indent=2, sort_keys=True) + "\n"
+            ).encode("utf-8")
+            scorer_canonical_path.write_bytes(tampered_bytes)
+            scorer_attempt_path.write_bytes(tampered_bytes)
+            try:
+                aggregate_results.aggregate(
+                    aggregate_fixture["config_path"],
+                    aggregate_fixture["manifest"], scorer_manifest_path,
+                    aggregate_fixture["judge_manifests"]["verifier"],
+                    aggregate_fixture["seal"],
+                )
+                judge_isolation_drift_ok = False
+            except runner.InfraFailure:
+                judge_isolation_drift_ok = True
+        finally:
+            scorer_manifest_path.write_bytes(scorer_manifest_bytes)
+            scorer_canonical_path.write_bytes(scorer_canonical_bytes)
+            scorer_attempt_path.write_bytes(scorer_attempt_bytes)
+        ok &= check(
+            "protocol-v2 aggregation rejects judge isolation-settings drift",
+            judge_isolation_drift_ok, notes)
+
+        scorer_manifest = json.loads(
+            aggregate_fixture["judge_manifests"]["scorer"].read_text(
+                encoding="utf-8"))
+        incomplete_manifest = dict(scorer_manifest)
+        incomplete_manifest["results"] = scorer_manifest["results"][:-1]
+        incomplete_path = (
+            aggregate_fixture["judge_manifests"]["scorer"].parent
+            / "scoring-scorer-incomplete-manifest.json")
+        incomplete_path.write_text(
+            json.dumps(incomplete_manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8")
+        try:
+            aggregate_results.aggregate(
+                aggregate_fixture["config_path"],
+                aggregate_fixture["manifest"], incomplete_path,
+                aggregate_fixture["judge_manifests"]["verifier"],
+                aggregate_fixture["seal"],
+            )
+            incomplete_aggregate_ok = False
+        except runner.InfraFailure:
+            incomplete_aggregate_ok = True
+        ok &= check(
+            "protocol-v2 aggregation rejects incomplete judge population",
+            incomplete_aggregate_ok, notes)
+
+        wrong_config = dict(aggregate_fixture["config"])
+        wrong_config["protocol_version"] = 1
+        wrong_config_path = aggregate_fixture["root"] / "wrong-protocol.json"
+        wrong_config_path.write_text(
+            json.dumps(wrong_config, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8")
+        try:
+            aggregate_results.aggregate(
+                wrong_config_path, aggregate_fixture["manifest"],
+                aggregate_fixture["judge_manifests"]["scorer"],
+                aggregate_fixture["judge_manifests"]["verifier"],
+                aggregate_fixture["seal"],
+            )
+            wrong_protocol_aggregate_ok = False
+        except runner.InfraFailure:
+            wrong_protocol_aggregate_ok = True
+
+        run_record_path = aggregate_fixture["first_run_record"]
+        original_run_record = run_record_path.read_bytes()
+        try:
+            mixed_record = json.loads(original_run_record.decode("utf-8"))
+            mixed_record["telemetry_policy_id"] = "mixed-policy"
+            run_record_path.write_text(
+                json.dumps(mixed_record, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8")
+            try:
+                aggregate_results.aggregate(
+                    aggregate_fixture["config_path"],
+                    aggregate_fixture["manifest"],
+                    aggregate_fixture["judge_manifests"]["scorer"],
+                    aggregate_fixture["judge_manifests"]["verifier"],
+                    aggregate_fixture["seal"],
+                )
+                mixed_telemetry_aggregate_ok = False
+            except runner.InfraFailure:
+                mixed_telemetry_aggregate_ok = True
+        finally:
+            run_record_path.write_bytes(original_run_record)
+        ok &= check(
+            "protocol-v2 aggregation rejects mixed protocol and telemetry",
+            wrong_protocol_aggregate_ok and mixed_telemetry_aggregate_ok,
             notes)
 
     width = max(len(name) for name, _, _ in notes)

@@ -252,6 +252,11 @@ def _parse_frontmatter_fallback(block, errors):
     for raw in block.splitlines():
         if not raw.strip():
             continue
+        if "\t" in raw:
+            errors.append(
+                "frontmatter contains a tab — beyond the fallback's "
+                "space-indented flat mapping contract")
+            return {}
         if raw[:1] in (" ", "\t") or raw.lstrip().startswith("- "):
             errors.append(
                 "frontmatter uses nested or multiline YAML — beyond the "
@@ -263,13 +268,32 @@ def _parse_frontmatter_fallback(block, errors):
                 f"frontmatter line is not `key: value`: `{raw.strip()[:60]}`")
             return {}
         key, _, val = raw.partition(":")
+        key = key.strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", key):
+            errors.append(
+                f"frontmatter key `{key[:40]}` is not a plain contract key "
+                f"— install PyYAML 6.0.2 for richer YAML")
+            return {}
+        if key in meta:
+            errors.append(f"frontmatter key `{key}` is duplicated")
+            return {}
         val = val.strip()
         if val.startswith("[") and val.endswith("]"):
             items = []
-            for item in val[1:-1].split(","):
+            raw_items = val[1:-1].split(",")
+            for item_index, item in enumerate(raw_items):
                 item = item.strip()
                 if not item:
-                    continue
+                    # YAML permits one trailing comma, but never a leading or
+                    # interior empty element.  `[a,,b]` must not silently
+                    # become `[a,b]` only in fallback mode.
+                    if (item_index == len(raw_items) - 1
+                            and item_index > 0):
+                        continue
+                    errors.append(
+                        f"frontmatter `{key}`: flow list contains an empty "
+                        f"item")
+                    return {}
                 if item[:1] in ("'", '"'):
                     unquoted = _unquote_scalar(item, errors, key.strip())
                     if unquoted is None:
@@ -283,20 +307,63 @@ def _parse_frontmatter_fallback(block, errors):
                 # shape real parsing would type differently.
                 if any(ch in item for ch in "[]{}:#&*!?|>%@`'\""):
                     errors.append(
-                        f"frontmatter `{key.strip()}`: flow-list item "
+                        f"frontmatter `{key}`: flow-list item "
                         f"`{item[:40]}` is not a plain scalar — the "
                         f"contract allows only a flat list of plain or "
                         f"quoted strings")
                     return {}
+                if re.fullmatch(
+                        r"[A-Za-z][A-Za-z0-9 ._/@+-]*", item) is None:
+                    errors.append(
+                        f"frontmatter `{key}`: unquoted flow-list item "
+                        f"`{item[:40]}` must start alphabetically and stay "
+                        f"inside the strict fallback's plain-string subset "
+                        f"(quote typed or indicator-bearing values)")
+                    return {}
                 items.append(_plain_scalar(item))
-            meta[key.strip()] = items
+            meta[key] = items
         elif val[:1] in ("'", '"'):
-            unquoted = _unquote_scalar(val, errors, key.strip())
+            unquoted = _unquote_scalar(val, errors, key)
             if unquoted is None:
                 return {}
-            meta[key.strip()] = unquoted
+            meta[key] = unquoted
         else:
-            meta[key.strip()] = _plain_scalar(val)
+            # Anchors, aliases, tags, block scalars, flow collections and
+            # other leading YAML indicators have semantics the dependency-
+            # free flat parser does not implement.  Treating `&who Alice`
+            # and `*who` as literal strings can make the fallback MORE
+            # permissive than PyYAML (and let visible/body metadata appear
+            # consistent only on one host), so reject them fail-closed.
+            # The fallback deliberately accepts only two conservative plain
+            # scalar shapes: words/punctuation with spaces but no colon, or
+            # a whitespace-free token that may contain colons (timestamps).
+            # This also rejects YAML comments, mapping separators, tabs,
+            # flow syntax and embedded anchors/tags anywhere in the value —
+            # not only in its first byte. Richer values must be quoted or
+            # parsed by the pinned full parser.
+            spaced_plain = re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9 ._/@+-]*", val)
+            colon_token = re.fullmatch(
+                r"[A-Za-z0-9._/@+-]+"
+                r"(?::[A-Za-z0-9._/@+-]+)+", val)
+            registered_date = (
+                key == "date" and DATE_PARTS_RE.fullmatch(val) is not None)
+            if (val and not registered_date
+                    and spaced_plain is None and colon_token is None):
+                errors.append(
+                    f"frontmatter `{key}` uses a YAML indicator-bearing "
+                    f"or non-plain value beyond the fallback's flat scalar "
+                    f"contract "
+                    f"(install PyYAML 6.0.2 or quote/flatten the value)")
+                return {}
+            if (key in STRING_FIELDS and val
+                    and re.match(r"[A-Za-z]", val) is None):
+                errors.append(
+                    f"frontmatter `{key}` must start alphabetically in the "
+                    f"strict fallback (quote numeric/date/sign/dot-leading "
+                    f"strings so YAML cannot type them)")
+                return {}
+            meta[key] = _plain_scalar(val)
     return meta
 
 
@@ -410,13 +477,13 @@ def validate(path, expected_git_commit=None, expected_repository=None,
         else:
             fname_date = basename[:10]
     lines = text.splitlines()
-    if not lines or lines[0].strip() != "---":
+    if not lines or re.fullmatch(r"---[ \t]*", lines[0]) is None:
         errors.append("frontmatter must open with `---` on line 1")
         meta = {}
     else:
         end = None
         for idx in range(1, len(lines)):
-            if lines[idx].strip() == "---":
+            if re.fullmatch(r"---[ \t]*", lines[idx]) is not None:
                 end = idx
                 break
         if end is None:
