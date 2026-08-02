@@ -948,6 +948,15 @@ launch and bound into the config and gate receipt. Conservatively, the seal is
 reset to the all-zero sentinel until a new uncontaminated package is authored
 after this runtime amendment.
 
+After the parser/image amendment was committed and the pinned container
+passed the expanded 257-capability preflight, a fourth uncontaminated package
+was authored from scratch, atomically promoted, and independently verified on
+both the host and exact operator image before schedule creation. Its digest is
+`233987beac8d0da7c819fc159674638c3fab18a69a7d486243b63721f21be162`;
+the only disclosed task identifiers remain the six prospective basenames.
+The clean boundary also verified canonical internal paths, six distinct task
+digests, exact ablation scope, and target-pin availability.
+
 1. Implement strict role validation, bounded crash-safe judge attempts,
    all-document role coverage, immutable policy bindings, and deterministic
    aggregation in `skills/research-codebase/evals/public/`.
