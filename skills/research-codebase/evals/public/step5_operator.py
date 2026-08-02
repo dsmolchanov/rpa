@@ -74,81 +74,68 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import runner  # noqa: E402 — colocated harness module
+import judge_contract  # noqa: E402 — colocated judge response contract
 import seal_package  # noqa: E402 — colocated atomic-seal verifier
+import pilot_registration  # noqa: E402 — shared prospective registrations
 
 # ---------------------------------------------------------------- #
 # Registered values (pilot plan, candidate-freeze record 2026-07-27)
 # ---------------------------------------------------------------- #
-FROZEN_CANDIDATE_SHA = "b731f06cdff5f38c0fa4c5aa64f93277d69e741d"
-REGISTERED_INSTALL_SHA256 = {
-    "baseline":
-        "2762bf04e9ea82fec520906a0db0382eadff5c99cada5b44ba2f1c49a3e7b28c",
-    "candidate":
-        "5638b81633610a68192cc5d03dba4d1022175aa1980b27a209b3114d4c4d126c",
-    "ablation":
-        "a1d44b131ebd5d858756280454b9f7f33cb79a4f13d034b2004d5993b21e9b57",
-}
+FROZEN_CANDIDATE_SHA = pilot_registration.FROZEN_CANDIDATE_SHA
+REGISTERED_INSTALL_SHA256 = pilot_registration.INSTALL_SHA256
 # Resetting the registration to this conspicuous sentinel makes an
 # unregistered execution impossible to mistake for a real round.
-PENDING_SEAL_PACKAGE_SHA256 = "0" * 64
+PENDING_SEAL_PACKAGE_SHA256 = pilot_registration.PENDING_SEAL_PACKAGE_SHA256
 REGISTERED_SEAL_PACKAGE_SHA256 = (
-    "233987beac8d0da7c819fc159674638c3fab18a69a7d486243b63721f21be162")
-REGISTERED_HOLDOUT_TASKS = tuple(
-    f"holdout-v2-{i}.md" for i in range(1, 7))
-REGISTERED_ABLATION_TASKS = (
-    REGISTERED_HOLDOUT_TASKS[0], REGISTERED_HOLDOUT_TASKS[2])
-REGISTERED_MODEL = "claude-opus-5"
-REGISTERED_EFFORT = "high"
-REGISTERED_ENTRYPOINT = "/rpa:research_codebase"
-REGISTERED_BACKEND_VERSION = "2.1.220 (Claude Code)"
-REGISTERED_BACKEND_CMD = [
-    "claude", "--model", "claude-opus-5", "--effort", "{effort}",
-    "--plugin-dir", "{installation}", "--permission-mode",
-    "acceptEdits", "--verbose",
-]
-REGISTERED_BACKEND_VERSION_CMD = ["claude", "--version"]
-REGISTERED_JUDGE_BACKEND_CMD = [
-    "claude", "--model", "claude-opus-5", "--effort", "{effort}",
-]
-REGISTERED_JUDGE_MODEL = "claude-opus-5"
-REGISTERED_JUDGE_EFFORT = "high"
-REGISTERED_DRIFT_FETCH_CMD = [
-    "curl", "-q", "-fsSL", "--config", "-", "-o", "{dest}",
-]
-REGISTERED_ABORT_EXIT_CODES = []
+    pilot_registration.REGISTERED_SEAL_PACKAGE_SHA256)
+PENDING_LIVE_PROBE_RECEIPT_SHA256 = (
+    pilot_registration.PENDING_LIVE_PROBE_RECEIPT_SHA256)
+PENDING_LIVE_PROBE_EXECUTION_SHA256 = (
+    pilot_registration.PENDING_LIVE_PROBE_EXECUTION_SHA256)
+REGISTERED_LIVE_PROBE_RECEIPT_SHA256 = (
+    pilot_registration.REGISTERED_LIVE_PROBE_RECEIPT_SHA256)
+REGISTERED_LIVE_PROBE_EXECUTION_SHA256 = (
+    pilot_registration.REGISTERED_LIVE_PROBE_EXECUTION_SHA256)
+REGISTERED_LIVE_PROBE_VERSION = pilot_registration.LIVE_PROBE_VERSION
+REGISTERED_HOLDOUT_TASKS = pilot_registration.HOLDOUT_TASKS
+REGISTERED_ABLATION_TASKS = pilot_registration.ABLATION_TASKS
+REGISTERED_MODEL = pilot_registration.MODEL
+REGISTERED_EFFORT = pilot_registration.EFFORT
+REGISTERED_ENTRYPOINT = pilot_registration.ENTRYPOINT
+REGISTERED_BACKEND_VERSION = pilot_registration.BACKEND_VERSION
+REGISTERED_BACKEND_CMD = list(pilot_registration.BACKEND_CMD)
+REGISTERED_BACKEND_VERSION_CMD = list(pilot_registration.BACKEND_VERSION_CMD)
+REGISTERED_JUDGE_BACKEND_CMD = list(pilot_registration.JUDGE_BACKEND_CMD)
+REGISTERED_JUDGE_MODEL = pilot_registration.JUDGE_MODEL
+REGISTERED_JUDGE_EFFORT = pilot_registration.JUDGE_EFFORT
+REGISTERED_DRIFT_FETCH_CMD = list(pilot_registration.DRIFT_FETCH_CMD)
+REGISTERED_ABORT_EXIT_CODES = list(
+    pilot_registration.WORKFLOW_ABORT_EXIT_CODES)
 # The wrapper invocation is compared as a COMPLETE shape: a lookalike
 # such as `["env", "TAG=ns_sandbox.py", ...]` would satisfy a substring
 # test and the runner's placeholder guard while launching the backend
 # with no confinement at all.
-REGISTERED_SANDBOX_TAIL = ["--confine-to", "{workdir}", "--profile",
-                           "{profile}", "--"]
-PLATFORM_WRAPPER = {"darwin": "macos_sandbox.py"}
-DEFAULT_WRAPPER = "ns_sandbox.py"
-REGISTERED_TIMEOUT_SECONDS = 3600
-REGISTERED_MAX_INFRA_RETRIES = 2
+REGISTERED_SANDBOX_TAIL = list(pilot_registration.SANDBOX_TAIL)
+PLATFORM_WRAPPER = pilot_registration.PLATFORM_WRAPPER
+DEFAULT_WRAPPER = pilot_registration.DEFAULT_WRAPPER
+REGISTERED_TIMEOUT_SECONDS = pilot_registration.TIMEOUT_SECONDS
+REGISTERED_MAX_INFRA_RETRIES = pilot_registration.MAX_INFRA_RETRIES
 REGISTERED_REPLICATES = 3
-REGISTERED_SCHEDULE_SEED = runner.PILOT_V2_SCHEDULE_SEED
-REGISTERED_SCORER_SEED = runner.PILOT_V2_SCORER_SEED
-REGISTERED_VERIFIER_SEED = runner.PILOT_V2_VERIFIER_SEED
-REGISTERED_PROTOCOL_VERSION = 2
-REGISTERED_MAX_JUDGE_ATTEMPTS = 3
-REGISTERED_ENVIRONMENT_POLICY_ID = (
-    "claude-cli-minimal-env-v2-pyyaml-6.0.2")
-REGISTERED_OPERATOR_IMAGE_SHA256 = (
-    "sha256:bbe9dbf152c933f4c3a69eae0809983cf698253a7a067fd6b73180ecc85c4975")
-REGISTERED_ARTIFACT_PARSER = "pyyaml"
-REGISTERED_ARTIFACT_PARSER_VERSION = "6.0.2"
+REGISTERED_SCHEDULE_SEED = pilot_registration.SCHEDULE_SEED
+REGISTERED_SCORER_SEED = pilot_registration.SCORER_SEED
+REGISTERED_VERIFIER_SEED = pilot_registration.VERIFIER_SEED
+REGISTERED_PROTOCOL_VERSION = pilot_registration.PROTOCOL_VERSION
+REGISTERED_MAX_JUDGE_ATTEMPTS = pilot_registration.MAX_JUDGE_ATTEMPTS
+REGISTERED_ENVIRONMENT_POLICY_ID = pilot_registration.ENVIRONMENT_POLICY_ID
+REGISTERED_OPERATOR_IMAGE_SHA256 = pilot_registration.OPERATOR_IMAGE_SHA256
+REGISTERED_ARTIFACT_PARSER = pilot_registration.ARTIFACT_PARSER
+REGISTERED_ARTIFACT_PARSER_VERSION = pilot_registration.ARTIFACT_PARSER_VERSION
 OPERATOR_IMAGE_ENV = "RPA_OPERATOR_IMAGE_SHA256"
-REGISTERED_JUDGE_RETRY_POLICY = {
-    "max_attempts": REGISTERED_MAX_JUDGE_ATTEMPTS,
-    "fresh_session_each_attempt": True,
-    "repair": "none",
-}
-REGISTERED_AGGREGATION_POLICY = {
-    "id": "pilot-v2-all-docs-v1",
-    "telemetry": "all-final-scheduled-workflow-outcomes-v1",
-    "critical": "candidate-absolute-zero-v1",
-}
+REGISTERED_JUDGE_RETRY_POLICY = pilot_registration.JUDGE_RETRY_POLICY
+REGISTERED_JUDGE_OUTPUT_POLICY = pilot_registration.JUDGE_OUTPUT_POLICY
+REGISTERED_STRUCTURED_OUTPUT_SCHEMA_SHA256 = (
+    pilot_registration.STRUCTURED_OUTPUT_SCHEMA_SHA256)
+REGISTERED_AGGREGATION_POLICY = pilot_registration.AGGREGATION_POLICY
 
 PHASES = (
     "gates", "installs", "seal", "real-preflight", "schedule", "runs",
@@ -185,46 +172,7 @@ def file_digest(path):
 def sandbox_problem(cmd):
     """The sandbox invocation must be the registered wrapper, by SHAPE
     and by CONTENT — not merely a command mentioning its filename."""
-    expected_name = PLATFORM_WRAPPER.get(sys.platform, DEFAULT_WRAPPER)
-    shape = (f'["python3", "<checkout>/…/{expected_name}", '
-             f'{", ".join(json.dumps(a) for a in REGISTERED_SANDBOX_TAIL)}]')
-    if not isinstance(cmd, list) or len(cmd) != 2 + len(
-            REGISTERED_SANDBOX_TAIL):
-        return (f"`sandbox_cmd` must be exactly the registered wrapper "
-                f"invocation {shape}")
-    # The registered shape is `python3 <wrapper> …`: accept only a
-    # genuine python3 basename (a `python-evil` shim on PATH would
-    # otherwise satisfy a prefix test while ignoring the wrapper and
-    # launching the backend unconfined).
-    if not re.fullmatch(r"python3(\.\d+)?", Path(str(cmd[0])).name):
-        return (f"`sandbox_cmd` must run the wrapper with the "
-                f"registered python3 interpreter, got {cmd[0]!r}")
-    if [str(a) for a in cmd[2:]] != REGISTERED_SANDBOX_TAIL:
-        return (f"`sandbox_cmd` arguments must be exactly "
-                f"{REGISTERED_SANDBOX_TAIL} — got {list(cmd[2:])}")
-    wrapper = Path(str(cmd[1]))
-    if not wrapper.is_file():
-        return f"`sandbox_cmd` wrapper not found: {wrapper}"
-    if wrapper.name != expected_name:
-        return (f"`sandbox_cmd` names {wrapper.name}, but this host "
-                f"({sys.platform}) requires the registered "
-                f"{expected_name}")
-    reference = HERE / expected_name
-    if file_digest(wrapper) != file_digest(reference):
-        return (f"`sandbox_cmd` wrapper {wrapper} differs in content "
-                f"from the registered {reference} — an edited or "
-                f"substituted wrapper is refused")
-    # Behavioral confirmation that THIS interpreter actually executes
-    # THIS wrapper: a static name/digest pair cannot prove the pair
-    # runs, and the runner would otherwise discover the mismatch only
-    # by launching an unconfined backend.
-    probe = subprocess.run([str(cmd[0]), str(wrapper), "--help"],
-                           capture_output=True, text=True)
-    if probe.returncode != 0 or "--confine-to" not in probe.stdout:
-        return (f"`sandbox_cmd` interpreter {cmd[0]!r} does not run "
-                f"the registered wrapper {wrapper} (its --help did not "
-                f"produce the wrapper's own interface)")
-    return None
+    return pilot_registration.sandbox_registration_problem(cmd)
 
 
 def canonical_tasks(tasks):
@@ -360,10 +308,17 @@ def verified_seal(config):
     if not isinstance(seal_files, dict):
         raise runner.InfraFailure("the v2 seal has no strict file map")
     if (seal_doc.get("protocol_version") != REGISTERED_PROTOCOL_VERSION
+            or seal_doc.get("nonstandard_config") is not False
             or seal_doc.get("max_judge_attempts")
             != REGISTERED_MAX_JUDGE_ATTEMPTS
             or seal_doc.get("judge_retry_policy")
             != REGISTERED_JUDGE_RETRY_POLICY
+            or seal_doc.get("judge_output_policy")
+            != REGISTERED_JUDGE_OUTPUT_POLICY
+            or seal_doc.get("judge_live_probe")
+            != pilot_registration.live_probe_binding()
+            or seal_doc.get("pilot_runtime_registration_sha256")
+            != pilot_registration.standard_v2_runtime_registration_sha256()
             or seal_doc.get("aggregation_policy")
             != REGISTERED_AGGREGATION_POLICY
             or seal_doc.get("ablation_tasks")
@@ -416,6 +371,10 @@ def all_docs_population(results, runs_out):
                     "artifact_parser": REGISTERED_ARTIFACT_PARSER,
                     "artifact_parser_version":
                         REGISTERED_ARTIFACT_PARSER_VERSION,
+                    "judge_output_policy":
+                        REGISTERED_JUDGE_OUTPUT_POLICY,
+                    "structured_output_schema_sha256":
+                        REGISTERED_STRUCTURED_OUTPUT_SCHEMA_SHA256,
                 }
                 or result.get("telemetry_policy_id")
                 != REGISTERED_AGGREGATION_POLICY["telemetry"]
@@ -505,7 +464,14 @@ def operator_runtime_problem(config, observation=None):
     """Fail closed when the process is not the registered operator runtime."""
     observed = (operator_runtime_observation()
                 if observation is None else observation)
-    expected = runner.protocol_v2_runtime_pins(config)
+    # Only these three pins are physical runtime observations. Judge-output
+    # policy/schema pins are code-derived semantic identity and are bound by
+    # ``gate_identity``/schedule records, not reported by PyYAML or the image.
+    expected = {
+        "operator_image_sha256": config.get("operator_image_sha256"),
+        "artifact_parser": config.get("artifact_parser"),
+        "artifact_parser_version": config.get("artifact_parser_version"),
+    }
     for field, value in expected.items():
         if observed.get(field) != value:
             return (f"operator runtime `{field}` observed "
@@ -796,11 +762,15 @@ def real_preflight_receipt_problem(out, config, task):
     return None
 
 
-def validate_config(config):
+def validate_config(config, *, allow_pending_probe=False,
+                    allow_pending_seal=False):
     """Compare an operator config against the registered configuration.
 
     Returns (problems, warnings) — problems are fail-closed."""
-    problems = []
+    problems = pilot_registration.standard_v2_registration_problems(
+        config, allow_pending_probe=allow_pending_probe,
+        allow_pending_seal=allow_pending_seal,
+        sandbox_problem=sandbox_problem)
     warnings = []
     if config.get("protocol_version") != REGISTERED_PROTOCOL_VERSION:
         problems.append(
@@ -814,6 +784,19 @@ def validate_config(config):
             "all-zero placeholder; register the digest returned by the "
             "uncontaminated sealing session before any operator phase"
         )
+    registered_probe = pilot_registration.live_probe_binding()
+    if (registered_probe["receipt_sha256"]
+            == PENDING_LIVE_PROBE_RECEIPT_SHA256):
+        problems.append(
+            "the live judge probe receipt digest is still the temporary "
+            "all-zero placeholder; register the canonical receipt before "
+            "any operator phase")
+    if (registered_probe["execution_sha256"]
+            == PENDING_LIVE_PROBE_EXECUTION_SHA256):
+        problems.append(
+            "the live judge probe execution digest is still the temporary "
+            "all-zero placeholder; register the canonical execution before "
+            "any operator phase")
     semantic_pins = (
         (runner.PILOT_V2_PROTOCOL_VERSION,
          REGISTERED_PROTOCOL_VERSION, "protocol version"),
@@ -823,6 +806,13 @@ def validate_config(config):
          REGISTERED_ENVIRONMENT_POLICY_ID, "environment policy"),
         (runner.PILOT_V2_JUDGE_RETRY_POLICY,
          REGISTERED_JUDGE_RETRY_POLICY, "judge retry policy"),
+        (runner.PILOT_V2_JUDGE_OUTPUT_POLICY,
+         REGISTERED_JUDGE_OUTPUT_POLICY, "judge output policy"),
+        ({
+            role: judge_contract.structured_output_schema_sha256(role)
+            for role in ("scorer", "verifier")
+         }, REGISTERED_STRUCTURED_OUTPUT_SCHEMA_SHA256,
+         "structured-output schemas"),
         (runner.PILOT_V2_AGGREGATION_POLICY,
          REGISTERED_AGGREGATION_POLICY, "aggregation policy"),
     )
@@ -901,6 +891,16 @@ def validate_config(config):
     if config.get("seal_package_sha256") != REGISTERED_SEAL_PACKAGE_SHA256:
         problems.append(
             "seal_package_sha256 does not match the registered seal")
+    if (config.get("judge_live_probe_receipt_sha256")
+            != registered_probe["receipt_sha256"]):
+        problems.append(
+            "judge_live_probe_receipt_sha256 does not match the registered "
+            "live probe receipt")
+    if (config.get("judge_live_probe_execution_sha256")
+            != registered_probe["execution_sha256"]):
+        problems.append(
+            "judge_live_probe_execution_sha256 does not match the registered "
+            "live probe execution")
     # Execution fields are part of the registered configuration: the
     # runner binds whatever it is given into a fresh config digest, so
     # drifted CLI flags or abort-code classification would otherwise
@@ -947,6 +947,49 @@ def validate_config(config):
         if sandbox_issue:
             problems.append(sandbox_issue)
     return problems, warnings
+
+
+def live_probe_config_problems(config):
+    """Exact registered config gate used before the two live model calls.
+
+    A live probe necessarily precedes seal/probe digest registration, so the
+    three explicit pending-registration diagnostics are ignored.  Every
+    value mismatch remains fatal, including arm/install hashes, commands,
+    CLI/model/effort, timeout, parser/image, and sandbox wrapper identity.
+    """
+    problems, _warnings = validate_config(
+        config, allow_pending_probe=True, allow_pending_seal=True)
+    pending_fragments = (
+        "seal digest is still the temporary all-zero placeholder",
+        "probe receipt digest is still the temporary all-zero placeholder",
+        "probe execution digest is still the temporary all-zero placeholder",
+        "seal package registration is pending",
+        "live judge probe registration is pending",
+    )
+    return [problem for problem in problems
+            if not any(fragment in problem for fragment in pending_fragments)]
+
+
+def live_probe_receipt_problem(config, probe_backend=True):
+    """Revalidate the registered canonical receipt and both raw streams."""
+    registered_probe = pilot_registration.live_probe_binding()
+    if pilot_registration.live_probe_registration_pending():
+        return "the live judge probe receipt/execution registration is pending"
+    try:
+        # Local import avoids the deliberate judge_live_probe -> operator
+        # contract dependency becoming a module import cycle.
+        import judge_live_probe
+        receipt = judge_live_probe.verify_receipt(
+            config, probe_backend=probe_backend)
+        if (judge_live_probe.receipt_sha256(config)
+                != registered_probe["receipt_sha256"]):
+            return "the live judge probe receipt differs from its registration"
+        if (receipt.get("identity", {}).get("execution_sha256")
+                != registered_probe["execution_sha256"]):
+            return "the live judge probe execution differs from its registration"
+    except (OSError, runner.InfraFailure, judge_live_probe.ProbeError):
+        return "the registered live judge probe receipt/raw streams are invalid"
+    return None
 
 
 def phase_gates(args, config):
@@ -1541,6 +1584,11 @@ def main():
         sys.exit(1)
     ok("config matches the registered runtime configuration")
 
+    probe_issue = live_probe_receipt_problem(config)
+    if probe_issue:
+        fail(probe_issue)
+    ok("registered live judge probe receipt and raw streams revalidated")
+
     canonical, problem = canonical_tasks(args.tasks)
     if problem:
         fail(problem)
@@ -1586,6 +1634,9 @@ def main():
                     "step-5 operator output directory")
             except runner.InfraFailure as exc:
                 fail(str(exc))
+            probe_issue = live_probe_receipt_problem(config)
+            if probe_issue:
+                fail(probe_issue)
             print(f"\n=== phase: {name} ===")
             globals()[f"phase_{name.replace('-', '_')}"](args, config)
     finally:

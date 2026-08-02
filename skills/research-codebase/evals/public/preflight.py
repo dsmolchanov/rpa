@@ -28,11 +28,21 @@ import judge_contract  # noqa: E402
 import mock_claude  # noqa: E402
 import aggregate_results  # noqa: E402
 import seal_package  # noqa: E402
+import judge_live_probe  # noqa: E402
+import pilot_registration  # noqa: E402
 
 EXPECTED_TREE = {"input_tokens": 140, "output_tokens": 70, "tool_calls": 12}
 EXPECTED_MAIN = {"input_tokens": 100, "output_tokens": 50, "tool_calls": 7}
 EXPECTED_SUB = {"input_tokens": 40, "output_tokens": 20, "tool_calls": 5}
 SECRET = "SECRET-GROUND-TRUTH-MARKER"
+SYNTHETIC_LIVE_PROBE_RECEIPT_SHA256 = "1" * 64
+SYNTHETIC_LIVE_PROBE_EXECUTION_SHA256 = "2" * 64
+# Synthetic seals exercise production topology without weakening the public
+# pending defaults. All consumers read the same shared module dynamically.
+pilot_registration.REGISTERED_LIVE_PROBE_RECEIPT_SHA256 = (
+    SYNTHETIC_LIVE_PROBE_RECEIPT_SHA256)
+pilot_registration.REGISTERED_LIVE_PROBE_EXECUTION_SHA256 = (
+    SYNTHETIC_LIVE_PROBE_EXECUTION_SHA256)
 SEAL_SHA = None
 SEAL_PATH = None
 
@@ -262,7 +272,12 @@ def make_v2_fixture(workspace, label, repo, target_sha,
             "--child-write-file", str(root / "judge-child-survived")])
     config.update({
         "protocol_version": runner.PILOT_V2_PROTOCOL_VERSION,
+        "nonstandard_config": True,
         "max_judge_attempts": runner.PILOT_V2_MAX_JUDGE_ATTEMPTS,
+        "judge_live_probe_receipt_sha256":
+            SYNTHETIC_LIVE_PROBE_RECEIPT_SHA256,
+        "judge_live_probe_execution_sha256":
+            SYNTHETIC_LIVE_PROBE_EXECUTION_SHA256,
         "judge_backend_cmd": judge_backend_cmd,
     })
     if run_mode == "flaky-infra":
@@ -280,8 +295,13 @@ def make_v2_fixture(workspace, label, repo, target_sha,
     seal = sealed / "seal-manifest.json"
     seal.write_text(json.dumps({
         "protocol_version": runner.PILOT_V2_PROTOCOL_VERSION,
+        "nonstandard_config": True,
         "max_judge_attempts": runner.PILOT_V2_MAX_JUDGE_ATTEMPTS,
         "judge_retry_policy": runner.PILOT_V2_JUDGE_RETRY_POLICY,
+        "judge_output_policy": runner.PILOT_V2_JUDGE_OUTPUT_POLICY,
+        "judge_live_probe": runner.protocol_v2_live_probe_binding(config),
+        "pilot_runtime_registration_sha256": (
+            pilot_registration.standard_v2_runtime_registration_sha256()),
         "aggregation_policy": runner.PILOT_V2_AGGREGATION_POLICY,
         "judge_prompts": {
             role: path.relative_to(sealed).as_posix()
@@ -479,50 +499,44 @@ def make_v2_aggregation_fixture(workspace, target_sha, label="golden"):
             "identical synthetic installation\n", encoding="utf-8")
         installs[arm] = install
 
-    judge_cmd = [
-        sys.executable, str(HERE / "mock_claude.py"),
-        "--mode", "judge-auto", "--effort", "{effort}",
-    ]
+    judge_cmd = list(pilot_registration.JUDGE_BACKEND_CMD)
     config = {
         "protocol_version": runner.PILOT_V2_PROTOCOL_VERSION,
         "max_judge_attempts": runner.PILOT_V2_MAX_JUDGE_ATTEMPTS,
         "arms": {},
-        "backend_cmd": [
-            sys.executable, str(HERE / "mock_claude.py"),
-            "--mode", "normal", "--plugin-dir", "{installation}",
-            "--effort", "{effort}",
-        ],
+        "backend_cmd": list(pilot_registration.BACKEND_CMD),
         "judge_backend_cmd": judge_cmd,
-        "judge_model": "opus",
-        "judge_effort": "high",
-        "workflow_abort_exit_codes": [21],
-        "max_infra_retries": 2,
-        "timeout_seconds": 20,
+        "judge_model": pilot_registration.JUDGE_MODEL,
+        "judge_effort": pilot_registration.JUDGE_EFFORT,
+        "workflow_abort_exit_codes": list(
+            pilot_registration.WORKFLOW_ABORT_EXIT_CODES),
+        "max_infra_retries": pilot_registration.MAX_INFRA_RETRIES,
+        "timeout_seconds": pilot_registration.TIMEOUT_SECONDS,
         "nonstandard_config": False,
-        "operator_image_sha256":
-            "sha256:bbe9dbf152c933f4c3a69eae0809983cf698253a7a067fd6b73180ecc85c4975",
-        "artifact_parser": "pyyaml",
-        "artifact_parser_version": "6.0.2",
+        "operator_image_sha256": pilot_registration.OPERATOR_IMAGE_SHA256,
+        "artifact_parser": pilot_registration.ARTIFACT_PARSER,
+        "artifact_parser_version": pilot_registration.ARTIFACT_PARSER_VERSION,
+        "judge_live_probe_receipt_sha256":
+            SYNTHETIC_LIVE_PROBE_RECEIPT_SHA256,
+        "judge_live_probe_execution_sha256":
+            SYNTHETIC_LIVE_PROBE_EXECUTION_SHA256,
         "sandbox_cmd": [
-            sys.executable, str(HERE / "mock_sandbox.py"),
-            "{workdir}", "{profile}", "--",
+            sys.executable,
+            str(HERE / pilot_registration.PLATFORM_WRAPPER.get(
+                sys.platform, pilot_registration.DEFAULT_WRAPPER)),
+            *pilot_registration.SANDBOX_TAIL,
         ],
-        "drift_fetch_cmd": [
-            sys.executable, str(HERE / "mock_fetch.py"),
-            "{dest}",
-        ],
-        "backend_version": "mock-claude 1.0.0",
-        "backend_version_cmd": [
-            sys.executable, str(HERE / "mock_claude.py"), "--version",
-        ],
+        "drift_fetch_cmd": list(pilot_registration.DRIFT_FETCH_CMD),
+        "backend_version": pilot_registration.BACKEND_VERSION,
+        "backend_version_cmd": list(pilot_registration.BACKEND_VERSION_CMD),
     }
     for arm, install in installs.items():
         config["arms"][arm] = {
             "installation_dir": str(install),
-            "sha256": runner.hash_tree(install),
-            "model": "opus",
-            "effort": "high",
-            "entrypoint": "/mock-research",
+            "sha256": pilot_registration.INSTALL_SHA256[arm],
+            "model": pilot_registration.MODEL,
+            "effort": pilot_registration.EFFORT,
+            "entrypoint": pilot_registration.ENTRYPOINT,
         }
     config["arms"]["ablation"].update({
         "forbid_subagents": True,
@@ -534,8 +548,13 @@ def make_v2_aggregation_fixture(workspace, target_sha, label="golden"):
     seal = sealed / "seal-manifest.json"
     seal.write_text(json.dumps({
         "protocol_version": runner.PILOT_V2_PROTOCOL_VERSION,
+        "nonstandard_config": False,
         "max_judge_attempts": runner.PILOT_V2_MAX_JUDGE_ATTEMPTS,
         "judge_retry_policy": runner.PILOT_V2_JUDGE_RETRY_POLICY,
+        "judge_output_policy": runner.PILOT_V2_JUDGE_OUTPUT_POLICY,
+        "judge_live_probe": runner.protocol_v2_live_probe_binding(config),
+        "pilot_runtime_registration_sha256": (
+            pilot_registration.standard_v2_runtime_registration_sha256()),
         "aggregation_policy": runner.PILOT_V2_AGGREGATION_POLICY,
         "judge_prompts": {
             role: path.relative_to(sealed).as_posix()
@@ -570,6 +589,19 @@ def make_v2_aggregation_fixture(workspace, target_sha, label="golden"):
     config["seal_manifest"] = str(seal)
     config["seal_package_sha256"] = hashlib.sha256(
         seal.read_bytes()).hexdigest()
+    # This fixture is the one process-local synthetic standard round.  Its
+    # seal bytes are identical for the golden and zero-document variants;
+    # registering that digest exercises the same fail-closed direct-runner
+    # boundary without adding a runtime bypass flag.
+    registered_fixture_seal = config["seal_package_sha256"]
+    if (pilot_registration.seal_registration_pending()
+            or pilot_registration.REGISTERED_SEAL_PACKAGE_SHA256
+            == registered_fixture_seal):
+        pilot_registration.REGISTERED_SEAL_PACKAGE_SHA256 = (
+            registered_fixture_seal)
+    else:
+        raise AssertionError(
+            "synthetic standard fixtures produced different seal digests")
     config_path = root / "runner-config.json"
     config_path.write_text(
         json.dumps(config, indent=2, sort_keys=True) + "\n",
@@ -597,7 +629,7 @@ def make_v2_aggregation_fixture(workspace, target_sha, label="golden"):
         wall = {"baseline": 10, "candidate": 8, "ablation": 5}[
             entry["arm"]]
         nodes = [{
-            "model": "opus",
+            "model": config["arms"][entry["arm"]]["model"],
             "effort": "high",
             "input_tokens": tokens - 10,
             "output_tokens": 10,
@@ -731,14 +763,19 @@ def make_v2_aggregation_fixture(workspace, target_sha, label="golden"):
                 }, sort_keys=True),
                 json.dumps({
                     "type": "result",
+                    "subtype": "success",
                     "session_id": session_id,
                     "result": response,
+                    "structured_output": parsed_by_role[role],
                 }, sort_keys=True),
             ))
-            parsed_session, judge_nodes, parsed_response, stream_defects = (
-                runner._parse_judge_stream_tolerant(raw_stream)
+            (parsed_session, judge_nodes, parsed_response,
+             parsed_structured, stream_defects) = (
+                runner._parse_judge_stream_tolerant(
+                    raw_stream, require_structured_output=True)
             )
             if (parsed_session != session_id or parsed_response != response
+                    or parsed_structured != parsed_by_role[role]
                     or stream_defects):
                 raise AssertionError("invalid synthetic v2 judge stream")
             result = {
@@ -754,6 +791,10 @@ def make_v2_aggregation_fixture(workspace, target_sha, label="golden"):
                 "response_schema_version": (
                     judge_contract.RESPONSE_SCHEMA_VERSION),
                 "schema_sha256": schema_sha,
+                "judge_output_policy": (
+                    runner.PILOT_V2_JUDGE_OUTPUT_POLICY),
+                "structured_output_schema_sha256": (
+                    judge_contract.structured_output_schema_sha256(role)),
                 "judge_prompt_sha256": hashlib.sha256(
                     prompts[role].read_bytes()).hexdigest(),
                 "quality_rubric_sha256": hashlib.sha256(
@@ -799,6 +840,7 @@ def make_v2_aggregation_fixture(workspace, target_sha, label="golden"):
                 "nodes": judge_nodes,
                 "launch_defects": [],
                 "response": response,
+                "structured_output": parsed_by_role[role],
                 "response_sha256": hashlib.sha256(
                     response.encode("utf-8")).hexdigest(),
                 "schema_valid": True,
@@ -857,6 +899,9 @@ def make_v2_aggregation_fixture(workspace, target_sha, label="golden"):
                 runner.PILOT_V2_ENVIRONMENT_POLICY_ID),
             "response_schema_version": judge_contract.RESPONSE_SCHEMA_VERSION,
             "schema_sha256": schema_sha,
+            "judge_output_policy": runner.PILOT_V2_JUDGE_OUTPUT_POLICY,
+            "structured_output_schema_sha256": (
+                judge_contract.structured_output_schema_sha256(role)),
             "judge_prompt_sha256": hashlib.sha256(
                 prompts[role].read_bytes()).hexdigest(),
             "quality_rubric_sha256": hashlib.sha256(
@@ -1004,18 +1049,225 @@ def run_preflight():
          judge_external) = runner.spawn_judge_session_capped(
             judge_cmd, judge_canary, ws, os.environ.copy(), 10,
             ws / "judge-stdin-stream.jsonl",
-            runner.PILOT_V2_MAX_RAW_STREAM_BYTES)
+            runner.PILOT_V2_MAX_RAW_STREAM_BYTES,
+            structured_output_schema=(
+                judge_contract.structured_output_schema_text("scorer")))
         judge_row = json.loads(
             judge_receipt.read_text(encoding="utf-8").strip())
-        _sid, _nodes, judge_response, stream_defects = (
-            runner._parse_judge_stream_tolerant(judge_stream))
+        (_sid, _nodes, judge_response, judge_structured,
+         stream_defects) = runner._parse_judge_stream_tolerant(
+            judge_stream, require_structured_output=True)
         ok &= check(
             "capped scorer/verifier transport sends sealed input via stdin",
             not judge_defects and not stream_defects and not judge_external
             and judge_row["prompt_source"] == "stdin"
             and judge_row["prompt"] == judge_canary
             and all(judge_canary not in part for part in judge_row["argv"])
+            and judge_row["argv"].count("--json-schema") == 1
+            and judge_row["argv"][
+                judge_row["argv"].index("--json-schema") + 1]
+            == judge_contract.structured_output_schema_text("scorer")
+            and judge_structured == mock_claude.SCORER_RESPONSE
             and json.loads(judge_response)["total"] == 8.0, notes)
+
+        probe_config, _probe_install = build_config(ws, "normal")
+        probe_operator = judge_live_probe.operator_contract
+        probe_config.update({
+            "protocol_version": runner.PILOT_V2_PROTOCOL_VERSION,
+            "max_judge_attempts": runner.PILOT_V2_MAX_JUDGE_ATTEMPTS,
+            "judge_live_probe_receipt_sha256":
+                pilot_registration.REGISTERED_LIVE_PROBE_RECEIPT_SHA256,
+            "judge_live_probe_execution_sha256":
+                pilot_registration.REGISTERED_LIVE_PROBE_EXECUTION_SHA256,
+            "judge_backend_cmd": [
+                sys.executable, str(HERE / "mock_claude.py"),
+                "--mode", "judge-auto", "--effort", "{effort}",
+            ],
+            "sandbox_cmd": [
+                sys.executable,
+                str(HERE / probe_operator.PLATFORM_WRAPPER.get(
+                    sys.platform, probe_operator.DEFAULT_WRAPPER)),
+                *probe_operator.REGISTERED_SANDBOX_TAIL,
+            ],
+        })
+        probe_round = ws / judge_live_probe.ROUND_NAMESPACE
+        (probe_round / judge_live_probe.PACKAGE_NAMESPACE).mkdir(
+            parents=True)
+        probe_config["seal_manifest"] = str(
+            probe_round / judge_live_probe.PACKAGE_NAMESPACE
+            / seal_package.MANIFEST_NAME)
+        probe_config["seal_package_sha256"] = (
+            probe_operator.REGISTERED_SEAL_PACKAGE_SHA256)
+        probe_output = probe_round / judge_live_probe.OUTPUT_NAMESPACE
+        original_probe_apply_sandbox = runner.apply_sandbox
+        original_probe_pin_gate = probe_operator.live_probe_config_problems
+
+        def apply_mock_probe_sandbox(_config, command, workdir, _profile):
+            return [
+                sys.executable, str(HERE / "mock_sandbox.py"),
+                str(workdir), "--", *command,
+            ]
+
+        runner.apply_sandbox = apply_mock_probe_sandbox
+        probe_operator.live_probe_config_problems = lambda _config: []
+        try:
+            probe_receipt = judge_live_probe.run_probe(probe_config)
+        finally:
+            runner.apply_sandbox = original_probe_apply_sandbox
+        probe_reverified = judge_live_probe.verify_receipt(
+            probe_config, probe_backend=False)
+        original_probe_spawn = runner.spawn_judge_session_capped
+        replay_launches = []
+
+        def forbidden_probe_relaunch(*args, **kwargs):
+            replay_launches.append((args, kwargs))
+            raise AssertionError("existing probe namespace relaunched a model")
+
+        runner.spawn_judge_session_capped = forbidden_probe_relaunch
+        try:
+            replay_receipt = judge_live_probe.run_probe(probe_config)
+            incomplete_config = json.loads(json.dumps(probe_config))
+            incomplete_round = ws / "incomplete" / judge_live_probe.ROUND_NAMESPACE
+            (incomplete_round / judge_live_probe.PACKAGE_NAMESPACE).mkdir(
+                parents=True)
+            incomplete_config["seal_manifest"] = str(
+                incomplete_round / judge_live_probe.PACKAGE_NAMESPACE
+                / seal_package.MANIFEST_NAME)
+            (incomplete_round / judge_live_probe.OUTPUT_NAMESPACE).mkdir()
+            try:
+                judge_live_probe.run_probe(incomplete_config)
+                incomplete_namespace_rejected = False
+            except judge_live_probe.ProbeError:
+                incomplete_namespace_rejected = True
+        finally:
+            runner.spawn_judge_session_capped = original_probe_spawn
+        probe_help = subprocess.run(
+            [sys.executable, str(HERE / "judge_live_probe.py"), "--help"],
+            capture_output=True, text=True)
+        probe_out_arg = subprocess.run([
+            sys.executable, str(HERE / "judge_live_probe.py"),
+            "--config", str(ws / "unused.json"), "--out", str(ws / "x"),
+            "--verify",
+        ], capture_output=True, text=True)
+        probe_raw = (
+            probe_output / judge_live_probe.RAW_NAMES["scorer"])
+        probe_raw_bytes = probe_raw.read_bytes()
+        alternate_probe_events = [
+            json.loads(line) for line in probe_raw_bytes.decode("utf-8")
+            .splitlines() if line.strip()
+        ]
+        for event in alternate_probe_events:
+            if event.get("type") == "result":
+                alternate = dict(event["structured_output"])
+                alternate["summary"] = "Schema-valid but not the probe value."
+                event["structured_output"] = alternate
+                event["result"] = json.dumps(alternate)
+        try:
+            judge_live_probe._validated_observation(
+                "scorer", "\n".join(json.dumps(event)
+                                    for event in alternate_probe_events),
+                probe_config)
+            alternate_probe_rejected = False
+        except judge_live_probe.ProbeError:
+            alternate_probe_rejected = True
+        probe_raw.write_bytes(probe_raw_bytes + b"\n")
+        try:
+            judge_live_probe.verify_receipt(
+                probe_config, probe_backend=False)
+            probe_tamper_rejected = False
+        except judge_live_probe.ProbeError:
+            probe_tamper_rejected = True
+        finally:
+            probe_raw.write_bytes(probe_raw_bytes)
+        probe_receipt_path = probe_output / judge_live_probe.RECEIPT_NAME
+        probe_receipt_bytes = probe_receipt_path.read_bytes()
+        actual_probe_receipt_sha = hashlib.sha256(
+            probe_receipt_bytes).hexdigest()
+        actual_probe_execution_sha = probe_receipt[
+            "identity"]["execution_sha256"]
+        saved_probe_registration = (
+            pilot_registration.REGISTERED_LIVE_PROBE_RECEIPT_SHA256,
+            pilot_registration.REGISTERED_LIVE_PROBE_EXECUTION_SHA256,
+        )
+        pilot_registration.REGISTERED_LIVE_PROBE_RECEIPT_SHA256 = (
+            pilot_registration.PENDING_LIVE_PROBE_RECEIPT_SHA256)
+        pilot_registration.REGISTERED_LIVE_PROBE_EXECUTION_SHA256 = (
+            pilot_registration.PENDING_LIVE_PROBE_EXECUTION_SHA256)
+        pending_probe_registration_rejected = bool(
+            probe_operator.live_probe_receipt_problem(
+                probe_config, probe_backend=False))
+        pilot_registration.REGISTERED_LIVE_PROBE_RECEIPT_SHA256 = (
+            actual_probe_receipt_sha)
+        pilot_registration.REGISTERED_LIVE_PROBE_EXECUTION_SHA256 = (
+            actual_probe_execution_sha)
+        registered_probe_config = json.loads(json.dumps(probe_config))
+        registered_probe_config["judge_live_probe_receipt_sha256"] = (
+            actual_probe_receipt_sha)
+        registered_probe_config["judge_live_probe_execution_sha256"] = (
+            actual_probe_execution_sha)
+        registered_probe_valid = (
+            probe_operator.live_probe_receipt_problem(
+                registered_probe_config, probe_backend=False) is None)
+        probe_receipt_path.write_bytes(probe_receipt_bytes + b"\n")
+        try:
+            registered_probe_tamper_rejected = bool(
+                probe_operator.live_probe_receipt_problem(
+                    registered_probe_config, probe_backend=False))
+        finally:
+            probe_receipt_path.write_bytes(probe_receipt_bytes)
+            (pilot_registration.REGISTERED_LIVE_PROBE_RECEIPT_SHA256,
+             pilot_registration.REGISTERED_LIVE_PROBE_EXECUTION_SHA256) = (
+                saved_probe_registration)
+        original_probe_file_sha256 = judge_live_probe._file_sha256
+
+        def drift_probe_code_digest(path):
+            if Path(path).resolve() == Path(judge_live_probe.__file__).resolve():
+                return "0" * 64
+            return original_probe_file_sha256(path)
+
+        judge_live_probe._file_sha256 = drift_probe_code_digest
+        try:
+            judge_live_probe.verify_receipt(
+                probe_config, probe_backend=False)
+            probe_code_drift_rejected = False
+        except judge_live_probe.ProbeError:
+            probe_code_drift_rejected = True
+        finally:
+            judge_live_probe._file_sha256 = original_probe_file_sha256
+            probe_operator.live_probe_config_problems = original_probe_pin_gate
+        ok &= check(
+            "pre-seal live probe covers both structured judge roles once",
+            probe_receipt == probe_reverified
+            and set(probe_receipt["observations"])
+            == {"scorer", "verifier"}
+            and probe_receipt["identity"]["judge_output_policy"]
+            == runner.PILOT_V2_JUDGE_OUTPUT_POLICY
+            and all(
+                probe_receipt["observations"][role][
+                    "structured_output_schema_sha256"]
+                == judge_contract.structured_output_schema_sha256(role)
+                for role in ("scorer", "verifier"))
+            and all(
+                observation["backend_version_observed"]
+                == probe_config["backend_version"]
+                for observation in probe_receipt["observations"].values())
+            and probe_receipt["identity"]["runtime_pins"]
+            == runner.protocol_v2_runtime_pins(probe_config)
+            and probe_receipt["identity"]["probe_sha256"]
+            == original_probe_file_sha256(judge_live_probe.__file__)
+            and probe_receipt["identity"]["sandbox_wrapper_sha256"]
+            == original_probe_file_sha256(probe_config["sandbox_cmd"][1])
+            and replay_receipt == probe_receipt and not replay_launches
+            and incomplete_namespace_rejected
+            and probe_help.returncode == 0 and "--out" not in probe_help.stdout
+            and probe_out_arg.returncode == 2
+            and "unrecognized arguments: --out" in probe_out_arg.stderr
+            and pending_probe_registration_rejected
+            and registered_probe_valid
+            and registered_probe_tamper_rejected
+            and alternate_probe_rejected and probe_tamper_rejected
+            and probe_code_drift_rejected,
+            notes)
 
         fetch_root = ws / "stdin-fetch-root"
         (fetch_root / "source").mkdir(parents=True)
@@ -1098,11 +1350,18 @@ def run_preflight():
             scorer_json, "scorer")
         verifier_parsed = judge_contract.validate_response(
             verifier_json, "verifier")
+        scorer_rationale_note = json.loads(scorer_json)
+        scorer_rationale_note["coverage"]["rationale_note"] = "forbidden"
+        scorer_code_context = json.loads(scorer_json)
+        scorer_code_context["coverage"]["code_context"] = "forbidden"
         invalid_judge_responses = [
             ("scorer", f"```json\n{scorer_json}\n```"),
+            ("scorer", "analysis before the JSON object"),
             ("scorer", '{"summary":"a","summary":"b"}'),
             ("scorer", scorer_json.replace('3.5', 'NaN', 1)),
             ("scorer", scorer_json[:-1] + ',"extra":1}'),
+            ("scorer", json.dumps(scorer_rationale_note)),
+            ("scorer", json.dumps(scorer_code_context)),
             ("scorer", scorer_json.replace('"total": 8.0',
                                              '"total": 8.25')),
             ("scorer", scorer_json.replace('"score": 3.5',
@@ -1119,14 +1378,151 @@ def run_preflight():
                 contract_rejects = False
             except judge_contract.JudgeResponseError:
                 pass
+
+        structured_schemas = {
+            role: judge_contract.structured_output_schema(role)
+            for role in ("scorer", "verifier")
+        }
+        unsupported_structural_keywords = {
+            "minimum", "maximum", "multipleOf", "minLength", "minItems",
+        }
+
+        def structural_nodes(value):
+            if isinstance(value, dict):
+                yield value
+                for child in value.values():
+                    yield from structural_nodes(child)
+            elif isinstance(value, list):
+                for child in value:
+                    yield from structural_nodes(child)
+
+        structural_nodes_by_role = {
+            role: list(structural_nodes(schema))
+            for role, schema in structured_schemas.items()
+        }
+        structural_shape_ok = (
+            set(structured_schemas["scorer"]["properties"])
+            == set(judge_contract.SCORER_KEYS)
+            and set(structured_schemas["scorer"]["properties"][
+                "coverage"]["properties"])
+            == set(judge_contract.SCORER_COMPONENT_KEYS)
+            and set(structured_schemas["verifier"]["properties"])
+            == set(judge_contract.VERIFIER_KEYS)
+            and set(structured_schemas["verifier"]["properties"][
+                "claim_ledger"]["items"]["properties"])
+            == set(judge_contract.CLAIM_KEYS)
+            and all(
+                node.get("additionalProperties") is False
+                for nodes in structural_nodes_by_role.values()
+                for node in nodes if node.get("type") == "object")
+            and all(
+                not unsupported_structural_keywords.intersection(node)
+                for nodes in structural_nodes_by_role.values()
+                for node in nodes)
+        )
+        structural_digests = {
+            role: judge_contract.structured_output_schema_sha256(role)
+            for role in ("scorer", "verifier")
+        }
+        structural_binding_ok = (
+            structural_digests["scorer"] != structural_digests["verifier"]
+            and all(
+                hashlib.sha256(
+                    judge_contract.structured_output_schema_text(role)
+                    .encode("utf-8")
+                ).hexdigest() == digest
+                and judge_contract.contract_schema(role)[
+                    "output_contract"][
+                        "structured_output_schema_sha256"] == digest
+                and judge_contract.contract_schema(role)[
+                    "output_contract"][
+                        "structured_output_policy_id"]
+                == judge_contract.STRUCTURED_OUTPUT_POLICY_ID
+                for role, digest in structural_digests.items())
+        )
+        invalid_structural_role_rejected = False
+        try:
+            judge_contract.structured_output_schema("reviewer")
+        except judge_contract.JudgeResponseError:
+            invalid_structural_role_rejected = True
+        structured_override_rejected = True
+        for override in (
+            ["claude", "--json-schema", "{}"],
+            ["claude", "--json-schema={}"],
+        ):
+            try:
+                runner.refuse_v2_structured_output_override(override)
+                structured_override_rejected = False
+            except runner.InfraFailure:
+                pass
+
+        stream_node = json.dumps({
+            "type": "node", "model": "opus", "effort": "high",
+            "tool_calls": 0,
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        })
+
+        def structured_stream(*result_events):
+            return "\n".join((stream_node, *(
+                json.dumps(event) for event in result_events)))
+
+        valid_structured_event = {
+            "type": "result", "subtype": "success",
+            "session_id": "contract-pair", "result": scorer_json,
+            "structured_output": json.loads(scorer_json),
+        }
+        malformed_streams = [
+            structured_stream({
+                key: value for key, value in valid_structured_event.items()
+                if key != "structured_output"
+            }),
+            structured_stream({
+                **valid_structured_event, "structured_output": []}),
+            structured_stream({
+                **valid_structured_event, "subtype": "error"}),
+            structured_stream(valid_structured_event,
+                              valid_structured_event),
+        ]
+        malformed_streams_rejected = all(
+            runner._parse_judge_stream_tolerant(
+                stream, require_structured_output=True)[4]
+            for stream in malformed_streams
+        )
+        mismatched_structured = json.loads(scorer_json)
+        mismatched_structured["summary"] = "different but individually valid"
+        _parsed_pair, mismatch_defects = (
+            runner._validate_v2_judge_response_pair(
+                scorer_json, mismatched_structured, "scorer"))
+        _parsed_missing, missing_pair_defects = (
+            runner._validate_v2_judge_response_pair(
+                scorer_json, None, "scorer"))
         ok &= check(
             "protocol-v2 judge schemas fail closed on malformed semantics",
             scorer_parsed["total"] == 8
             and verifier_parsed["supported_claims"] == 1
             and contract_rejects
             and judge_contract.contract_schema("scorer")[
+                "output_contract"]["exact_object_keys"]["$.coverage"]
+            == ["score", "rationale"]
+            and judge_contract.contract_schema("verifier")[
+                "output_contract"]["exact_object_keys"][
+                    "$.claim_ledger[]"]
+            == list(judge_contract.CLAIM_KEYS)
+            and judge_contract.contract_schema("scorer")[
                 "response_schema_version"]
             == judge_contract.RESPONSE_SCHEMA_VERSION,
+            notes)
+        ok &= check(
+            "public structured schemas deterministically constrain exact keys",
+            structural_shape_ok and structural_binding_ok
+            and invalid_structural_role_rejected
+            and structured_override_rejected,
+            notes)
+        ok &= check(
+            "protocol-v2 dual judge outputs fail closed on envelope mismatch",
+            malformed_streams_rejected
+            and any("differs" in defect for defect in mismatch_defects)
+            and any("missing" in defect for defect in missing_pair_defects),
             notes)
 
         environment_canary_name = "RPA_UNRELATED_SECRET_CANARY"
@@ -1441,7 +1837,7 @@ def run_preflight():
                 "result": "{}",
             }),
         ))
-        (_sid, _nodes, _response,
+        (_sid, _nodes, _response, _structured,
          judge_accounting_defects) = runner._parse_judge_stream_tolerant(
              judge_bad_accounting_stream)
         judge_bad_assistant_stream = "\n".join((
@@ -1460,7 +1856,7 @@ def run_preflight():
                 "result": "{}",
             }),
         ))
-        (_sid, _nodes, _response,
+        (_sid, _nodes, _response, _structured,
          judge_assistant_defects) = runner._parse_judge_stream_tolerant(
              judge_bad_assistant_stream)
         ok &= check(
@@ -2027,6 +2423,10 @@ def run_preflight():
             "operator_image_sha256": "sha256:" + "a" * 64,
             "artifact_parser": "pyyaml",
             "artifact_parser_version": "6.0.2",
+            "judge_live_probe_receipt_sha256":
+                SYNTHETIC_LIVE_PROBE_RECEIPT_SHA256,
+            "judge_live_probe_execution_sha256":
+                SYNTHETIC_LIVE_PROBE_EXECUTION_SHA256,
         })
         runtime_cfg_path.write_text(
             json.dumps(runtime_cfg), encoding="utf-8")
@@ -3084,7 +3484,13 @@ def run_preflight():
             and seal_registration_recorded
             and all(h in plan_text
                     for h in step5.REGISTERED_INSTALL_SHA256.values())
-            and step5.REGISTERED_BACKEND_VERSION in plan_text)
+            and step5.REGISTERED_BACKEND_VERSION in plan_text
+            and step5.REGISTERED_JUDGE_OUTPUT_POLICY["id"] in plan_text
+            and all(
+                digest in plan_text
+                for digest in (
+                    step5.REGISTERED_STRUCTURED_OUTPUT_SCHEMA_SHA256
+                ).values()))
         good_cfg = {
             "protocol_version": step5.REGISTERED_PROTOCOL_VERSION,
             "nonstandard_config": False,
@@ -3120,6 +3526,10 @@ def run_preflight():
             "workflow_abort_exit_codes": list(
                 step5.REGISTERED_ABORT_EXIT_CODES),
             "seal_package_sha256": step5.REGISTERED_SEAL_PACKAGE_SHA256,
+            "judge_live_probe_receipt_sha256":
+                pilot_registration.REGISTERED_LIVE_PROBE_RECEIPT_SHA256,
+            "judge_live_probe_execution_sha256":
+                pilot_registration.REGISTERED_LIVE_PROBE_EXECUTION_SHA256,
             "backend_version": step5.REGISTERED_BACKEND_VERSION,
             "timeout_seconds": step5.REGISTERED_TIMEOUT_SECONDS,
             "max_infra_retries": step5.REGISTERED_MAX_INFRA_RETRIES,
@@ -3128,6 +3538,33 @@ def run_preflight():
             "judge_effort": step5.REGISTERED_JUDGE_EFFORT,
             "drift_fetch_cmd": list(step5.REGISTERED_DRIFT_FETCH_CMD),
         }
+        pin_probe_round = (
+            ws / "registered-pin-probe" / judge_live_probe.ROUND_NAMESPACE)
+        (pin_probe_round / judge_live_probe.PACKAGE_NAMESPACE).mkdir(
+            parents=True)
+        good_cfg["seal_manifest"] = str(
+            pin_probe_round / judge_live_probe.PACKAGE_NAMESPACE
+            / seal_package.MANIFEST_NAME)
+        saved_registration_for_probe_gate = (
+            pilot_registration.REGISTERED_LIVE_PROBE_RECEIPT_SHA256,
+            pilot_registration.REGISTERED_LIVE_PROBE_EXECUTION_SHA256,
+        )
+        pilot_registration.REGISTERED_LIVE_PROBE_RECEIPT_SHA256 = (
+            pilot_registration.PENDING_LIVE_PROBE_RECEIPT_SHA256)
+        pilot_registration.REGISTERED_LIVE_PROBE_EXECUTION_SHA256 = (
+            pilot_registration.PENDING_LIVE_PROBE_EXECUTION_SHA256)
+        pending_probe_cfg = json.loads(json.dumps(good_cfg))
+        pending_probe_cfg["judge_live_probe_receipt_sha256"] = (
+            pilot_registration.PENDING_LIVE_PROBE_RECEIPT_SHA256)
+        pending_probe_cfg["judge_live_probe_execution_sha256"] = (
+            pilot_registration.PENDING_LIVE_PROBE_EXECUTION_SHA256)
+        try:
+            pending_registration_authorizes_probe = not (
+                step5.live_probe_config_problems(pending_probe_cfg))
+        finally:
+            (pilot_registration.REGISTERED_LIVE_PROBE_RECEIPT_SHA256,
+             pilot_registration.REGISTERED_LIVE_PROBE_EXECUTION_SHA256) = (
+                saved_registration_for_probe_gate)
         exact_runtime_observation = {
             "operator_image_sha256":
                 step5.REGISTERED_OPERATOR_IMAGE_SHA256,
@@ -3145,18 +3582,110 @@ def run_preflight():
             step5.REGISTERED_SEAL_PACKAGE_SHA256
             == step5.PENDING_SEAL_PACKAGE_SHA256)
 
+        def pending_registration_problem(problem):
+            return ("all-zero placeholder" in problem
+                    or "registration is pending" in problem)
+
         def non_pending_problems(config):
             return [
                 problem for problem in step5.validate_config(config)[0]
-                if "all-zero placeholder" not in problem
+                if not pending_registration_problem(problem)
             ]
 
         registration_state_ok = (
             not non_pending_problems(good_cfg)
             and bool(clean_problems) == pending_registration
             and (not clean_problems
-                 or all("all-zero placeholder" in problem
+                 or all(pending_registration_problem(problem)
                         for problem in clean_problems)))
+        shared_registration_consistent = (
+            runner.PILOT_V2_PROTOCOL_VERSION
+            == seal_package.PROTOCOL_VERSION
+            == step5.REGISTERED_PROTOCOL_VERSION
+            == pilot_registration.PROTOCOL_VERSION
+            and runner.DEFAULT_MAX_INFRA_RETRIES
+            == step5.REGISTERED_MAX_INFRA_RETRIES
+            == pilot_registration.MAX_INFRA_RETRIES
+            and runner.PILOT_V2_MAX_JUDGE_ATTEMPTS
+            == seal_package.MAX_JUDGE_ATTEMPTS
+            == step5.REGISTERED_MAX_JUDGE_ATTEMPTS
+            == pilot_registration.MAX_JUDGE_ATTEMPTS
+            and runner.PILOT_V2_JUDGE_OUTPUT_POLICY
+            is seal_package.JUDGE_OUTPUT_POLICY
+            is step5.REGISTERED_JUDGE_OUTPUT_POLICY
+            is pilot_registration.JUDGE_OUTPUT_POLICY
+            and step5.REGISTERED_INSTALL_SHA256
+            is pilot_registration.INSTALL_SHA256)
+        fake_python_dir = ws / "fake-python-interpreter"
+        fake_python_dir.mkdir()
+        fake_python = fake_python_dir / "python3"
+        fake_python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        fake_python.chmod(0o755)
+        fake_sandbox_cmd = list(good_cfg["sandbox_cmd"])
+        fake_sandbox_cmd[0] = str(fake_python)
+        fake_python_rejected = bool(
+            pilot_registration.sandbox_registration_problem(
+                fake_sandbox_cmd))
+
+        saved_shared_seal = (
+            pilot_registration.REGISTERED_SEAL_PACKAGE_SHA256)
+        direct_registered_seal = "5" * 64
+        pilot_registration.REGISTERED_SEAL_PACKAGE_SHA256 = (
+            direct_registered_seal)
+        direct_drift_cfg = json.loads(json.dumps(good_cfg))
+        direct_drift_cfg["seal_package_sha256"] = direct_registered_seal
+        direct_drift_cfg["arms"]["candidate"]["sha256"] = "6" * 64
+        direct_drift_out = ws / "direct-registration-drift-output"
+        direct_failures = []
+        try:
+            for operation in (
+                    lambda: runner.make_schedule(
+                        direct_drift_cfg, [str(ws / "must-not-read.md")],
+                        3, runner.PILOT_V2_SCHEDULE_SEED),
+                    lambda: runner.run_schedule(
+                        direct_drift_cfg, ws / "must-not-read-schedule.json",
+                        {}, direct_drift_out, [str(ws / "must-not-read.md")]),
+                    lambda: runner.score(
+                        direct_drift_cfg, [], ws / "must-not-read-prompt.md",
+                        direct_drift_out,
+                        scoring_seed=runner.PILOT_V2_SCORER_SEED),
+            ):
+                try:
+                    operation()
+                    direct_failures.append(False)
+                except runner.InfraFailure as exc:
+                    direct_failures.append(
+                        "standard protocol-v2 runtime" in str(exc))
+        finally:
+            pilot_registration.REGISTERED_SEAL_PACKAGE_SHA256 = (
+                saved_shared_seal)
+        direct_drift_prelaunch = (
+            all(direct_failures) and not direct_drift_out.exists())
+        drifted_probe_config = json.loads(json.dumps(good_cfg))
+        drifted_probe_config["judge_model"] = "unregistered-judge"
+        original_live_probe_spawn = runner.spawn_judge_session_capped
+        pin_drift_launches = []
+
+        def forbidden_pin_drift_launch(*args, **kwargs):
+            pin_drift_launches.append((args, kwargs))
+            raise AssertionError("drifted live probe config launched a model")
+
+        runner.spawn_judge_session_capped = forbidden_pin_drift_launch
+        try:
+            try:
+                judge_live_probe.run_probe(drifted_probe_config)
+                pin_drift_rejected = False
+            except judge_live_probe.ProbeError:
+                pin_drift_rejected = True
+        finally:
+            runner.spawn_judge_session_capped = original_live_probe_spawn
+        ok &= check(
+            "live judge probe rejects registered-pin drift before model spawn",
+            pending_registration_authorizes_probe
+            and pin_drift_rejected and not pin_drift_launches
+            and not os.path.lexists(
+                pin_probe_round / judge_live_probe.OUTPUT_NAMESPACE),
+            notes)
         drifts = []
         for mutate in (
             lambda c: c.update(protocol_version=1),
@@ -3171,6 +3700,8 @@ def run_preflight():
                 schedule_tasks=list(reversed(
                     step5.REGISTERED_ABLATION_TASKS))),
             lambda c: c.update(seal_package_sha256="f" * 64),
+            lambda c: c.update(judge_live_probe_receipt_sha256="f" * 64),
+            lambda c: c.update(judge_live_probe_execution_sha256="f" * 64),
             lambda c: c.update(backend_version="9.9.9"),
             lambda c: c.update(nonstandard_config=True),
             lambda c: c.pop("sandbox_cmd"),
@@ -3207,6 +3738,8 @@ def run_preflight():
                 ("operator_image_sha256", "sha256:" + "0" * 64),
                 ("artifact_parser", "other-parser"),
                 ("artifact_parser_version", "6.0.3"),
+                ("judge_live_probe_receipt_sha256", "3" * 64),
+                ("judge_live_probe_execution_sha256", "4" * 64),
             )
         )
 
@@ -3775,15 +4308,35 @@ def run_preflight():
                 aggregate_command)
             and "scoring-verifier-all-docs-manifest.json" in " ".join(
                 aggregate_command))
+        step5_freeze_proofs = {
+            "constants_in_plan": constants_in_plan,
+            "shared_registration": shared_registration_consistent,
+            "sandbox_interpreter_behavior": fake_python_rejected,
+            "registration_state": registration_state_ok,
+            "clean_warnings": not clean_warnings,
+            "config_drifts": all(drifts),
+            "missing_receipt": bool(missing_receipt),
+            "fresh_receipt": not fresh_receipt,
+            "stale_receipt": bool(stale_receipt),
+            "partial_gates": bool(partial_gates),
+            "missing_transcripts": bool(no_transcripts),
+            "tampered_transcript": bool(tampered),
+            "nonpassing_transcript": bool(not_passing),
+            "canonical_tasks": canonical_ok,
+            "ablation_scope": ablation_scope_ok,
+            "repo_pin_mapping": pin_mapping_ok,
+            "real_preflight_gate": real_gate_ok,
+        }
         ok &= check(
             "step-5 driver restates the freeze record and refuses drift",
-            constants_in_plan and registration_state_ok
-            and not clean_warnings and all(drifts)
-            and missing_receipt and not fresh_receipt
-            and stale_receipt and partial_gates and no_transcripts
-            and tampered and not_passing and canonical_ok
-            and ablation_scope_ok and pin_mapping_ok and real_gate_ok,
-            notes)
+            all(step5_freeze_proofs.values()), notes,
+            "failed=" + ",".join(
+                name for name, passed in step5_freeze_proofs.items()
+                if not passed))
+
+        ok &= check(
+            "direct standard-v2 drift fails before output or backend launch",
+            direct_drift_prelaunch, notes)
 
         ok &= check(
             "step-5 v2 handoff derives one all-doc population and two roles",
@@ -5933,6 +6486,58 @@ def run_preflight():
             v2_judge_out / "scoring-scorer-all-docs-manifest.json")
         v2_verifier_manifest = (
             v2_judge_out / "scoring-verifier-all-docs-manifest.json")
+        scorer_manifest_doc = json.loads(v2_scorer_manifest.read_text(
+            encoding="utf-8"))
+        verifier_manifest_doc = json.loads(v2_verifier_manifest.read_text(
+            encoding="utf-8"))
+        judge_private_materials = [
+            v2_valid["prompts"][role].read_text(encoding="utf-8")
+            for role in ("scorer", "verifier")
+        ] + [
+            v2_valid["rubric"].read_text(encoding="utf-8"),
+            v2_valid["context"].read_text(encoding="utf-8"),
+            v2_valid["docs"][0].read_text(encoding="utf-8"),
+        ]
+        role_transport_rows = dict(zip(
+            ("scorer", "verifier"), verifier_transport_rows,
+            strict=True))
+        transport_schema_ok = all(
+            row["argv"].count("--json-schema") == 1
+            and row["argv"][row["argv"].index("--json-schema") + 1]
+            == judge_contract.structured_output_schema_text(role)
+            and all(
+                material not in argv_part
+                for material in judge_private_materials
+                for argv_part in row["argv"])
+            for role, row in role_transport_rows.items()
+        )
+        prompt_suffix_ok = all(
+            prompt.endswith(judge_contract.output_contract_reminder(role))
+            and prompt.rfind(
+                v2_valid["docs"][0].read_text(encoding="utf-8"))
+            < prompt.rfind(judge_contract.output_contract_reminder(role))
+            for role, prompt in expected_composed_prompts.items()
+        )
+        result_pin_ok = True
+        for role, batch, results in (
+            ("scorer", scorer_manifest_doc, v2_scorer),
+            ("verifier", verifier_manifest_doc, v2_verifier),
+        ):
+            digest = judge_contract.structured_output_schema_sha256(role)
+            result = results[0]
+            result_pin_ok &= (
+                batch["identity"].get("judge_output_policy")
+                == runner.PILOT_V2_JUDGE_OUTPUT_POLICY
+                and batch["identity"].get(
+                    "structured_output_schema_sha256") == digest
+                and result.get("judge_output_policy")
+                == runner.PILOT_V2_JUDGE_OUTPUT_POLICY
+                and result.get("structured_output_schema_sha256") == digest
+                and result.get("structured_output")
+                == result.get("parsed_response")
+                and not runner._validate_v2_judge_response_pair(
+                    result["response"], result["structured_output"], role)[1]
+            )
         ok &= check(
             "protocol-v2 scorer and verifier accept sealed all-docs JSON",
             len(v2_scorer) == len(v2_verifier) == 1
@@ -5962,10 +6567,9 @@ def run_preflight():
                 for row in verifier_transport_rows
                 for argv_part in row["argv"]
             )
-            and json.loads(v2_scorer_manifest.read_text(
-                encoding="utf-8"))["complete"] is True
-            and json.loads(v2_verifier_manifest.read_text(
-                encoding="utf-8"))["complete"] is True,
+            and transport_schema_ok and prompt_suffix_ok and result_pin_ok
+            and scorer_manifest_doc["complete"] is True
+            and verifier_manifest_doc["complete"] is True,
             notes)
 
         # Scoring re-audits the completed run namespace before electing a
@@ -6499,6 +7103,13 @@ def run_preflight():
                 path.name: hashlib.sha256(path.read_bytes()).hexdigest()
                 for path in attempt_paths
             }
+            retry_transport_rows = [
+                json.loads(line)
+                for line in v2_retry["transport_receipt"].read_text(
+                    encoding="utf-8").splitlines()
+            ]
+            scorer_structured_digest = (
+                judge_contract.structured_output_schema_sha256("scorer"))
             retry_two_ok = (
                 len(retry_results) == 1
                 and retry_results[0].get("attempt") == 2
@@ -6511,6 +7122,20 @@ def run_preflight():
                 and attempt_records[1].get("schema_valid") is True
                 and attempt_records[1].get("validation", {}).get("valid")
                 is True
+                and "parsed_response" not in attempt_records[0]
+                and attempt_records[1].get("structured_output")
+                == attempt_records[1].get("parsed_response")
+                and all(
+                    record.get("judge_output_policy")
+                    == runner.PILOT_V2_JUDGE_OUTPUT_POLICY
+                    and record.get("structured_output_schema_sha256")
+                    == scorer_structured_digest
+                    for record in attempt_records)
+                and len(retry_transport_rows) == 2
+                and retry_transport_rows[0]["prompt"]
+                == retry_transport_rows[1]["prompt"]
+                and retry_transport_rows[0]["prompt"].endswith(
+                    judge_contract.output_contract_reminder("scorer"))
                 and canonical_record == attempt_records[1]
                 and retry_state.read_text(encoding="utf-8") == "2"
             )
@@ -6545,6 +7170,81 @@ def run_preflight():
         ok &= check(
             "protocol-v2 valid orphan attempt adopted without relaunch",
             orphan_ok, notes)
+
+        # A stream can remain well below the byte cap yet exceed the JSON
+        # decoder's nesting limit. That is model/transport output, not a
+        # harness crash: preserve it as an invalid attempt, consume exactly
+        # one retry, and clear the pending claim after the record is durable.
+        v2_deep_stream = make_v2_fixture(
+            ws, "deep-json-stream", repo_v2, sha_v2,
+            run_mode="normal", judge_mode="judge-auto")
+        deep_stream_out = v2_deep_stream["root"] / "judges"
+        deep_json_line = "[" * 10000 + "0" + "]" * 10000
+        deep_response = json.dumps(mock_claude.SCORER_RESPONSE)
+        deep_stream_text = "\n".join((
+            json.dumps({
+                "type": "node", "model": "opus", "effort": "high",
+                "tool_calls": 0,
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            }),
+            deep_json_line,
+            json.dumps({
+                "type": "result", "subtype": "success",
+                "session_id": "deep-json-attempt",
+                "result": deep_response,
+                "structured_output": mock_claude.SCORER_RESPONSE,
+            }),
+        ))
+        original_capped_judge = runner.spawn_judge_session_capped
+        deep_launches = 0
+
+        def deep_first_capped_judge(*args, **kwargs):
+            nonlocal deep_launches
+            deep_launches += 1
+            if deep_launches == 1:
+                encoded = deep_stream_text.encode("utf-8")
+                return (
+                    deep_stream_text, len(encoded),
+                    hashlib.sha256(encoded).hexdigest(), [], False,
+                )
+            return original_capped_judge(*args, **kwargs)
+
+        runner.spawn_judge_session_capped = deep_first_capped_judge
+        try:
+            deep_results = score_v2_fixture(
+                v2_deep_stream, "scorer", deep_stream_out)
+        finally:
+            runner.spawn_judge_session_capped = original_capped_judge
+        deep_manifest = json.loads((
+            deep_stream_out / "scoring-scorer-all-docs-manifest.json"
+        ).read_text(encoding="utf-8"))
+        deep_scoring_id = deep_manifest["scoring_id"]
+        deep_attempt_paths = sorted(deep_stream_out.glob(
+            f"judge-{deep_scoring_id}-0-attempt-*.json"))
+        deep_attempts = [
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in deep_attempt_paths
+        ]
+        deep_invalid_defects = (
+            deep_attempts[0].get("validation", {}).get("defects", [])
+            if len(deep_attempts) == 2 else [])
+        ok &= check(
+            "deep malformed judge JSON records invalid attempt then retries",
+            deep_launches == 2
+            and len(deep_results) == 1
+            and deep_results[0].get("attempt") == 2
+            and len(deep_attempts) == 2
+            and deep_attempts[0].get("schema_valid") is False
+            and deep_attempts[0].get("transport_invalid") is True
+            and deep_attempts[0].get("raw_stream") == deep_stream_text
+            and any("maximum recursion depth" in defect
+                    for defect in deep_invalid_defects)
+            and deep_attempts[1].get("schema_valid") is True
+            and deep_manifest.get("complete") is True
+            and not list(deep_stream_out.glob("*.pending"))
+            and not list(deep_stream_out.glob("*-terminal-invalid.json"))
+            and not list(deep_stream_out.glob("*-exhausted.json")),
+            notes)
 
         v2_exhausted = make_v2_fixture(
             ws, "exhausted", repo_v2, sha_v2,
@@ -6588,6 +7288,18 @@ def run_preflight():
                     for path in exhausted_attempts)
             and terminal.get("status") == "exhausted"
             and terminal.get("max_attempts") == 3
+            and terminal.get("judge_output_policy")
+            == runner.PILOT_V2_JUDGE_OUTPUT_POLICY
+            and terminal.get("structured_output_schema_sha256")
+            == judge_contract.structured_output_schema_sha256("scorer")
+            and all(
+                json.loads(path.read_text(encoding="utf-8")).get(
+                    "judge_output_policy")
+                == runner.PILOT_V2_JUDGE_OUTPUT_POLICY
+                and json.loads(path.read_text(encoding="utf-8")).get(
+                    "structured_output_schema_sha256")
+                == judge_contract.structured_output_schema_sha256("scorer")
+                for path in exhausted_attempts)
             and len(terminal.get("attempt_response_sha256", [])) == 3
             and exhausted_after == exhausted_bytes
             and not list(exhausted_out.glob(
@@ -6879,6 +7591,133 @@ def run_preflight():
         except seal_package.SealError:
             extra_file_rejected = True
         extra_package_file.unlink()
+        policy_package = (
+            aggregate_fixture["root"] / "judge-policy-drift-package")
+        policy_package.mkdir()
+        for relative in source_seal["files"]:
+            source = aggregate_fixture["seal"].parent / relative
+            destination = policy_package / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(source.read_bytes())
+        policy_metadata_doc = {
+            key: value for key, value in source_seal.items()
+            if key != "files"
+        }
+        policy_metadata_doc["judge_output_policy"] = {
+            **runner.PILOT_V2_JUDGE_OUTPUT_POLICY,
+            "result_binding": "structured-output-only",
+        }
+        policy_metadata = (
+            aggregate_fixture["root"] / "judge-policy-drift-metadata.json")
+        policy_metadata.write_text(
+            json.dumps(policy_metadata_doc, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        try:
+            seal_package.build_package(policy_package, policy_metadata)
+            judge_policy_drift_rejected = False
+        except seal_package.SealError:
+            judge_policy_drift_rejected = True
+        runtime_metadata_doc = {
+            key: value for key, value in source_seal.items()
+            if key != "files"
+        }
+        runtime_metadata_doc["judge_config"] = {
+            **runtime_metadata_doc["judge_config"],
+            "judge_model": "self-consistent-but-unregistered",
+        }
+        runtime_metadata = (
+            aggregate_fixture["root"] / "runtime-drift-metadata.json")
+        runtime_metadata.write_text(
+            json.dumps(runtime_metadata_doc, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8")
+        try:
+            seal_package.build_package(policy_package, runtime_metadata)
+            runtime_registration_drift_rejected = False
+        except seal_package.SealError:
+            runtime_registration_drift_rejected = True
+        missing_probe_package = (
+            aggregate_fixture["root"] / "missing-live-probe-package")
+        missing_probe_package.mkdir()
+        for relative in source_seal["files"]:
+            source = aggregate_fixture["seal"].parent / relative
+            destination = missing_probe_package / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(source.read_bytes())
+        missing_probe_metadata_doc = {
+            key: value for key, value in source_seal.items()
+            if key not in {"files", "judge_live_probe"}
+        }
+        missing_probe_metadata = (
+            aggregate_fixture["root"] / "missing-live-probe-metadata.json")
+        missing_probe_metadata.write_text(
+            json.dumps(missing_probe_metadata_doc, indent=2,
+                       sort_keys=True) + "\n",
+            encoding="utf-8")
+        try:
+            seal_package.build_package(
+                missing_probe_package, missing_probe_metadata)
+            missing_probe_binding_rejected = False
+        except seal_package.SealError:
+            missing_probe_binding_rejected = True
+        forged_probe_binding = {
+            "probe_version": pilot_registration.LIVE_PROBE_VERSION,
+            "receipt_sha256": "3" * 64,
+            "execution_sha256": "4" * 64,
+        }
+        forged_probe_metadata_doc = {
+            key: value for key, value in source_seal.items()
+            if key != "files"
+        }
+        forged_probe_metadata_doc["judge_live_probe"] = forged_probe_binding
+        missing_probe_metadata.write_text(
+            json.dumps(forged_probe_metadata_doc, indent=2,
+                       sort_keys=True) + "\n", encoding="utf-8")
+        try:
+            seal_package.build_package(
+                missing_probe_package, missing_probe_metadata)
+            forged_probe_sealer_rejected = False
+        except seal_package.SealError:
+            forged_probe_sealer_rejected = True
+        drifted_probe_seal_doc = json.loads(json.dumps(source_seal))
+        drifted_probe_seal_doc["judge_live_probe"] = forged_probe_binding
+        forged_probe_config = json.loads(json.dumps(
+            aggregate_fixture["config"]))
+        forged_probe_config["judge_live_probe_receipt_sha256"] = "3" * 64
+        forged_probe_config["judge_live_probe_execution_sha256"] = "4" * 64
+        try:
+            runner.validate_sealed_judge_config(
+                forged_probe_config, drifted_probe_seal_doc,
+                aggregate_fixture["seal"], source_seal["files"])
+            drifted_probe_binding_rejected = False
+        except runner.InfraFailure as exc:
+            drifted_probe_binding_rejected = "public" in str(exc)
+        saved_public_probe_registration = (
+            pilot_registration.REGISTERED_LIVE_PROBE_RECEIPT_SHA256,
+            pilot_registration.REGISTERED_LIVE_PROBE_EXECUTION_SHA256,
+        )
+        pilot_registration.REGISTERED_LIVE_PROBE_RECEIPT_SHA256 = (
+            pilot_registration.PENDING_LIVE_PROBE_RECEIPT_SHA256)
+        pilot_registration.REGISTERED_LIVE_PROBE_EXECUTION_SHA256 = (
+            pilot_registration.PENDING_LIVE_PROBE_EXECUTION_SHA256)
+        try:
+            try:
+                seal_package.build_package(
+                    missing_probe_package, builder_metadata)
+                pending_probe_sealer_rejected = False
+            except seal_package.SealError:
+                pending_probe_sealer_rejected = True
+            try:
+                runner.validate_sealed_judge_config(
+                    aggregate_fixture["config"], source_seal,
+                    aggregate_fixture["seal"], source_seal["files"])
+                pending_probe_runner_rejected = False
+            except runner.InfraFailure:
+                pending_probe_runner_rejected = True
+        finally:
+            (pilot_registration.REGISTERED_LIVE_PROBE_RECEIPT_SHA256,
+             pilot_registration.REGISTERED_LIVE_PROBE_EXECUTION_SHA256) = (
+                saved_public_probe_registration)
         query_package = aggregate_fixture["root"] / "query-source-package"
         query_package.mkdir()
         for relative in source_seal["files"]:
@@ -6947,6 +7786,13 @@ def run_preflight():
             == list(seal_package.HOLDOUT_TASKS)
             and len(built_registration.get("seal_package_sha256", "")) == 64
             and extra_file_rejected
+            and judge_policy_drift_rejected
+            and runtime_registration_drift_rejected
+            and missing_probe_binding_rejected
+            and forged_probe_sealer_rejected
+            and drifted_probe_binding_rejected
+            and pending_probe_sealer_rejected
+            and pending_probe_runner_rejected
             and query_source_rejected
             and semantic_name_rejected
             and str(aggregate_fixture["root"])
@@ -6989,6 +7835,13 @@ def run_preflight():
             and aggregate.get("ablation", {}).get("status") == "established"
             and aggregate.get("population", {}).get(
                 "scheduled_final_runs") == 42
+            and aggregate.get("policy_ids", {}).get("judge_output")
+            == judge_contract.STRUCTURED_OUTPUT_POLICY_ID
+            and aggregate.get("input_sha256", {}).get(
+                "structured_output_schemas") == {
+                    role: judge_contract.structured_output_schema_sha256(role)
+                    for role in ("scorer", "verifier")
+                }
             and len(aggregate.get("input_sha256", {}).get(
                 "judge_records", [])) == 84
             and str(aggregate_fixture["root"]) not in serialized_aggregate
@@ -7624,6 +8477,50 @@ def run_preflight():
         ok &= check(
             "protocol-v2 aggregation rejects judge isolation-settings drift",
             judge_isolation_drift_ok, notes)
+
+        independent_output_pin_rejections = []
+        for field, forged_value in (
+            ("judge_output_policy", {
+                **runner.PILOT_V2_JUDGE_OUTPUT_POLICY,
+                "result_binding": "forged-but-self-consistent",
+            }),
+            ("structured_output_schema_sha256", "f" * 64),
+        ):
+            forged_manifest = json.loads(
+                scorer_manifest_bytes.decode("utf-8"))
+            forged_result = dict(forged_manifest["results"][0])
+            forged_manifest["identity"][field] = forged_value
+            forged_result[field] = forged_value
+            forged_manifest["results"][0] = forged_result
+            forged_result_bytes = (
+                json.dumps(forged_result, indent=2, sort_keys=True) + "\n"
+            ).encode("utf-8")
+            scorer_manifest_path.write_text(
+                json.dumps(
+                    forged_manifest, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            scorer_canonical_path.write_bytes(forged_result_bytes)
+            scorer_attempt_path.write_bytes(forged_result_bytes)
+            try:
+                aggregate_results.aggregate(
+                    aggregate_fixture["config_path"],
+                    aggregate_fixture["manifest"], scorer_manifest_path,
+                    aggregate_fixture["judge_manifests"]["verifier"],
+                    aggregate_fixture["seal"],
+                )
+                independent_output_pin_rejections.append(False)
+            except runner.InfraFailure:
+                independent_output_pin_rejections.append(True)
+            finally:
+                scorer_manifest_path.write_bytes(scorer_manifest_bytes)
+                scorer_canonical_path.write_bytes(scorer_canonical_bytes)
+                scorer_attempt_path.write_bytes(scorer_attempt_bytes)
+        ok &= check(
+            "aggregation independently rejects self-consistent judge-output pin drift",
+            all(independent_output_pin_rejections)
+            and len(independent_output_pin_rejections) == 2,
+            notes)
 
         scorer_manifest = json.loads(
             aggregate_fixture["judge_manifests"]["scorer"].read_text(

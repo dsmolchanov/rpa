@@ -23,7 +23,21 @@ auto_fixable_count: 7
 
 ## Before the scored v2 round
 
-- [ ] Create the fresh seal in an uncontaminated session and return only its
+- [x] Preserve the terminally exhausted round unchanged, publish only a
+  sanitized invalid-round record, and reset the public seal registration to
+  the all-zero sentinel.
+- [x] Add policy-bound exact-key prompting and native public structural-output
+  guidance while retaining the full strict semantic validator and exactly
+  three harness attempts.
+- [x] Centralize the complete path-free standard-v2 pilot registration and
+  enforce it at direct-runner, atomic-seal, and step-5 boundaries before any
+  task read, output mutation, or backend launch.
+- [ ] Prove schema parity, malformed-output rejection, retry bounds, argv
+  privacy, and stream parser parity in synthetic and real-backend preflights.
+  The synthetic side now also proves exact-pin rejection before launch,
+  canonical one-shot probe state, pending/tampered receipt refusal, and
+  seal/config proof binding; the one real scorer + verifier probe remains.
+- [ ] Create a replacement seal in an uncontaminated session and return only its
   SHA-256 and six task basenames.
 - [ ] Register that exact seal in `step5_operator.py`; replace v1
   primary/diagnostic output with two v2 all-doc batches plus deterministic
@@ -32,6 +46,8 @@ auto_fixable_count: 7
   verify the registered hashes.
 - [ ] Run the real-backend preflight with an unrelated environment canary and
   verify it is absent inside evaluated and judge processes.
+- [ ] Execute a completely new 42-slot randomized schedule; then run scorer,
+  verifier, and aggregate sequentially. Reuse nothing from an invalid round.
 - [x] Move legacy harness temp roots to a dated folder under the user's Trash
   after validating every exact target; keep the cleanup recoverable.
 
@@ -69,8 +85,9 @@ Estimated effort: 3–4 days.
 - [ ] Replace protocol-v2 public CLI exception text with stable error codes and
   a private mode-0600 audit log.
 - [ ] Add docstrings to the highest-consumption public functions.
-- [ ] Decide whether policy-constant duplication is an intentional
-  independent-verifier pattern and document that ownership.
+- [ ] Document the ownership boundary between centralized pilot-execution
+  pins and policy constants intentionally duplicated by independent
+  verifiers.
 
 Estimated effort: 1–2 days.
 

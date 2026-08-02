@@ -37,6 +37,12 @@ JUDGE_RETRY_POLICY = {
     "fresh_session_each_attempt": True,
     "repair": "none",
 }
+JUDGE_OUTPUT_POLICY = {
+    "id": "claude-cli-json-schema-structural-v1",
+    "schema": "public-structural-exact-keys-v1",
+    "argv": "generic-public-schema-only",
+    "result_binding": "result-equals-structured-output",
+}
 FINAL_STATUSES = {"completed", "workflow_failure"}
 FAILURE_KINDS = {
     "artifact_contract",
@@ -218,6 +224,8 @@ def _verify_seal(config, seal_manifest_path):
              "seal max_judge_attempts must be 3")
     _require(seal_doc.get("judge_retry_policy") == JUDGE_RETRY_POLICY,
              "sealed judge retry policy is not the registered v2 policy")
+    _require(seal_doc.get("judge_output_policy") == JUDGE_OUTPUT_POLICY,
+             "sealed judge output policy is not the registered v2 policy")
     _require(seal_doc.get("aggregation_policy") == AGGREGATION_POLICY,
              "sealed aggregation policy is not the registered v2 policy")
     associations = seal_doc.get("judge_response_schemas")
@@ -896,6 +904,13 @@ def _verify_judge_manifest(path, role, config, schedule_manifest_path,
              f"{role} batch response schema version mismatch")
     _require(identity.get("schema_sha256") == schema_sha,
              f"{role} batch response schema digest mismatch")
+    expected_structured_sha = (
+        judge_contract.structured_output_schema_sha256(role))
+    _require(identity.get("judge_output_policy") == JUDGE_OUTPUT_POLICY,
+             f"{role} batch judge output policy mismatch")
+    _require(identity.get("structured_output_schema_sha256")
+             == expected_structured_sha,
+             f"{role} batch structured-output schema digest mismatch")
     prompt_ref = seal_doc.get("judge_prompts", {}).get(role)
     rubric_ref = seal_doc.get("quality_rubric")
     expected_prompt_sha = seal_files.get(prompt_ref)
@@ -1021,6 +1036,11 @@ def _verify_judge_manifest(path, role, config, schedule_manifest_path,
                  f"{role} result response schema version mismatch")
         _require(result.get("schema_sha256") == schema_sha,
                  f"{role} result response schema digest mismatch")
+        _require(result.get("judge_output_policy") == JUDGE_OUTPUT_POLICY,
+                 f"{role} result judge output policy mismatch")
+        _require(result.get("structured_output_schema_sha256")
+                 == expected_structured_sha,
+                 f"{role} result structured-output schema digest mismatch")
         _require(result.get("judge_prompt_sha256") == expected_prompt_sha,
                  f"{role} result judge prompt digest mismatch")
         _require(result.get("quality_rubric_sha256") == expected_rubric_sha,
@@ -1109,6 +1129,8 @@ def _verify_judge_manifest(path, role, config, schedule_manifest_path,
                     runner.PILOT_V2_ENVIRONMENT_POLICY_ID),
                 "response_schema_version": SCHEMA_VERSION,
                 "schema_sha256": schema_sha,
+                "judge_output_policy": JUDGE_OUTPUT_POLICY,
+                "structured_output_schema_sha256": expected_structured_sha,
                 "judge_prompt_sha256": expected_prompt_sha,
                 "quality_rubric_sha256": expected_rubric_sha,
                 "config_digest": config_digest,
@@ -1870,6 +1892,10 @@ def aggregate(config_path, manifest_path, scorer_manifest_path,
         "judge_records": judge_hashes,
         "judge_attempt_record_set": _json_sha(judge_attempt_hashes),
         "judge_attempt_records": judge_attempt_hashes,
+        "structured_output_schemas": {
+            role: judge_contract.structured_output_schema_sha256(role)
+            for role in ("scorer", "verifier")
+        },
     }
     return {
         "protocol_version": PROTOCOL_VERSION,
@@ -1879,6 +1905,7 @@ def aggregate(config_path, manifest_path, scorer_manifest_path,
             "environment": runner.PILOT_V2_ENVIRONMENT_POLICY_ID,
             "critical_error": AGGREGATION_POLICY["critical"],
             "judge_response_schema": SCHEMA_VERSION,
+            "judge_output": JUDGE_OUTPUT_POLICY["id"],
         },
         "input_sha256": input_hashes,
         "population": {

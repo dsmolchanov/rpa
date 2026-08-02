@@ -8,6 +8,7 @@ matching contract document is suitable for inclusion in an atomic seal.
 """
 
 import copy
+import hashlib
 import json
 import unicodedata
 from decimal import Decimal
@@ -46,6 +47,9 @@ CRITICAL_ERROR_CATEGORIES = (
     "api_compatibility",
     "decision_status",
 )
+
+OUTPUT_GUARD_VERSION = "exact-object-keys-v1"
+STRUCTURED_OUTPUT_POLICY_ID = "claude-cli-json-schema-structural-v1"
 
 
 class JudgeResponseError(ValueError):
@@ -315,6 +319,86 @@ def _validate_verifier(value):
     return value
 
 
+def _exact_object_keys(role):
+    """Return the literal key set for every object in one role response.
+
+    This duplicates the object portions of the JSON Schema deliberately.
+    The schema remains the normative machine contract; this compact map is
+    sealed alongside it so a judge cannot mistake rubric concepts for extra
+    response properties.
+    """
+
+    if role == "scorer":
+        return {
+            "$": list(SCORER_KEYS),
+            "$.coverage": list(SCORER_COMPONENT_KEYS),
+            "$.relevance": list(SCORER_COMPONENT_KEYS),
+            "$.synthesis": list(SCORER_COMPONENT_KEYS),
+        }
+    if role == "verifier":
+        return {
+            "$": list(VERIFIER_KEYS),
+            "$.claim_ledger[]": list(CLAIM_KEYS),
+            "$.critical_errors[]": list(CRITICAL_ERROR_KEYS),
+        }
+    raise JudgeResponseError("role must be 'scorer' or 'verifier'")
+
+
+def output_contract(role):
+    """Return sealed, model-facing clarification of the strict key contract.
+
+    This does not widen or otherwise alter the accepted response language.
+    It restates the already-enforced exact object keys in a compact form that
+    can also be repeated at the high-recency end of the judge prompt.
+    """
+
+    return {
+        "guard_version": OUTPUT_GUARD_VERSION,
+        "structured_output_policy_id": STRUCTURED_OUTPUT_POLICY_ID,
+        "structured_output_schema_sha256": (
+            structured_output_schema_sha256(role)
+        ),
+        "response_only": "exactly one JSON object and no other text",
+        "additional_properties": "forbidden at every object level",
+        "exact_object_keys": _exact_object_keys(role),
+        "supporting_detail": (
+            "place all explanation and code context inside the listed "
+            "rationale, evidence, or summary values; never create a new key"
+        ),
+    }
+
+
+def output_contract_reminder(role):
+    """Render the deterministic end-of-prompt exact-key reminder."""
+
+    contract = output_contract(role)
+    key_lines = [
+        f"- `{location}`: "
+        + json.dumps(keys, ensure_ascii=False, separators=(",", ":"))
+        for location, keys in contract["exact_object_keys"].items()
+    ]
+    return "\n".join((
+        "## Mandatory final response contract",
+        "",
+        (
+            "Return exactly one UTF-8 JSON object and nothing else. Do not "
+            "use Markdown fences, introductory text, or trailing prose."
+        ),
+        "Every object must have exactly the keys listed below:",
+        *key_lines,
+        (
+            "No other property is permitted anywhere. Do not invent helper "
+            "fields such as `rationale_note`, `code_context`, or "
+            "`evidence_accuracy`; put supporting detail only inside the "
+            "listed `rationale`, `evidence`, or `summary` values."
+        ),
+        (
+            "Before responding, silently compare every object's key set for "
+            "exact equality with this list. Then output the JSON object only."
+        ),
+    ))
+
+
 def validate_response(text, role):
     """Parse and validate one scorer or verifier response.
 
@@ -422,6 +506,81 @@ _VERIFIER_SCHEMA = _object_schema(
 )
 
 
+_STRUCTURED_OUTPUT_UNSUPPORTED_CONSTRAINTS = {
+    "minimum": "minimum",
+    "maximum": "maximum",
+    "multipleOf": "multiple of",
+    "minLength": "minimum string length",
+    "minItems": "minimum array length",
+}
+
+
+def _structured_output_node(node):
+    """Transform the full validator schema to Claude's strict subset.
+
+    Claude Code 2.1.220 can grammar-constrain object shape, required keys,
+    primitive types, arrays, and enums.  Numeric/string/list bounds are not
+    accepted by its strict-schema compiler, so they remain authoritative in
+    ``validate_response`` and are copied into descriptions for the model.
+    """
+
+    transformed = {}
+    constraints = []
+    for key, value in node.items():
+        if key in _STRUCTURED_OUTPUT_UNSUPPORTED_CONSTRAINTS:
+            constraints.append(
+                f"{_STRUCTURED_OUTPUT_UNSUPPORTED_CONSTRAINTS[key]}={value}")
+        elif key == "properties":
+            transformed[key] = {
+                name: _structured_output_node(child)
+                for name, child in value.items()
+            }
+        elif key == "items":
+            transformed[key] = _structured_output_node(value)
+        else:
+            transformed[key] = copy.deepcopy(value)
+    if constraints:
+        suffix = "Final validator additionally requires " + ", ".join(
+            constraints) + "."
+        existing = transformed.get("description")
+        transformed["description"] = (
+            f"{existing.rstrip()} {suffix}" if existing else suffix)
+    return transformed
+
+
+def structured_output_schema(role):
+    """Return the deterministic public schema passed to ``--json-schema``.
+
+    It constrains syntax, exact object keys, required fields, types, and enums
+    during generation.  The complete sealed schema and semantic validator are
+    still applied afterward; this generation aid never widens acceptance.
+    """
+
+    if role == "scorer":
+        schema = _SCORER_SCHEMA
+    elif role == "verifier":
+        schema = _VERIFIER_SCHEMA
+    else:
+        raise JudgeResponseError("role must be 'scorer' or 'verifier'")
+    return _structured_output_node(schema)
+
+
+def structured_output_schema_text(role):
+    """Return the canonical compact argv representation of the public aid."""
+
+    return json.dumps(
+        structured_output_schema(role),
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+
+
+def structured_output_schema_sha256(role):
+    return hashlib.sha256(
+        structured_output_schema_text(role).encode("utf-8")
+    ).hexdigest()
+
+
 def contract_schema(role):
     """Return the complete, JSON-serializable sealed contract document."""
 
@@ -480,6 +639,7 @@ def contract_schema(role):
             "max_string_characters": MAX_STRING_LENGTH,
         },
         "schema": copy.deepcopy(schema),
+        "output_contract": output_contract(role),
         "semantic_constraints": semantic_constraints,
     }
 

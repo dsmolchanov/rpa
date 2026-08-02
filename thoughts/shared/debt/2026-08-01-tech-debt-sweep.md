@@ -124,9 +124,11 @@ CVE audit could be run during this sweep.
   `runner.py` but normally by sibling modules, creating duplicate module and
   exception-class identities. Current catches are local, so no active defect
   was found.
-- Protocol/retry/aggregation constants are deliberately duplicated across
-  runner, seal builder, and aggregator for independent fail-closed checking.
-  The ownership rationale should be documented before any centralization.
+- Path-free pilot-execution pins now have one authority in
+  `pilot_registration.py`, consumed by runner, seal builder/verifier, and the
+  step-5 operator. Semantic policy constants remain deliberately duplicated
+  where the aggregate acts as an independent fail-closed verifier; that
+  ownership boundary still needs a concise architecture note.
 - The import graph is acyclic; no suspected cycle or >50% dependency magnet
   was found.
 
@@ -145,9 +147,10 @@ Fixed during the sweep:
 
 Open documentation debt:
 
-- `step5_operator.py` still represents the completed v1 round. It must be
-  registered with the new seal hash and emit the two v2 all-doc judge batches
-  after sealing; doing that earlier would require a fake hash.
+- `step5_operator.py` now represents the replacement v2 protocol but remains
+  intentionally blocked by pending live-probe and seal sentinels. The real
+  receipt/execution digests and then the fresh package hash must be registered
+  in order before it can emit the two v2 all-doc judge batches.
 - 57 of 114 public-by-name functions lack docstrings. Priority targets are
   `runner.run_task`, `build_installs.build`, and
   `validate_artifact.validate`; exhaustive docstring work is not a pilot
@@ -197,9 +200,25 @@ It establishes the metric baseline for `tech-debt-trends`.
 
 ## Top actions
 
-1. Register the v2 seal in `step5_operator.py`, prove the sanitized environment
-   on the real backend, and run the frozen pilot.
-2. After the pilot, snapshot the runner API and characterize immutable record
+1. Keep the exhausted scorer round immutable and unregistered; harden native
+   structured-output guidance, bind its public structural schema, and require
+   the canonical one-shot live-probe receipt/execution proof before a fresh
+   seal and full replacement schedule.
+2. Complete the fresh round sequentially: all 42 runs, scorer, verifier, then
+   deterministic aggregation. Never reuse a prior task, document, attempt, or
+   score.
+3. After the pilot, snapshot the runner API and characterize immutable record
    validation before extracting modules.
-3. Pin CI/toolchain dependencies and introduce dedicated timeout policy in a
+4. Pin CI/toolchain dependencies and introduce dedicated timeout policy in a
    separately reviewed protocol revision.
+
+## 2026-08-02 invalid-round observation
+
+The v2 harness correctly stopped a scorer batch after three schema-invalid
+attempts for one required record. This is evidence that terminal exhaustion,
+immutable attempt retention, and the no-resume gate work as registered; it is
+not a reason to weaken validation or extend the attempt budget. The associated
+reliability debt is prospective model-output control: the exact role schema
+was enforced after generation but its exact-key shape did not have both a
+high-recency prompt reminder and native structural-output guidance. Those
+controls must be policy-bound and preflighted before the replacement seal.

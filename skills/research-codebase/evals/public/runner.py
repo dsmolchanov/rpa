@@ -126,6 +126,8 @@ import time
 import uuid
 from pathlib import Path
 
+import pilot_registration
+
 _ARTIFACT_VALIDATOR_SPEC = importlib.util.spec_from_file_location(
     "artifact_validator", Path(__file__).with_name("validate_artifact.py"))
 artifact_validator = importlib.util.module_from_spec(_ARTIFACT_VALIDATOR_SPEC)
@@ -142,7 +144,7 @@ seal_package = importlib.util.module_from_spec(_SEAL_PACKAGE_SPEC)
 _SEAL_PACKAGE_SPEC.loader.exec_module(seal_package)
 
 MAX_CONTINUATIONS = 3
-DEFAULT_MAX_INFRA_RETRIES = 2
+DEFAULT_MAX_INFRA_RETRIES = pilot_registration.MAX_INFRA_RETRIES
 # The pilot protocol fixes the replicate count and the holdout size;
 # schedules that deviate must be explicitly marked nonstandard (dev-set
 # tuning only, never holdout).
@@ -164,11 +166,12 @@ REGISTERED_HOLDOUT_ARCHETYPE_KEYWORDS = {
     5: "external",         # requires external library/API context
     6: "premise",          # question with a known-wrong premise
 }
-PILOT_V2_PROTOCOL_VERSION = 2
-PILOT_V2_MAX_JUDGE_ATTEMPTS = 3
-PILOT_V2_SCHEDULE_SEED = 20260801
-PILOT_V2_SCORER_SEED = 20260802
-PILOT_V2_VERIFIER_SEED = 20260803
+PILOT_V2_PROTOCOL_VERSION = pilot_registration.PROTOCOL_VERSION
+PILOT_V2_MAX_JUDGE_ATTEMPTS = pilot_registration.MAX_JUDGE_ATTEMPTS
+PILOT_V2_SCHEDULE_SEED = pilot_registration.SCHEDULE_SEED
+PILOT_V2_SCORER_SEED = pilot_registration.SCORER_SEED
+PILOT_V2_VERIFIER_SEED = pilot_registration.VERIFIER_SEED
+PILOT_V2_LIVE_PROBE_VERSION = pilot_registration.LIVE_PROBE_VERSION
 # Judge responses are capped at 1 MiB by judge_contract; 4 MiB leaves room
 # for stream-json envelopes and accounting nodes. An oversized stream is
 # preserved verbatim in a sidecar and consumes one invalid attempt, so bounded
@@ -178,8 +181,7 @@ PILOT_V2_MAX_RAW_STREAM_BYTES = 4 * 1024 * 1024
 # Claude CLI, its filesystem wrapper, locale/TLS, and network proxy.  In
 # particular, arbitrary cloud, source-control, and developer-tool tokens from
 # the operator process must never become model-visible ambient context.
-PILOT_V2_ENVIRONMENT_POLICY_ID = (
-    "claude-cli-minimal-env-v2-pyyaml-6.0.2")
+PILOT_V2_ENVIRONMENT_POLICY_ID = pilot_registration.ENVIRONMENT_POLICY_ID
 PILOT_V2_ENV_ALLOWLIST = frozenset({
     "ALL_PROXY",
     "ANTHROPIC_API_KEY",
@@ -223,16 +225,10 @@ OPERATOR_IMAGE_SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 ARTIFACT_PARSER_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 ARTIFACT_PARSER_VERSION_RE = re.compile(
     r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$")
-PILOT_V2_AGGREGATION_POLICY = {
-    "id": "pilot-v2-all-docs-v1",
-    "telemetry": "all-final-scheduled-workflow-outcomes-v1",
-    "critical": "candidate-absolute-zero-v1",
-}
-PILOT_V2_JUDGE_RETRY_POLICY = {
-    "max_attempts": PILOT_V2_MAX_JUDGE_ATTEMPTS,
-    "fresh_session_each_attempt": True,
-    "repair": "none",
-}
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+PILOT_V2_AGGREGATION_POLICY = pilot_registration.AGGREGATION_POLICY
+PILOT_V2_JUDGE_RETRY_POLICY = pilot_registration.JUDGE_RETRY_POLICY
+PILOT_V2_JUDGE_OUTPUT_POLICY = pilot_registration.JUDGE_OUTPUT_POLICY
 PILOT_V2_FAILURE_KINDS = {
     "artifact_contract",
     "timeout",
@@ -825,15 +821,54 @@ def protocol_v2_runtime_pins(config):
     """Canonical operator-runtime evidence bound into every v2 artifact.
 
     The environment policy identifies the semantics while these values make
-    the concrete image and artifact-parser implementation directly auditable.
-    Standard configs validate their shape in :func:`load_config`; nonstandard
-    synthetic/dev configs retain explicit ``None`` values when they omit pins.
+    the concrete image, artifact-parser implementation, judge output policy,
+    and role-specific structural schemas directly auditable. Standard configs
+    validate their shape in :func:`load_config`; nonstandard synthetic/dev
+    configs retain explicit ``None`` values when they omit runtime pins.
     """
     return {
         "operator_image_sha256": config.get("operator_image_sha256"),
         "artifact_parser": config.get("artifact_parser"),
         "artifact_parser_version": config.get("artifact_parser_version"),
+        "judge_output_policy": PILOT_V2_JUDGE_OUTPUT_POLICY,
+        "structured_output_schema_sha256": {
+            role: judge_contract.structured_output_schema_sha256(role)
+            for role in ("scorer", "verifier")
+        },
     }
+
+
+def protocol_v2_live_probe_binding(config):
+    """Canonical proof that the registered judge transport worked live.
+
+    The two digests are config data while the version is public protocol
+    policy.  Binding this object into both the seal and ``config_digest``
+    prevents direct runner entry points from skipping the pre-seal probe.
+    """
+    return {
+        "probe_version": PILOT_V2_LIVE_PROBE_VERSION,
+        "receipt_sha256": config.get("judge_live_probe_receipt_sha256"),
+        "execution_sha256": config.get("judge_live_probe_execution_sha256"),
+    }
+
+
+def require_standard_v2_registration(config, *, allow_pending_probe=False,
+                                     allow_pending_seal=False):
+    """Fail before mutation/launch when a standard-v2 config drifts.
+
+    Dev protocol-v2 fixtures are permitted only through the explicit
+    ``nonstandard_config: true`` marker; they can never reconstruct a standard
+    schedule because that marker is digest-bound into every artifact.
+    """
+    if config.get("protocol_version") != PILOT_V2_PROTOCOL_VERSION:
+        return
+    problem = pilot_registration.standard_v2_registration_problem(
+        config, allow_pending_probe=allow_pending_probe,
+        allow_pending_seal=allow_pending_seal)
+    if problem:
+        raise InfraFailure(
+            "standard protocol-v2 runtime differs from its public "
+            f"registration: {problem}")
 
 
 def load_config(path):
@@ -950,6 +985,8 @@ def load_config(path):
             operator_image = config.get("operator_image_sha256")
             parser_name = config.get("artifact_parser")
             parser_version = config.get("artifact_parser_version")
+            probe_receipt = config.get("judge_live_probe_receipt_sha256")
+            probe_execution = config.get("judge_live_probe_execution_sha256")
             if (not isinstance(operator_image, str)
                     or OPERATOR_IMAGE_SHA256_RE.fullmatch(
                         operator_image) is None):
@@ -968,6 +1005,14 @@ def load_config(path):
                 raise InfraFailure(
                     f"config {path}: standard protocol v2 requires "
                     "`artifact_parser_version` as numeric MAJOR.MINOR.PATCH")
+            for field, digest in (
+                    ("judge_live_probe_receipt_sha256", probe_receipt),
+                    ("judge_live_probe_execution_sha256", probe_execution)):
+                if not isinstance(digest, str) or SHA256_RE.fullmatch(
+                        digest) is None:
+                    raise InfraFailure(
+                        f"config {path}: standard protocol v2 requires "
+                        f"`{field}` as 64 lowercase hex characters")
             max_infra_retries = config.get("max_infra_retries")
             if (isinstance(max_infra_retries, bool)
                     or max_infra_retries != DEFAULT_MAX_INFRA_RETRIES):
@@ -1016,7 +1061,11 @@ def config_digest(config):
         if config.get("protocol_version", 1) == PILOT_V2_PROTOCOL_VERSION:
             material["environment_policy_id"] = (
                 PILOT_V2_ENVIRONMENT_POLICY_ID)
+            material["judge_output_policy"] = (
+                PILOT_V2_JUDGE_OUTPUT_POLICY)
             material["runtime_pins"] = protocol_v2_runtime_pins(config)
+            material["judge_live_probe"] = (
+                protocol_v2_live_probe_binding(config))
     return hashlib.sha256(
         json.dumps(material, sort_keys=True).encode("utf-8")
     ).hexdigest()
@@ -1213,7 +1262,8 @@ def _json_without_duplicate_keys(data, what):
         return json.loads(data.decode("utf-8"),
                           object_pairs_hook=reject_duplicates,
                           parse_constant=reject_constant)
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError,
+            RecursionError, OverflowError) as exc:
         raise InfraFailure(f"{what} is not strict UTF-8 JSON: {exc}") from exc
 
 
@@ -1315,6 +1365,7 @@ def validate_sealed_judge_config(config, seal_doc, seal_manifest_path=None,
     check, a config changed after sealing but before scheduling would pass
     every later digest comparison while scoring under unregistered judge
     settings."""
+    require_standard_v2_registration(config)
     sealed = seal_doc.get("judge_config")
     if not isinstance(sealed, dict):
         raise InfraFailure(
@@ -1336,6 +1387,11 @@ def validate_sealed_judge_config(config, seal_doc, seal_manifest_path=None,
         raise InfraFailure(
             "protocol v2 config requires a seal with `protocol_version: 2`"
         )
+    if seal_doc.get("nonstandard_config") is not bool(
+            config.get("nonstandard_config")):
+        raise InfraFailure(
+            "protocol v2 seal nonstandard marker differs from the runtime "
+            "configuration")
     configured_attempts = config.get("max_judge_attempts")
     if (isinstance(configured_attempts, bool)
             or not isinstance(configured_attempts, int)
@@ -1355,6 +1411,26 @@ def validate_sealed_judge_config(config, seal_doc, seal_manifest_path=None,
             "protocol v2 seal `judge_retry_policy` must be exactly "
             f"{PILOT_V2_JUDGE_RETRY_POLICY!r}"
         )
+    if seal_doc.get("judge_output_policy") != PILOT_V2_JUDGE_OUTPUT_POLICY:
+        raise InfraFailure(
+            "protocol v2 seal `judge_output_policy` must be exactly "
+            f"{PILOT_V2_JUDGE_OUTPUT_POLICY!r}"
+        )
+    live_probe = protocol_v2_live_probe_binding(config)
+    if not config.get("nonstandard_config"):
+        registered_probe = pilot_registration.live_probe_binding()
+        if pilot_registration.live_probe_registration_pending():
+            raise InfraFailure(
+                "standard protocol v2 requires a publicly registered live "
+                "judge probe; pending registration cannot authorize a seal")
+        if live_probe != registered_probe:
+            raise InfraFailure(
+                "standard protocol v2 live judge probe differs from the "
+                "public receipt/execution registration")
+    if seal_doc.get("judge_live_probe") != live_probe:
+        raise InfraFailure(
+            "protocol v2 seal `judge_live_probe` differs from the runtime "
+            "receipt/execution registration")
     if seal_doc.get("aggregation_policy") != PILOT_V2_AGGREGATION_POLICY:
         raise InfraFailure(
             "protocol v2 seal `aggregation_policy` must be exactly "
@@ -1661,7 +1737,8 @@ def spawn_session(cmd, prompt, cwd, env, timeout, resume=None,
 
 
 def spawn_judge_session_capped(cmd, prompt, cwd, env, timeout,
-                               raw_stream_path, max_stream_bytes):
+                               raw_stream_path, max_stream_bytes,
+                               structured_output_schema=None):
     """Run one v2 judge with stdout captured to disk and a live size cap.
 
     Disk capture avoids unbounded in-memory ``communicate`` buffering. The
@@ -1672,8 +1749,17 @@ def spawn_judge_session_capped(cmd, prompt, cwd, env, timeout,
     in the bounded attempt JSON.
     """
     # See `spawn_session`: the full sealed judge input travels through stdin,
-    # never a process-list-visible positional argv element.
-    full = list(cmd) + ["-p", "--output-format", "stream-json"]
+    # never a process-list-visible positional argv element. Protocol v2's one
+    # argv exception is a deterministic generic/public structural schema: it
+    # contains no sealed prompt, rubric, context, task, or document bytes.
+    full = list(cmd)
+    if structured_output_schema is not None:
+        if (not isinstance(structured_output_schema, str)
+                or not structured_output_schema):
+            raise InfraFailure(
+                "judge structured-output schema must be nonempty text")
+        full += ["--json-schema", structured_output_schema]
+    full += ["-p", "--output-format", "stream-json"]
     raw_stream_path = Path(raw_stream_path)
     launch_defects = []
     with (raw_stream_path.open("w+b") as raw_handle,
@@ -2069,6 +2155,18 @@ def require_effort_pin(cmd, what):
         )
 
 
+def refuse_v2_structured_output_override(cmd):
+    """Keep the public generation schema exclusively harness-owned."""
+
+    if any(
+            part == "--json-schema" or part.startswith("--json-schema=")
+            for part in cmd):
+        raise InfraFailure(
+            "protocol v2 judge command must not supply `--json-schema`; "
+            "the harness owns the exact public structural schema binding"
+        )
+
+
 def require_installation_mount(cmd):
     """An arm run must actually load its installation: refuse a backend
     command without the `{installation}` placeholder, or every arm would
@@ -2346,6 +2444,7 @@ def anonymize(text, run_id):
 def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
              scheduled=False, schedule_binding=None, output_binding=None,
              task_snapshot=None):
+    require_standard_v2_registration(config)
     arms = config.get("arms", {})
     if arm_name not in arms:
         # No record can be attributed to an unknown arm; fail with a
@@ -2954,6 +3053,7 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
     mark. A no-subagent (ablation) arm must be EXPLICITLY scoped to its two
     designated tasks via `schedule_tasks` — defaulting it to the full task
     list would silently widen the pre-registered third-arm comparison."""
+    require_standard_v2_registration(config)
     if (config.get("protocol_version") == PILOT_V2_PROTOCOL_VERSION
             and seed != PILOT_V2_SCHEDULE_SEED):
         raise InfraFailure(
@@ -3735,6 +3835,7 @@ def run_schedule(config, schedule_path, repos, output_dir, task_paths):
     covers the complete output state machine and is released automatically on
     process death.
     """
+    require_standard_v2_registration(config)
     out, output_binding = bind_output_directory(output_dir)
     lock_path = out / ".run-schedule.lock"
     refuse_missing_persistent_lock_with_state(
@@ -4650,13 +4751,14 @@ def assert_blind_scorable(doc_path):
         doc_path, read_input_bytes(doc_path, "scoring document"))
 
 
-def _parse_judge_stream_tolerant(stdout):
+def _parse_judge_stream_tolerant(stdout, require_structured_output=False):
     """Recover auditable judge-attempt material even when the stream
     transport itself is invalid. Contract validation still fails closed;
     this helper never repairs response JSON."""
     session_id = None
     nodes = []
     result_parts = []
+    structured_outputs = []
     stream_defects = []
     for line_number, line in enumerate((stdout or "").splitlines(), 1):
         line = line.strip()
@@ -4685,8 +4787,27 @@ def _parse_judge_stream_tolerant(stdout):
                 stream_defects.append(
                     f"stream line {line_number} conflicts with the first "
                     f"session_id")
-        if event.get("type") == "result" and event.get("result") is not None:
-            result_parts.append(str(event["result"]))
+        if event.get("type") == "result":
+            result_value = event.get("result")
+            if require_structured_output:
+                if event.get("subtype") != "success":
+                    stream_defects.append(
+                        f"stream line {line_number} has no successful "
+                        "structured-output result")
+                if not isinstance(result_value, str):
+                    stream_defects.append(
+                        f"stream line {line_number} has no string result")
+                else:
+                    result_parts.append(result_value)
+                structured = event.get("structured_output")
+                if not isinstance(structured, dict):
+                    stream_defects.append(
+                        f"stream line {line_number} has no object "
+                        "structured_output")
+                else:
+                    structured_outputs.append(structured)
+            elif result_value is not None:
+                result_parts.append(str(result_value))
         try:
             node = _node_from_event(event)
         except InfraFailure as exc:
@@ -4699,7 +4820,47 @@ def _parse_judge_stream_tolerant(stdout):
         stream_defects.append("backend output contained no session_id")
     if not nodes:
         stream_defects.append("backend output contained no accounting nodes")
-    return session_id, nodes, "\n".join(result_parts), stream_defects
+    structured_output = None
+    if require_structured_output:
+        if len(result_parts) != 1:
+            stream_defects.append(
+                "backend output must contain exactly one string result")
+        if len(structured_outputs) != 1:
+            stream_defects.append(
+                "backend output must contain exactly one structured_output "
+                "object")
+        else:
+            structured_output = structured_outputs[0]
+    return (session_id, nodes, "\n".join(result_parts), structured_output,
+            stream_defects)
+
+
+def _validate_v2_judge_response_pair(response, structured_output, role):
+    """Validate both CLI views without treating either as response repair."""
+
+    defects = []
+    parsed_response = None
+    parsed_structured = None
+    try:
+        parsed_response = judge_contract.validate_response(response, role)
+    except judge_contract.JudgeResponseError as exc:
+        defects.append(str(exc))
+    if structured_output is None:
+        defects.append("structured_output: required object is missing")
+    else:
+        try:
+            structured_text = json.dumps(
+                structured_output, ensure_ascii=False, allow_nan=False)
+            parsed_structured = judge_contract.validate_response(
+                structured_text, role)
+        except (TypeError, ValueError,
+                judge_contract.JudgeResponseError) as exc:
+            defects.append(f"structured_output: {exc}")
+    if (parsed_response is not None and parsed_structured is not None
+            and parsed_response != parsed_structured):
+        defects.append(
+            "result JSON differs from the validated structured_output object")
+    return parsed_response, defects
 
 
 def _validate_v2_attempt_record(record, expected):
@@ -4782,7 +4943,8 @@ def _validate_v2_attempt_record(record, expected):
         if not proven or required_defect not in launch_defects:
             raise InfraFailure(
                 "external judge raw stream does not prove its storage reason")
-        session_id, nodes, response, stream_defects = None, [], "", []
+        session_id, nodes, response, structured_output, stream_defects = (
+            None, [], "", None, [])
         raw_digest = digest.hexdigest()
     else:
         if external_reason is not None:
@@ -4798,8 +4960,9 @@ def _validate_v2_attempt_record(record, expected):
             raise InfraFailure(
                 "inline judge attempt unexpectedly has a raw-stream sidecar")
         raw_digest = hashlib.sha256(encoded_stream).hexdigest()
-        session_id, nodes, response, stream_defects = (
-            _parse_judge_stream_tolerant(raw_stream))
+        session_id, nodes, response, structured_output, stream_defects = (
+            _parse_judge_stream_tolerant(
+                raw_stream, require_structured_output=True))
     if raw_digest != record.get("raw_stream_sha256"):
         raise InfraFailure("judge attempt raw stream digest mismatch")
     if record.get("raw_stream_bytes") != raw_stream_bytes:
@@ -4810,6 +4973,10 @@ def _validate_v2_attempt_record(record, expected):
         raise InfraFailure("judge attempt nodes differ from raw stream")
     if record.get("response") != response:
         raise InfraFailure("judge attempt response differs from raw stream")
+    if ("structured_output" not in record
+            or record.get("structured_output") != structured_output):
+        raise InfraFailure(
+            "judge attempt structured_output differs from raw stream")
     if hashlib.sha256(response.encode("utf-8")).hexdigest() != record.get(
             "response_sha256"):
         raise InfraFailure("judge attempt response digest mismatch")
@@ -4826,11 +4993,9 @@ def _validate_v2_attempt_record(record, expected):
     transport_invalid = bool(defects)
     parsed = None
     if not defects:
-        try:
-            parsed = judge_contract.validate_response(
-                response, expected["role"])
-        except judge_contract.JudgeResponseError as exc:
-            defects.append(str(exc))
+        parsed, response_defects = _validate_v2_judge_response_pair(
+            response, structured_output, expected["role"])
+        defects.extend(response_defects)
     valid = not defects
     recomputed = {
         "validation": {"valid": valid, "defects": defects},
@@ -4886,7 +5051,12 @@ def _validate_v2_attempt_record(record, expected):
 
 def compose_v2_judge_prompt(judge_prompt, quality_rubric, response_schema,
                             task_context, document):
-    """Compose every sealed protocol-v2 judge input in a fixed order."""
+    """Compose every sealed protocol-v2 judge input in a fixed order.
+
+    The candidate document remains the final evaluation material.  A short,
+    deterministic reminder derived from the exact sealed role contract then
+    closes the prompt so output-shape instructions retain highest recency.
+    """
     materials = {
         "judge prompt": judge_prompt,
         "quality rubric": quality_rubric,
@@ -4898,12 +5068,25 @@ def compose_v2_judge_prompt(judge_prompt, quality_rubric, response_schema,
         if not isinstance(value, str) or not value.strip():
             raise InfraFailure(
                 f"protocol v2 {name} must be nonempty UTF-8 text")
+    try:
+        schema_bytes = response_schema.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise InfraFailure(
+            "protocol v2 response schema is not valid UTF-8 text") from exc
+    schema_doc = _json_without_duplicate_keys(
+        schema_bytes, "protocol v2 response schema")
+    role = schema_doc.get("role") if isinstance(schema_doc, dict) else None
+    if (role not in ("scorer", "verifier")
+            or schema_doc != judge_contract.contract_schema(role)):
+        raise InfraFailure(
+            "protocol v2 response schema is not the exact role contract")
     return "\n\n".join((
         judge_prompt,
         "## Sealed quality rubric\n\n" + quality_rubric,
         "## Required response schema\n\n" + response_schema,
         "## Task-specific sealed context\n\n" + task_context,
         "---\n\n" + document,
+        judge_contract.output_contract_reminder(role),
     ))
 
 
@@ -4914,6 +5097,7 @@ def score(config, doc_paths, judge_prompt_path, output_dir,
           drift_report_path=None, score_task_paths=None,
           diagnostic_axis=False):
     """Serialize one role/axis batch across its complete judge state machine."""
+    require_standard_v2_registration(config)
     role = ("verifier" if (evidence_repo or evidence_repos is not None)
             else "scorer")
     axis = ("all-docs"
@@ -5516,6 +5700,8 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
             "judge command must be mount-free — set `judge_backend_cmd` "
             "(judges run without any arm installation)"
         )
+    if v2:
+        refuse_v2_structured_output_override(judge_cmd)
     judge_model = config.get("judge_model")
     if not judge_model:
         raise InfraFailure("`judge_model` must be configured for score mode")
@@ -5569,6 +5755,9 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
             "environment_policy_id": PILOT_V2_ENVIRONMENT_POLICY_ID,
             "response_schema_version": judge_contract.RESPONSE_SCHEMA_VERSION,
             "schema_sha256": v2_schema_digests[role],
+            "judge_output_policy": PILOT_V2_JUDGE_OUTPUT_POLICY,
+            "structured_output_schema_sha256": (
+                judge_contract.structured_output_schema_sha256(role)),
             "judge_prompt_sha256": judge_prompt_sha256,
             "quality_rubric_sha256": quality_rubric_sha256,
         })
@@ -5775,6 +5964,9 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
             "environment_policy_id": PILOT_V2_ENVIRONMENT_POLICY_ID,
             "response_schema_version": judge_contract.RESPONSE_SCHEMA_VERSION,
             "schema_sha256": v2_schema_digests[batch_role],
+            "judge_output_policy": PILOT_V2_JUDGE_OUTPUT_POLICY,
+            "structured_output_schema_sha256": (
+                judge_contract.structured_output_schema_sha256(batch_role)),
             "judge_prompt_sha256": prompt_digest,
             "quality_rubric_sha256": quality_rubric_sha256,
             "config_digest": config_digest(config),
@@ -5884,13 +6076,16 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
              external_stream) = spawn_judge_session_capped(
                     sandboxed_cmd, prompt, str(workdir), env,
                     config["timeout_seconds"], sidecar_path,
-                    PILOT_V2_MAX_RAW_STREAM_BYTES)
+                    PILOT_V2_MAX_RAW_STREAM_BYTES,
+                    structured_output_schema=(
+                        judge_contract.structured_output_schema_text(role)))
             if external_stream:
-                session_id, nodes, response, stream_defects = (
-                    None, [], "", [])
+                (session_id, nodes, response, structured_output,
+                 stream_defects) = (None, [], "", None, [])
             else:
-                session_id, nodes, response, stream_defects = (
-                    _parse_judge_stream_tolerant(stdout))
+                (session_id, nodes, response, structured_output,
+                 stream_defects) = _parse_judge_stream_tolerant(
+                    stdout, require_structured_output=True)
             defects = launch_defects + stream_defects
             effort_capture = None
             if nodes:
@@ -5902,11 +6097,10 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
             non_schema_invalid = bool(defects)
             parsed_response = None
             if not defects:
-                try:
-                    parsed_response = judge_contract.validate_response(
-                        response, role)
-                except judge_contract.JudgeResponseError as exc:
-                    defects.append(str(exc))
+                parsed_response, response_defects = (
+                    _validate_v2_judge_response_pair(
+                        response, structured_output, role))
+                defects.extend(response_defects)
             valid = not defects
             result = {
                 **v2_attempt_expected(doc, slot, attempt),
@@ -5939,6 +6133,7 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
                 "nodes": nodes,
                 "launch_defects": launch_defects,
                 "response": response,
+                "structured_output": structured_output,
                 "response_sha256": hashlib.sha256(
                     response.encode("utf-8")).hexdigest(),
                 "accounting": account(nodes) if nodes else None,
@@ -6121,6 +6316,9 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
             "environment_policy_id": PILOT_V2_ENVIRONMENT_POLICY_ID,
             "response_schema_version": judge_contract.RESPONSE_SCHEMA_VERSION,
             "schema_sha256": v2_schema_digests[role],
+            "judge_output_policy": PILOT_V2_JUDGE_OUTPUT_POLICY,
+            "structured_output_schema_sha256": (
+                judge_contract.structured_output_schema_sha256(role)),
             "judge_prompt_sha256": judge_prompt_sha256,
             "quality_rubric_sha256": quality_rubric_sha256,
             "config_digest": config_digest(config),
@@ -6182,6 +6380,9 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
             "environment_policy_id": PILOT_V2_ENVIRONMENT_POLICY_ID,
             "response_schema_version": judge_contract.RESPONSE_SCHEMA_VERSION,
             "schema_sha256": v2_schema_digests[role],
+            "judge_output_policy": PILOT_V2_JUDGE_OUTPUT_POLICY,
+            "structured_output_schema_sha256": (
+                judge_contract.structured_output_schema_sha256(role)),
             "judge_prompt_sha256": judge_prompt_sha256,
             "quality_rubric_sha256": quality_rubric_sha256,
             "max_attempts": PILOT_V2_MAX_JUDGE_ATTEMPTS,
@@ -6294,6 +6495,10 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
                 != judge_contract.RESPONSE_SCHEMA_VERSION
                 or identity.get("schema_sha256")
                 != v2_schema_digests["scorer"]
+                or identity.get("judge_output_policy")
+                != PILOT_V2_JUDGE_OUTPUT_POLICY
+                or identity.get("structured_output_schema_sha256")
+                != judge_contract.structured_output_schema_sha256("scorer")
                 or identity.get("judge_prompt_sha256")
                 != seal_files.get(
                     seal_doc.get("judge_prompts", {}).get("scorer"))
@@ -6347,6 +6552,11 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
                     != judge_contract.RESPONSE_SCHEMA_VERSION
                     or result.get("schema_sha256")
                     != v2_schema_digests["scorer"]
+                    or result.get("judge_output_policy")
+                    != PILOT_V2_JUDGE_OUTPUT_POLICY
+                    or result.get("structured_output_schema_sha256")
+                    != judge_contract.structured_output_schema_sha256(
+                        "scorer")
                     or result.get("judge_prompt_sha256")
                     != identity["judge_prompt_sha256"]
                     or result.get("quality_rubric_sha256")
@@ -6497,6 +6707,9 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
                     "response_schema_version": (
                         judge_contract.RESPONSE_SCHEMA_VERSION),
                     "schema_sha256": v2_schema_digests[role],
+                    "judge_output_policy": PILOT_V2_JUDGE_OUTPUT_POLICY,
+                    "structured_output_schema_sha256": (
+                        judge_contract.structured_output_schema_sha256(role)),
                     "judge_prompt_sha256": judge_prompt_sha256,
                     "quality_rubric_sha256": quality_rubric_sha256,
                 }

@@ -20,6 +20,8 @@ import uuid
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 
+import pilot_registration
+
 
 MANIFEST_NAME = "seal-manifest.json"
 HOLDOUT_TASKS = tuple(f"holdout-v2-{number}.md" for number in range(1, 7))
@@ -39,23 +41,20 @@ CANONICAL_TASK_CONTEXTS = {
     task: f"task-contexts/{task}" for task in HOLDOUT_TASKS
 }
 
-PROTOCOL_VERSION = 2
-MAX_JUDGE_ATTEMPTS = 3
-JUDGE_RETRY_POLICY = {
-    "max_attempts": MAX_JUDGE_ATTEMPTS,
-    "fresh_session_each_attempt": True,
-    "repair": "none",
-}
-AGGREGATION_POLICY = {
-    "id": "pilot-v2-all-docs-v1",
-    "telemetry": "all-final-scheduled-workflow-outcomes-v1",
-    "critical": "candidate-absolute-zero-v1",
-}
+PROTOCOL_VERSION = pilot_registration.PROTOCOL_VERSION
+MAX_JUDGE_ATTEMPTS = pilot_registration.MAX_JUDGE_ATTEMPTS
+JUDGE_RETRY_POLICY = pilot_registration.JUDGE_RETRY_POLICY
+AGGREGATION_POLICY = pilot_registration.AGGREGATION_POLICY
+LIVE_PROBE_VERSION = pilot_registration.LIVE_PROBE_VERSION
 
 METADATA_KEYS = {
     "protocol_version",
+    "nonstandard_config",
     "max_judge_attempts",
     "judge_retry_policy",
+    "judge_output_policy",
+    "judge_live_probe",
+    "pilot_runtime_registration_sha256",
     "aggregation_policy",
     "judge_prompts",
     "judge_response_schemas",
@@ -72,6 +71,11 @@ JUDGE_CONFIG_KEYS = {
     "judge_model",
     "judge_effort",
 }
+LIVE_PROBE_KEYS = {
+    "probe_version",
+    "receipt_sha256",
+    "execution_sha256",
+}
 
 _JUDGE_CONTRACT_SPEC = importlib.util.spec_from_file_location(
     "seal_package_judge_contract", Path(__file__).with_name("judge_contract.py")
@@ -80,6 +84,8 @@ if _JUDGE_CONTRACT_SPEC is None or _JUDGE_CONTRACT_SPEC.loader is None:
     raise RuntimeError("judge contract module is unavailable")
 judge_contract = importlib.util.module_from_spec(_JUDGE_CONTRACT_SPEC)
 _JUDGE_CONTRACT_SPEC.loader.exec_module(judge_contract)
+
+JUDGE_OUTPUT_POLICY = pilot_registration.JUDGE_OUTPUT_POLICY
 
 
 class SealError(ValueError):
@@ -324,10 +330,37 @@ def _validate_metadata(metadata, files, package_root):
     _exact_keys(metadata, METADATA_KEYS, "metadata")
     if metadata["protocol_version"] != PROTOCOL_VERSION:
         raise SealError("protocol_version must be exactly 2")
+    if not isinstance(metadata["nonstandard_config"], bool):
+        raise SealError("nonstandard_config must be an explicit boolean")
     if metadata["max_judge_attempts"] != MAX_JUDGE_ATTEMPTS:
         raise SealError("max_judge_attempts must be exactly 3")
     if metadata["judge_retry_policy"] != JUDGE_RETRY_POLICY:
         raise SealError("judge_retry_policy differs from pilot v2")
+    if metadata["judge_output_policy"] != JUDGE_OUTPUT_POLICY:
+        raise SealError("judge_output_policy differs from pilot v2")
+    live_probe = metadata["judge_live_probe"]
+    _exact_keys(live_probe, LIVE_PROBE_KEYS, "judge_live_probe")
+    if pilot_registration.live_probe_registration_pending():
+        raise SealError(
+            "public live judge probe registration is pending; sealing is "
+            "not authorized")
+    if live_probe != pilot_registration.live_probe_binding():
+        raise SealError(
+            "judge_live_probe differs from the exact public pilot "
+            "receipt/execution registration")
+    runtime_registration_sha256 = metadata[
+        "pilot_runtime_registration_sha256"]
+    if (not isinstance(runtime_registration_sha256, str)
+            or not re.fullmatch(r"[0-9a-f]{64}",
+                                runtime_registration_sha256)):
+        raise SealError(
+            "pilot_runtime_registration_sha256 must be lowercase SHA-256")
+    if (not metadata["nonstandard_config"]
+            and runtime_registration_sha256
+            != pilot_registration.standard_v2_runtime_registration_sha256()):
+        raise SealError(
+            "pilot_runtime_registration_sha256 differs from the exact "
+            "public standard-v2 runtime registration")
     if metadata["aggregation_policy"] != AGGREGATION_POLICY:
         raise SealError("aggregation_policy differs from pilot v2")
     if metadata["judge_prompts"] != CANONICAL_JUDGE_PROMPTS:
@@ -485,6 +518,13 @@ def _validate_metadata(metadata, files, package_root):
 
     judge_config = metadata["judge_config"]
     _exact_keys(judge_config, JUDGE_CONFIG_KEYS, "judge_config")
+    if (not metadata["nonstandard_config"] and judge_config != {
+            "judge_backend_cmd": list(pilot_registration.JUDGE_BACKEND_CMD),
+            "judge_model": pilot_registration.JUDGE_MODEL,
+            "judge_effort": pilot_registration.JUDGE_EFFORT,
+    }):
+        raise SealError(
+            "judge_config differs from the exact standard-v2 registration")
     command = judge_config["judge_backend_cmd"]
     if (
         not isinstance(command, list)
@@ -642,6 +682,12 @@ def verify_package(package, manifest_path):
         raise SealError("seal manifest must be an ordinary file")
 
     manifest_bytes = _read_regular_bytes(manifest, "seal manifest")
+    manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+    if (not pilot_registration.seal_registration_pending()
+            and manifest_sha256
+            != pilot_registration.REGISTERED_SEAL_PACKAGE_SHA256):
+        raise SealError(
+            "seal manifest differs from the registered package SHA-256")
     document = _strict_json(manifest_bytes, "seal manifest")
     _exact_keys(document, MANIFEST_KEYS, "manifest")
     files = document["files"]

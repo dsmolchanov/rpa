@@ -306,6 +306,7 @@ def main():
                         action="store_true", required=True)
     parser.add_argument("prompt_arg", nargs="?")
     parser.add_argument("--output-format", default="text")
+    parser.add_argument("--json-schema")
     args = parser.parse_args()
 
     prompt_source = "argv" if args.prompt_arg is not None else "stdin"
@@ -468,8 +469,12 @@ def main():
             result_text = "MOCK-VERDICT: parent exited successfully"
         else:
             result_text = judge_result(prompt)
-        emit({"type": "result", "session_id": session_id,
-              "result": result_text})
+        result_event = {"type": "result", "subtype": "success",
+                        "session_id": session_id, "result": result_text}
+        if (args.json_schema is not None
+                and args.mode == "judge-background-child"):
+            result_event["structured_output"] = json.loads(result_text)
+        emit(result_event)
         return
 
     if args.mode in ("judge-auto", "judge-slow-auto", "judge-invalid",
@@ -492,8 +497,16 @@ def main():
                            if count == 0 else judge_result(prompt))
         else:
             result_text = judge_result(prompt)
-        emit({"type": "result", "session_id": session_id,
-              "result": result_text})
+        result_event = {"type": "result", "subtype": "success",
+                        "session_id": session_id, "result": result_text}
+        if args.json_schema is not None:
+            try:
+                result_event["structured_output"] = json.loads(result_text)
+            except json.JSONDecodeError:
+                # Invalid judge modes deliberately emulate a terminal CLI
+                # result with no usable structured output.
+                pass
+        emit(result_event)
         return
 
     if args.mode == "timeout":

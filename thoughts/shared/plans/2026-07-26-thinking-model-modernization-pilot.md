@@ -804,11 +804,16 @@ their per-file hashes, the semantic rules below, and the fixed retry policy.
 The schema version, retry bound, aggregation policy, judge command/model/
 effort, and package digest are part of the schedule and scoring-batch identity.
 Every judge invocation receives the sealed role prompt, quality rubric, exact
-role schema, task context, and candidate document in that fixed order; prompt
-and rubric digests are recorded in batch, attempt, and result identity.
+role schema, task context, and candidate document in that fixed order, followed
+by the deterministic exact-key reminder derived from the same role contract;
+prompt and rubric digests are recorded in batch, attempt, and result identity.
 These bytes, all evaluated-task and continuation prompts, and every judge
 document are transported only through the child process's UTF-8 stdin; `-p`
-remains a flag in argv but no prompt bytes are process-list-visible. Likewise,
+remains a flag in argv but no prompt bytes are process-list-visible. The sole
+argv exception is the deterministic generic public structural schema supplied
+by the harness through `--json-schema`; it contains no sealed prompt, task,
+context, rubric, document, source URL, or ground truth, and the configured
+judge command may not supply or override it. Likewise,
 the credential-free sealed live-source URL reaches the fixed curl command only
 as safely quoted curl-config stdin and is suppressed from harness error text.
 
@@ -849,6 +854,17 @@ harness and proven with a secret-canary preflight before sealing.
   the entire round is protocol-invalid: no repair, fence stripping, score
   recovery, imputation, judge substitution, selective rejudge, partial median,
   or reuse of a prior-round response is permitted.
+- Native structured generation is an output aid, not a replacement validator.
+  The CLI's ordinary string `result` and object `structured_output` must each
+  independently pass the existing full role validator and normalize to exactly
+  the same object; neither view may repair the other. The registered policy is
+  `claude-cli-json-schema-structural-v1`. Its public structural-schema SHA-256
+  is `ec21f5722725501edf6d29741a85e93f0ed4611d443540452a3b907e382adcc7`
+  for the scorer and
+  `feba3d9047ff1aa9b2da959e8431e177bdf9e6117ed2ffed972772e2ebddebe0`
+  for the verifier. Policy and role digest bind the seal, runtime pins,
+  schedule, batch, every attempt, terminal exhaustion, accepted result, and
+  sanitized aggregate evidence; aggregation checks them independently.
 - Attempt JSON, pending journals, and external raw-stream sidecars are an
   immutable association. Orphan sidecars, non-contiguous attempts, material
   after a valid attempt, and any symlink/directory/non-regular material at a
@@ -956,6 +972,51 @@ both the host and exact operator image before schedule creation. Its digest is
 the only disclosed task identifiers remain the six prospective basenames.
 The clean boundary also verified canonical internal paths, six distinct task
 digests, exact ablation scope, and target-pin availability.
+
+That fourth package and its complete 42-slot execution round were withdrawn
+on 2026-08-02 after the all-document scorer exhausted the registered three
+attempts for one required record. The strict response validator rejected all
+three responses, the scorer batch remained incomplete, and the registered
+terminal marker made resume impossible. The verifier and aggregate were not
+launched, no partial score or verdict is reported, and the rollout decision
+remains indeterminate. All run and judge-attempt evidence is preserved
+unchanged in the private workspace. No task, document, response, score, or
+schedule from this round may be repaired, selectively rejudged, or reused.
+The public operator registration is reset to the all-zero sentinel.
+
+Before another seal is authored, the judge output contract is prospectively
+hardened without widening the accepted response language: an exact-key
+reminder follows the untrusted candidate document, a deterministic public
+structural schema constrains native CLI structured output, and the existing
+full semantic validator remains authoritative. The generic public structural
+schema is the sole exception to the stdin-only argv rule; it contains no
+sealed prompt, task, context, rubric, document, source URL, or ground truth.
+Its version and digest are bound into the runtime, schedule, attempt, and
+batch identities. Both the CLI string result and native structured object are
+strictly validated and required to be equal. This amendment does not add a
+fourth harness attempt or authorize any hidden harness-level repair. Before
+the next seal is authored, one public synthetic live-backend probe for each
+judge role must exercise the exact structured schema, dual-output validation,
+model/effort pins, sandbox, and CLI version and persist a digest-verified
+receipt. The probe has no operator-selected output path: it derives the sole
+`judge-live-probe/` namespace beside the prospective
+`holdout-v2-round5/package/`, and namespace creation is an irreversible launch
+claim. Its full registered execution identity, canonical receipt digest, and
+version are registered before sealing and bound into the package, runtime
+config digest, and every standard-v2 seal check; pending, missing, drifted, or
+tampered proof blocks direct runner and step-5 entry points. After the
+probe registration, every path-free production pin (arms and installation
+hashes, model/effort/entrypoint, backend and judge commands/version, retry and
+deadline policy, parser/image identity, seeds, and exact sandbox wrapper
+bytes) is represented by one public standard-v2 runtime-registration digest.
+The atomic seal embeds that digest, and the direct runner, seal verifier, and
+step-5 operator all consume the same authority before reading a task, creating
+run output, or launching a backend. The explicit
+`nonstandard_config: true` marker remains the only dev path and cannot
+reconstruct a standard schedule. After the hardening passes the synthetic and
+real-backend preflights,
+a fifth uncontaminated package with six genuinely new tasks and a completely
+new 42-slot schedule is required.
 
 1. Implement strict role validation, bounded crash-safe judge attempts,
    all-document role coverage, immutable policy bindings, and deterministic
