@@ -90,7 +90,8 @@ REGISTERED_INSTALL_SHA256 = {
 # Resetting the registration to this conspicuous sentinel makes an
 # unregistered execution impossible to mistake for a real round.
 PENDING_SEAL_PACKAGE_SHA256 = "0" * 64
-REGISTERED_SEAL_PACKAGE_SHA256 = PENDING_SEAL_PACKAGE_SHA256
+REGISTERED_SEAL_PACKAGE_SHA256 = (
+    "2b57a466e5168533cc1972d6459e4fc592e5c04af90cccf4f04f655895987077")
 REGISTERED_HOLDOUT_TASKS = tuple(
     f"holdout-v2-{i}.md" for i in range(1, 7))
 REGISTERED_ABLATION_TASKS = (

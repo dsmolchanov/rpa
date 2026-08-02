@@ -921,6 +921,14 @@ selective rerun is permitted: execution requires another fresh seal and a new
 complete randomized schedule. The operator registration is reset to its
 all-zero sentinel until that replacement is registered.
 
+After the argv/stdin privacy hardening was frozen, a third uncontaminated
+package was newly authored, atomically promoted, and registered before any
+new schedule or outcome with digest
+`2b57a466e5168533cc1972d6459e4fc592e5c04af90cccf4f04f655895987077`.
+Its disclosed identifiers remain only the six prospective basenames; the
+clean sealing boundary also verified canonical internal paths and exact
+target-pin availability before promotion.
+
 1. Implement strict role validation, bounded crash-safe judge attempts,
    all-document role coverage, immutable policy bindings, and deterministic
    aggregation in `skills/research-codebase/evals/public/`.
