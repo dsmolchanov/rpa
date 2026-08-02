@@ -36,7 +36,9 @@ auto_fixable_count: 7
   privacy, and stream parser parity in synthetic and real-backend preflights.
   The synthetic side now also proves exact-pin rejection before launch,
   canonical one-shot probe state, pending/tampered receipt refusal, and
-  seal/config proof binding; the one real scorer + verifier probe remains.
+  seal/config proof binding. The one-shot real scorer + verifier transport
+  probe passed and its receipt/execution digests are registered; the post-seal
+  all-arm real-backend preflight remains.
 - [ ] Create a replacement seal in an uncontaminated session and return only its
   SHA-256 and six task basenames.
 - [ ] Register that exact seal in `step5_operator.py`; replace v1

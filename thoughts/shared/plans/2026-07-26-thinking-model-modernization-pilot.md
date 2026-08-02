@@ -1018,6 +1018,18 @@ real-backend preflights,
 a fifth uncontaminated package with six genuinely new tasks and a completely
 new 42-slot schedule is required.
 
+The canonical round-5 live probe completed on 2026-08-02 before any replacement
+holdout was authored. It made exactly one public synthetic scorer call and one
+public synthetic verifier call in the pinned operator runtime; both roles
+passed model/effort parity, the role-specific structural grammar, independent
+full validation of `result` and `structured_output`, and exact equality of the
+two normalized objects. A no-model replay revalidated both immutable raw
+streams. The registered receipt SHA-256 is
+`718588743e2199e1c254e59cf51b77328d71d7c98b4dc6d92e54db986d4fd5a8` and
+the registered execution SHA-256 is
+`d5369a04f841202818476a5afa5c63e48a672a7e8432ae18c3202be285c6b6e8`.
+The probe used no holdout task, context, document, ground truth, or snapshot.
+
 1. Implement strict role validation, bounded crash-safe judge attempts,
    all-document role coverage, immutable policy bindings, and deterministic
    aggregation in `skills/research-codebase/evals/public/`.
