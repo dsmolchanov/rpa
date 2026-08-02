@@ -1260,6 +1260,8 @@ def run_preflight():
             and replay_receipt == probe_receipt and not replay_launches
             and incomplete_namespace_rejected
             and probe_help.returncode == 0 and "--out" not in probe_help.stdout
+            and judge_live_probe.ROUND_NAMESPACE == "holdout-v2-round6"
+            and "holdout-v2-round6" in probe_help.stdout
             and probe_out_arg.returncode == 2
             and "unrecognized arguments: --out" in probe_out_arg.stderr
             and pending_probe_registration_rejected

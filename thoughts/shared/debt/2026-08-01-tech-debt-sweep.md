@@ -149,8 +149,8 @@ Open documentation debt:
 
 - `step5_operator.py` now represents the replacement v2 protocol but remains
   intentionally blocked by pending live-probe and seal sentinels. The real
-  receipt/execution digests and then the fresh package hash must be registered
-  in order before it can emit the two v2 all-doc judge batches.
+  round-6 receipt/execution digests and then the fresh package hash must be
+  registered in order before it can emit the two v2 all-doc judge batches.
 - 57 of 114 public-by-name functions lack docstrings. Priority targets are
   `runner.run_task`, `build_installs.build`, and
   `validate_artifact.validate`; exhaustive docstring work is not a pilot
@@ -200,10 +200,10 @@ It establishes the metric baseline for `tech-debt-trends`.
 
 ## Top actions
 
-1. Keep the exhausted scorer round immutable and unregistered; harden native
-   structured-output guidance, bind its public structural schema, and require
-   the canonical one-shot live-probe receipt/execution proof before a fresh
-   seal and full replacement schedule.
+1. Keep every invalid round immutable and unregistered. The round-5 seal
+   launch ended after controls without a conclusive final response or promoted
+   package, so preserve it and require a fresh round-6 one-shot live-probe
+   receipt/execution proof before a new seal and full replacement schedule.
 2. Complete the fresh round sequentially: all 42 runs, scorer, verifier, then
    deterministic aggregation. Never reuse a prior task, document, attempt, or
    score.
@@ -222,3 +222,10 @@ reliability debt is prospective model-output control: the exact role schema
 was enforced after generation but its exact-key shape did not have both a
 high-recency prompt reminder and native structural-output guidance. Those
 controls must be policy-bound and preflighted before the replacement seal.
+
+The later round-5 seal launch did not produce a conclusive final response or
+an atomically promoted package after its prelaunch controls. It is preserved
+as protocol-invalid evidence and cannot be resumed or reused. The round-5
+live-probe and seal registrations are no longer production authority: all
+three public digest registrations are pending again, and the next attempt is
+isolated under `holdout-v2-round6` with a new one-shot probe and atomic seal.

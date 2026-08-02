@@ -1000,7 +1000,7 @@ judge role must exercise the exact structured schema, dual-output validation,
 model/effort pins, sandbox, and CLI version and persist a digest-verified
 receipt. The probe has no operator-selected output path: it derives the sole
 `judge-live-probe/` namespace beside the prospective
-`holdout-v2-round5/package/`, and namespace creation is an irreversible launch
+`holdout-v2-round6/package/`, and namespace creation is an irreversible launch
 claim. Its full registered execution identity, canonical receipt digest, and
 version are registered before sealing and bound into the package, runtime
 config digest, and every standard-v2 seal check; pending, missing, drifted, or
@@ -1015,7 +1015,7 @@ run output, or launching a backend. The explicit
 `nonstandard_config: true` marker remains the only dev path and cannot
 reconstruct a standard schedule. After the hardening passes the synthetic and
 real-backend preflights,
-a fifth uncontaminated package with six genuinely new tasks and a completely
+a fresh uncontaminated package with six genuinely new tasks and a completely
 new 42-slot schedule is required.
 
 The canonical round-5 live probe completed on 2026-08-02 before any replacement
@@ -1029,6 +1029,19 @@ streams. The registered receipt SHA-256 is
 the registered execution SHA-256 is
 `d5369a04f841202818476a5afa5c63e48a672a7e8432ae18c3202be285c6b6e8`.
 The probe used no holdout task, context, document, ground truth, or snapshot.
+
+The subsequent round-5 seal launch passed its prelaunch controls but ended
+without a conclusive final response and without an atomically promoted
+package. That launch is therefore protocol-invalid. Its complete namespace is
+preserved unchanged as invalid evidence and may never be resumed, repaired,
+or reused. No package digest, holdout task content, or holdout outcome was
+returned to the implementation context. The public live-probe receipt,
+live-probe execution, and seal registrations are reset to their exact
+all-zero pending sentinels. The next attempt uses the fresh
+`holdout-v2-round6` namespace and requires a new one-shot public live probe,
+new atomic seal, and new complete 42-slot schedule; the frozen candidate,
+three arms and installation hashes, runtime pins, seeds, six prospective task
+basenames, ablation scope, and run design remain unchanged.
 
 1. Implement strict role validation, bounded crash-safe judge attempts,
    all-document role coverage, immutable policy bindings, and deterministic
