@@ -233,4 +233,8 @@ isolated under `holdout-v2-round6` with a new one-shot probe and atomic seal.
 
 The round-6 one-shot public live probe is now complete and revalidated without
 another model call. Its receipt/execution digests are the current public
-registration; only the round-6 atomic package digest remains pending.
+registration. The separate one-shot sealing boundary then atomically promoted
+the round-6 package and returned only its six generic basenames plus registered
+digest `2e0aef16a6ce9bc91b8c1865a695e1550c0788ca6ef6aa559b9506c36ea0296f`.
+The remaining operational debt is the all-arm real-backend preflight, fresh
+42-slot schedule, judging, and deterministic aggregate.

@@ -1052,6 +1052,15 @@ the registered execution SHA-256 is
 The probe used only synthetic public material and no holdout task, context,
 document, ground truth, or snapshot.
 
+The fresh round-6 holdout package was authored in the separately confined
+one-shot session after that live-probe registration and atomically promoted
+only after its complete manifest, target pins, and package topology passed the
+clean-boundary checks. Its registered package SHA-256 is
+`2e0aef16a6ce9bc91b8c1865a695e1550c0788ca6ef6aa559b9506c36ea0296f`.
+The only returned identifiers were `holdout-v2-1.md` through
+`holdout-v2-6.md`; no task, context, ground truth, snapshot, judge prompt, or
+holdout outcome returned to the implementation context before registration.
+
 1. Implement strict role validation, bounded crash-safe judge attempts,
    all-document role coverage, immutable policy bindings, and deterministic
    aggregation in `skills/research-codebase/evals/public/`.

@@ -37,14 +37,87 @@ EXPECTED_SUB = {"input_tokens": 40, "output_tokens": 20, "tool_calls": 5}
 SECRET = "SECRET-GROUND-TRUTH-MARKER"
 SYNTHETIC_LIVE_PROBE_RECEIPT_SHA256 = "1" * 64
 SYNTHETIC_LIVE_PROBE_EXECUTION_SHA256 = "2" * 64
-# Synthetic seals exercise production topology without weakening the public
-# pending defaults. All consumers read the same shared module dynamically.
-pilot_registration.REGISTERED_LIVE_PROBE_RECEIPT_SHA256 = (
-    SYNTHETIC_LIVE_PROBE_RECEIPT_SHA256)
-pilot_registration.REGISTERED_LIVE_PROBE_EXECUTION_SHA256 = (
-    SYNTHETIC_LIVE_PROBE_EXECUTION_SHA256)
+SYNTHETIC_NONPENDING_SEAL_SHA256 = "7" * 64
 SEAL_SHA = None
 SEAL_PATH = None
+
+
+def _registration_state():
+    operator_contract = judge_live_probe.operator_contract
+    return {
+        "shared": (
+            pilot_registration.REGISTERED_SEAL_PACKAGE_SHA256,
+            pilot_registration.REGISTERED_LIVE_PROBE_RECEIPT_SHA256,
+            pilot_registration.REGISTERED_LIVE_PROBE_EXECUTION_SHA256,
+        ),
+        # judge_live_probe imports step5_operator before run_preflight enters
+        # its fixture context, so its compatibility aliases must be isolated
+        # and restored alongside the shared authority.
+        "probe_operator": (
+            operator_contract.REGISTERED_SEAL_PACKAGE_SHA256,
+            operator_contract.REGISTERED_LIVE_PROBE_RECEIPT_SHA256,
+            operator_contract.REGISTERED_LIVE_PROBE_EXECUTION_SHA256,
+        ),
+    }
+
+
+def _restore_registration_state(state):
+    operator_contract = judge_live_probe.operator_contract
+    (pilot_registration.REGISTERED_SEAL_PACKAGE_SHA256,
+     pilot_registration.REGISTERED_LIVE_PROBE_RECEIPT_SHA256,
+     pilot_registration.REGISTERED_LIVE_PROBE_EXECUTION_SHA256) = state[
+         "shared"]
+    (operator_contract.REGISTERED_SEAL_PACKAGE_SHA256,
+     operator_contract.REGISTERED_LIVE_PROBE_RECEIPT_SHA256,
+     operator_contract.REGISTERED_LIVE_PROBE_EXECUTION_SHA256) = state[
+         "probe_operator"]
+
+
+@contextlib.contextmanager
+def isolated_synthetic_registration():
+    """Temporarily replace production registrations for public fixtures."""
+    saved = _registration_state()
+    operator_contract = judge_live_probe.operator_contract
+    pilot_registration.REGISTERED_SEAL_PACKAGE_SHA256 = (
+        pilot_registration.PENDING_SEAL_PACKAGE_SHA256)
+    pilot_registration.REGISTERED_LIVE_PROBE_RECEIPT_SHA256 = (
+        SYNTHETIC_LIVE_PROBE_RECEIPT_SHA256)
+    pilot_registration.REGISTERED_LIVE_PROBE_EXECUTION_SHA256 = (
+        SYNTHETIC_LIVE_PROBE_EXECUTION_SHA256)
+    operator_contract.REGISTERED_SEAL_PACKAGE_SHA256 = (
+        pilot_registration.PENDING_SEAL_PACKAGE_SHA256)
+    operator_contract.REGISTERED_LIVE_PROBE_RECEIPT_SHA256 = (
+        SYNTHETIC_LIVE_PROBE_RECEIPT_SHA256)
+    operator_contract.REGISTERED_LIVE_PROBE_EXECUTION_SHA256 = (
+        SYNTHETIC_LIVE_PROBE_EXECUTION_SHA256)
+    try:
+        yield saved
+    finally:
+        _restore_registration_state(saved)
+
+
+def _registration_isolation_self_test():
+    """Prove non-pending isolation even when the real authority is pending."""
+    actual = _registration_state()
+    injected = {
+        "shared": (SYNTHETIC_NONPENDING_SEAL_SHA256,
+                   *actual["shared"][1:]),
+        "probe_operator": (SYNTHETIC_NONPENDING_SEAL_SHA256,
+                           *actual["probe_operator"][1:]),
+    }
+    try:
+        _restore_registration_state(injected)
+        with isolated_synthetic_registration():
+            isolated = _registration_state()
+            entered_cleanly = (
+                isolated["shared"] == (
+                    pilot_registration.PENDING_SEAL_PACKAGE_SHA256,
+                    SYNTHETIC_LIVE_PROBE_RECEIPT_SHA256,
+                    SYNTHETIC_LIVE_PROBE_EXECUTION_SHA256)
+                and isolated["probe_operator"] == isolated["shared"])
+        return entered_cleanly and _registration_state() == injected
+    finally:
+        _restore_registration_state(actual)
 
 
 def make_git_repo(workspace, label, seed_research=False):
@@ -931,10 +1004,23 @@ def make_v2_aggregation_fixture(workspace, target_sha, label="golden"):
     }
 
 
-def run_preflight():
+def _run_preflight(registration_isolation_ok):
     global SEAL_SHA, SEAL_PATH
     notes = []
     ok = True
+    current_registration = _registration_state()
+    ok &= check(
+        "synthetic fixtures isolate and restore injected non-pending seal",
+        registration_isolation_ok
+        and pilot_registration.seal_registration_pending()
+        and current_registration["shared"][1:] == (
+            SYNTHETIC_LIVE_PROBE_RECEIPT_SHA256,
+            SYNTHETIC_LIVE_PROBE_EXECUTION_SHA256)
+        and current_registration["probe_operator"] == (
+            pilot_registration.PENDING_SEAL_PACKAGE_SHA256,
+            SYNTHETIC_LIVE_PROBE_RECEIPT_SHA256,
+            SYNTHETIC_LIVE_PROBE_EXECUTION_SHA256),
+        notes)
     with tempfile.TemporaryDirectory() as tmp:
         ws = Path(tmp)
 
@@ -8599,6 +8685,20 @@ def run_preflight():
     print(f"preflight {'OK' if ok else 'FAILED'}: "
           f"{sum(1 for _, s, _ in notes if s == 'PASS')}/{len(notes)} capabilities")
     return 0 if ok else 1
+
+
+def run_preflight():
+    production = _registration_state()
+    registration_isolation_ok = _registration_isolation_self_test()
+    if _registration_state() != production:
+        print("preflight FAILED: isolation self-test changed registration")
+        return 1
+    with isolated_synthetic_registration():
+        result = _run_preflight(registration_isolation_ok)
+    if _registration_state() != production:
+        print("preflight FAILED: production registration was not restored")
+        return 1
+    return result
 
 
 if __name__ == "__main__":

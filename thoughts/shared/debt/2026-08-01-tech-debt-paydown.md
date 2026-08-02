@@ -39,9 +39,10 @@ auto_fixable_count: 7
   seal/config proof binding. The one-shot real scorer + verifier transport
   probe passed and its receipt/execution digests are registered; the post-seal
   all-arm real-backend preflight remains.
-- [ ] Create a replacement seal in an uncontaminated session and return only its
+- [x] Create a replacement seal in an uncontaminated session and return only its
   SHA-256 and six task basenames.
-- [ ] Register that exact seal in `step5_operator.py`; replace v1
+- [x] Register that exact seal through the shared authority consumed by
+  `step5_operator.py`; replace v1
   primary/diagnostic output with two v2 all-doc batches plus deterministic
   aggregation.
 - [ ] Rebuild all three arm installations in the pinned operator image and
