@@ -58,6 +58,7 @@ Usage:
 
 import argparse
 import hashlib
+import importlib.metadata
 import json
 import os
 import platform
@@ -90,8 +91,7 @@ REGISTERED_INSTALL_SHA256 = {
 # Resetting the registration to this conspicuous sentinel makes an
 # unregistered execution impossible to mistake for a real round.
 PENDING_SEAL_PACKAGE_SHA256 = "0" * 64
-REGISTERED_SEAL_PACKAGE_SHA256 = (
-    "2b57a466e5168533cc1972d6459e4fc592e5c04af90cccf4f04f655895987077")
+REGISTERED_SEAL_PACKAGE_SHA256 = PENDING_SEAL_PACKAGE_SHA256
 REGISTERED_HOLDOUT_TASKS = tuple(
     f"holdout-v2-{i}.md" for i in range(1, 7))
 REGISTERED_ABLATION_TASKS = (
@@ -131,7 +131,13 @@ REGISTERED_SCORER_SEED = runner.PILOT_V2_SCORER_SEED
 REGISTERED_VERIFIER_SEED = runner.PILOT_V2_VERIFIER_SEED
 REGISTERED_PROTOCOL_VERSION = 2
 REGISTERED_MAX_JUDGE_ATTEMPTS = 3
-REGISTERED_ENVIRONMENT_POLICY_ID = "claude-cli-minimal-env-v1"
+REGISTERED_ENVIRONMENT_POLICY_ID = (
+    "claude-cli-minimal-env-v2-pyyaml-6.0.2")
+REGISTERED_OPERATOR_IMAGE_SHA256 = (
+    "sha256:bbe9dbf152c933f4c3a69eae0809983cf698253a7a067fd6b73180ecc85c4975")
+REGISTERED_ARTIFACT_PARSER = "pyyaml"
+REGISTERED_ARTIFACT_PARSER_VERSION = "6.0.2"
+OPERATOR_IMAGE_ENV = "RPA_OPERATOR_IMAGE_SHA256"
 REGISTERED_JUDGE_RETRY_POLICY = {
     "max_attempts": REGISTERED_MAX_JUDGE_ATTEMPTS,
     "fresh_session_each_attempt": True,
@@ -150,7 +156,8 @@ DEFAULT_PHASES = (
     "gates", "installs", "seal", "real-preflight", "schedule", "runs")
 # A receipt must attest exactly these gates, each with its recorded,
 # digest-matching, PASSING transcript on disk.
-REQUIRED_GATES = ("backend-version-pin", "sandbox", "preflight")
+REQUIRED_GATES = (
+    "operator-runtime-pin", "backend-version-pin", "sandbox", "preflight")
 GATE_TRANSCRIPT_MARKERS = {
     "preflight": "preflight OK:",
     "macos_sandbox_check": "macos-sandbox-check OK:",
@@ -402,6 +409,13 @@ def all_docs_population(results, runs_out):
         if (result.get("protocol_version") != REGISTERED_PROTOCOL_VERSION
                 or result.get("environment_policy_id")
                 != REGISTERED_ENVIRONMENT_POLICY_ID
+                or result.get("runtime_pins") != {
+                    "operator_image_sha256":
+                        REGISTERED_OPERATOR_IMAGE_SHA256,
+                    "artifact_parser": REGISTERED_ARTIFACT_PARSER,
+                    "artifact_parser_version":
+                        REGISTERED_ARTIFACT_PARSER_VERSION,
+                }
                 or result.get("telemetry_policy_id")
                 != REGISTERED_AGGREGATION_POLICY["telemetry"]
                 or result.get("telemetry_eligible") is not True
@@ -460,6 +474,49 @@ def all_docs_population(results, runs_out):
     return docs
 
 
+def operator_runtime_observation():
+    """Read the concrete image/parser implementation used by this process."""
+    parser_module = runner.artifact_validator.yaml
+    parser_name = None
+    parser_version = None
+    distribution_version = None
+    if parser_module is not None:
+        if getattr(parser_module, "__name__", None) == "yaml":
+            parser_name = "pyyaml"
+        else:
+            parser_name = getattr(parser_module, "__name__", None)
+        raw_version = getattr(parser_module, "__version__", None)
+        if raw_version is not None:
+            parser_version = str(raw_version)
+        try:
+            distribution_version = importlib.metadata.version("PyYAML")
+        except importlib.metadata.PackageNotFoundError:
+            distribution_version = None
+    return {
+        "operator_image_sha256": os.environ.get(OPERATOR_IMAGE_ENV),
+        "artifact_parser": parser_name,
+        "artifact_parser_version": parser_version,
+        "artifact_parser_distribution_version": distribution_version,
+    }
+
+
+def operator_runtime_problem(config, observation=None):
+    """Fail closed when the process is not the registered operator runtime."""
+    observed = (operator_runtime_observation()
+                if observation is None else observation)
+    expected = runner.protocol_v2_runtime_pins(config)
+    for field, value in expected.items():
+        if observed.get(field) != value:
+            return (f"operator runtime `{field}` observed "
+                    f"{observed.get(field)!r}, expected {value!r}")
+    if observed.get("artifact_parser_distribution_version") != expected.get(
+            "artifact_parser_version"):
+        return ("operator runtime PyYAML distribution version observed "
+                f"{observed.get('artifact_parser_distribution_version')!r}, "
+                f"expected {expected.get('artifact_parser_version')!r}")
+    return None
+
+
 def gate_identity(config):
     """What a gate receipt attests: this config, this host, this
     wrapper build. Any of them changing invalidates the receipt."""
@@ -471,6 +528,8 @@ def gate_identity(config):
         "host": f"{platform.node()}|{sys.platform}",
         "wrapper_sha256": file_digest(wrapper) if wrapper else None,
         "backend_version": REGISTERED_BACKEND_VERSION,
+        "runtime_pins": runner.protocol_v2_runtime_pins(config),
+        "runtime_observed": operator_runtime_observation(),
     }
 
 
@@ -482,6 +541,9 @@ def gate_receipt_problem(out, config):
     """Scored phases require a durable receipt proving the mandatory
     gates — on macOS including the host-side sandbox check, which the
     runner never repeats — passed for THIS host and config."""
+    runtime_issue = operator_runtime_problem(config)
+    if runtime_issue:
+        return runtime_issue
     path = gate_receipt_path(out)
     if not path.is_file():
         return (f"no gate receipt at {path} — run the `gates` phase on "
@@ -494,6 +556,10 @@ def gate_receipt_problem(out, config):
     if receipt.get("identity") != current:
         return ("gate receipt was recorded for a different host, config "
                 "or sandbox wrapper — re-run the `gates` phase")
+    if receipt.get("operator_runtime_observed") != current.get(
+            "runtime_observed"):
+        return ("gate receipt does not bind the currently observed operator "
+                "image and artifact parser")
     # Identity alone is derived from local config/host data, so a
     # hand-written or truncated receipt would otherwise stand in for
     # gates that never ran. The recorded gate list and every gate's
@@ -561,6 +627,7 @@ def real_preflight_identity(config, task):
         "target_repo": repository,
         "target_sha": target_sha,
         "environment_policy_id": REGISTERED_ENVIRONMENT_POLICY_ID,
+        "runtime_pins": runner.protocol_v2_runtime_pins(config),
         "canary_name": "RPA_REAL_PREFLIGHT_CANARY",
     }
 
@@ -607,7 +674,9 @@ def _verified_real_preflight_records(root, dev_config, task, arms=None):
                     or record.get("protocol_version")
                     != REGISTERED_PROTOCOL_VERSION
                     or record.get("environment_policy_id")
-                    != REGISTERED_ENVIRONMENT_POLICY_ID):
+                    != REGISTERED_ENVIRONMENT_POLICY_ID
+                    or record.get("runtime_pins")
+                    != runner.protocol_v2_runtime_pins(dev_config)):
                 raise runner.InfraFailure(
                     "real-backend preflight record binding mismatch")
             if record.get("status") in {"completed", "workflow_failure"}:
@@ -662,6 +731,8 @@ def _verified_real_preflight_records(root, dev_config, task, arms=None):
                 or expected_arm.get("entrypoint") != REGISTERED_ENTRYPOINT
                 or final.get("telemetry_eligible") is not True
                 or final.get("telemetry_exclusion_reason") is not None
+                or final.get("runtime_pins")
+                != runner.protocol_v2_runtime_pins(dev_config)
                 or accounting != recomputed_accounting
                 or any(isinstance(value, bool)
                        or not isinstance(value, int) or value < 0
@@ -760,6 +831,15 @@ def validate_config(config):
                 f"public harness {label} differs from the registered "
                 "protocol-v2 operator contract"
             )
+    registered_runtime_pins = {
+        "operator_image_sha256": REGISTERED_OPERATOR_IMAGE_SHA256,
+        "artifact_parser": REGISTERED_ARTIFACT_PARSER,
+        "artifact_parser_version": REGISTERED_ARTIFACT_PARSER_VERSION,
+    }
+    for field, expected in registered_runtime_pins.items():
+        if config.get(field) != expected:
+            problems.append(
+                f"{field} {config.get(field)!r} != registered {expected!r}")
     if config.get("nonstandard_config"):
         problems.append(
             "`nonstandard_config` is true — holdout runs require the "
@@ -870,6 +950,14 @@ def validate_config(config):
 
 def phase_gates(args, config):
     gate_artifacts = {}
+    runtime_observed = operator_runtime_observation()
+    runtime_issue = operator_runtime_problem(config, runtime_observed)
+    if runtime_issue:
+        fail(runtime_issue + " — no backend observation is permitted")
+    ok("operator image and artifact parser pinned "
+       f"({runtime_observed['operator_image_sha256']}; "
+       f"{runtime_observed['artifact_parser']} "
+       f"{runtime_observed['artifact_parser_version']})")
     version = subprocess.run(config.get("backend_version_cmd")
                              or ["claude", "--version"],
                              capture_output=True, text=True)
@@ -939,7 +1027,8 @@ def phase_gates(args, config):
     # carry auditable proof of every mandatory gate.
     receipt = {
         "identity": gate_identity(config),
-        "gates": ["backend-version-pin", "sandbox", "preflight"],
+        "gates": list(REQUIRED_GATES),
+        "operator_runtime_observed": runtime_observed,
         "backend_version_observed": actual,
         "artifacts": gate_artifacts,
         "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -1183,6 +1272,8 @@ def _completed_manifest(args, config):
     if (manifest.get("protocol_version") != REGISTERED_PROTOCOL_VERSION
             or manifest.get("environment_policy_id")
             != REGISTERED_ENVIRONMENT_POLICY_ID
+            or manifest.get("runtime_pins")
+            != runner.protocol_v2_runtime_pins(config)
             or manifest.get("config_digest") != runner.config_digest(config)
             or manifest.get("replicates") != REGISTERED_REPLICATES
             or manifest.get("nonstandard") is not False):
@@ -1205,7 +1296,9 @@ def _completed_manifest(args, config):
             or schedule.get("protocol_version")
             != REGISTERED_PROTOCOL_VERSION
             or schedule.get("environment_policy_id")
-            != REGISTERED_ENVIRONMENT_POLICY_ID):
+            != REGISTERED_ENVIRONMENT_POLICY_ID
+            or schedule.get("runtime_pins")
+            != runner.protocol_v2_runtime_pins(config)):
         raise runner.InfraFailure(
             "the completion manifest or schedule has a v2 binding mismatch")
     results = manifest.get("results")

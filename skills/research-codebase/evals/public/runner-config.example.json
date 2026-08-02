@@ -3,6 +3,10 @@
   "_protocol_version_note": "Fresh holdout rounds use protocol v2: every produced document is judged by both roles, artifact conformance is a separate gate, and judge responses are schema-validated under the fresh atomic seal. Omit only when reproducing a historical v1 batch.",
   "nonstandard_config": false,
   "_nonstandard_config_note": "Production/holdout configs keep this false: every run then requires the registered three-arm topology. Dev/tuning configs with fewer arms must set it true.",
+  "operator_image_sha256": "sha256:bbe9dbf152c933f4c3a69eae0809983cf698253a7a067fd6b73180ecc85c4975",
+  "artifact_parser": "pyyaml",
+  "artifact_parser_version": "6.0.2",
+  "_operator_runtime_note": "Standard protocol-v2 execution requires this exact operator image and PyYAML parser. The operator host/container must export RPA_OPERATOR_IMAGE_SHA256 with the same digest; gates verify both the imported yaml module and installed PyYAML distribution are exactly 6.0.2 before any backend observation.",
   "_comment": "Eval-runner configuration example (pilot plan, prerequisite 5). Copy, fill in real installation dirs + hashes at candidate freeze, and keep the filled copy in the private eval workspace. All arms must share model/effort per the pinned runtime configuration (enforced by validate_arm_parity); only installation content differs. NOTE: with the real claude CLI the arm's `model` must equal the effective model id the CLI reports in stream events (e.g. a full claude-... id, not an alias) — establish the exact value during the real-backend preflight.",
   "arms": {
     "baseline": {
@@ -44,7 +48,7 @@
   "_max_infra_retries_note": "Infrastructure failures invalidate the run and are re-executed automatically up to this many additional attempts; every attempt's record is written. Workflow failures are counted, never replaced.",
   "max_judge_attempts": 3,
   "_max_judge_attempts_note": "Protocol v2 fixes three total fresh judge attempts per required record. Only schema/transport-invalid attempts are retried; the first valid response binds, all attempts are retained, and exhaustion invalidates the round.",
-  "_environment_policy_note": "Protocol v2 uses the fixed claude-cli-minimal-env-v1 allowlist in runner.py. Arbitrary ambient variables (including unrelated cloud and source-control credentials) never reach evaluated or judge sessions; only the pinned CLI auth, proxy/TLS, locale, HOME/PATH, and sandbox-wrapper inputs are retained.",
+  "_environment_policy_note": "Protocol v2 uses the fixed claude-cli-minimal-env-v2-pyyaml-6.0.2 allowlist in runner.py. Arbitrary ambient variables (including unrelated cloud and source-control credentials and the operator-image attestation) never reach evaluated or judge sessions; only the pinned CLI auth, proxy/TLS, locale, HOME/PATH, and sandbox-wrapper inputs are retained.",
   "sandbox_cmd": ["<sandbox-wrapper>", "--confine-to", "{workdir}", "--profile", "{profile}", "--"],
   "_sandbox_cmd_note": "REQUIRED for production configs: a filesystem sandbox (e.g. bwrap or sandbox-exec invocation) confining every evaluated and judge session to its {workdir} and {profile}; exact wrapper validated during the real-backend preflight.",
   "drift_fetch_cmd": ["curl", "-q", "-fsSL", "--config", "-", "-o", "{dest}"],

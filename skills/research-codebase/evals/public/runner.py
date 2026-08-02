@@ -178,7 +178,8 @@ PILOT_V2_MAX_RAW_STREAM_BYTES = 4 * 1024 * 1024
 # Claude CLI, its filesystem wrapper, locale/TLS, and network proxy.  In
 # particular, arbitrary cloud, source-control, and developer-tool tokens from
 # the operator process must never become model-visible ambient context.
-PILOT_V2_ENVIRONMENT_POLICY_ID = "claude-cli-minimal-env-v1"
+PILOT_V2_ENVIRONMENT_POLICY_ID = (
+    "claude-cli-minimal-env-v2-pyyaml-6.0.2")
 PILOT_V2_ENV_ALLOWLIST = frozenset({
     "ALL_PROXY",
     "ANTHROPIC_API_KEY",
@@ -217,6 +218,11 @@ PILOT_V2_ENV_ALLOWLIST = frozenset({
     "https_proxy",
     "no_proxy",
 })
+
+OPERATOR_IMAGE_SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+ARTIFACT_PARSER_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+ARTIFACT_PARSER_VERSION_RE = re.compile(
+    r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$")
 PILOT_V2_AGGREGATION_POLICY = {
     "id": "pilot-v2-all-docs-v1",
     "telemetry": "all-final-scheduled-workflow-outcomes-v1",
@@ -815,6 +821,21 @@ def release_advisory_lock(handle):
         handle.close()
 
 
+def protocol_v2_runtime_pins(config):
+    """Canonical operator-runtime evidence bound into every v2 artifact.
+
+    The environment policy identifies the semantics while these values make
+    the concrete image and artifact-parser implementation directly auditable.
+    Standard configs validate their shape in :func:`load_config`; nonstandard
+    synthetic/dev configs retain explicit ``None`` values when they omit pins.
+    """
+    return {
+        "operator_image_sha256": config.get("operator_image_sha256"),
+        "artifact_parser": config.get("artifact_parser"),
+        "artifact_parser_version": config.get("artifact_parser_version"),
+    }
+
+
 def load_config(path):
     """User-input faults (missing/unreadable/malformed config, wrong shape)
     are classified infrastructure failures, never raw tracebacks: a
@@ -926,6 +947,27 @@ def load_config(path):
                 f"{max_judge_attempts!r}"
             )
         if not config.get("nonstandard_config"):
+            operator_image = config.get("operator_image_sha256")
+            parser_name = config.get("artifact_parser")
+            parser_version = config.get("artifact_parser_version")
+            if (not isinstance(operator_image, str)
+                    or OPERATOR_IMAGE_SHA256_RE.fullmatch(
+                        operator_image) is None):
+                raise InfraFailure(
+                    f"config {path}: standard protocol v2 requires "
+                    "`operator_image_sha256` as lowercase "
+                    "`sha256:<64 hex>`")
+            if (not isinstance(parser_name, str)
+                    or ARTIFACT_PARSER_RE.fullmatch(parser_name) is None):
+                raise InfraFailure(
+                    f"config {path}: standard protocol v2 requires "
+                    "`artifact_parser` as a lowercase parser identifier")
+            if (not isinstance(parser_version, str)
+                    or ARTIFACT_PARSER_VERSION_RE.fullmatch(
+                        parser_version) is None):
+                raise InfraFailure(
+                    f"config {path}: standard protocol v2 requires "
+                    "`artifact_parser_version` as numeric MAJOR.MINOR.PATCH")
             max_infra_retries = config.get("max_infra_retries")
             if (isinstance(max_infra_retries, bool)
                     or max_infra_retries != DEFAULT_MAX_INFRA_RETRIES):
@@ -974,6 +1016,7 @@ def config_digest(config):
         if config.get("protocol_version", 1) == PILOT_V2_PROTOCOL_VERSION:
             material["environment_policy_id"] = (
                 PILOT_V2_ENVIRONMENT_POLICY_ID)
+            material["runtime_pins"] = protocol_v2_runtime_pins(config)
     return hashlib.sha256(
         json.dumps(material, sort_keys=True).encode("utf-8")
     ).hexdigest()
@@ -2337,6 +2380,7 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
         record.update({
             "protocol_version": PILOT_V2_PROTOCOL_VERSION,
             "environment_policy_id": PILOT_V2_ENVIRONMENT_POLICY_ID,
+            "runtime_pins": protocol_v2_runtime_pins(config),
             "failure_kind": None,
             "artifact_gate": "not_evaluated",
             "raw_sha256": None,
@@ -3206,6 +3250,7 @@ def make_schedule(config, task_paths, replicates, seed, allow_nonstandard=False)
     if config.get("protocol_version", 1) == PILOT_V2_PROTOCOL_VERSION:
         schedule["protocol_version"] = PILOT_V2_PROTOCOL_VERSION
         schedule["environment_policy_id"] = PILOT_V2_ENVIRONMENT_POLICY_ID
+        schedule["runtime_pins"] = protocol_v2_runtime_pins(config)
     return schedule
 
 
@@ -3266,6 +3311,7 @@ def verify_results_against_records(results, entries, out_dir, require_all):
                 or done.get("protocol_version") == PILOT_V2_PROTOCOL_VERSION):
             for field in (
                     "protocol_version", "environment_policy_id",
+                    "runtime_pins",
                     "failure_kind", "artifact_gate",
                     "raw_sha256",
                     "telemetry_policy_id", "telemetry_eligible",
@@ -3300,6 +3346,12 @@ def validate_v2_final_record_semantics(config, entry, final_record,
     defects = final_record.get("artifact_defects")
     if status not in {"completed", "workflow_failure"}:
         raise InfraFailure("final run is not a countable terminal outcome")
+    if (final_record.get("environment_policy_id")
+            != PILOT_V2_ENVIRONMENT_POLICY_ID
+            or final_record.get("runtime_pins")
+            != protocol_v2_runtime_pins(config)):
+        raise InfraFailure(
+            "final run does not bind the registered operator runtime")
     if (status == "completed"
             and (failure_kind is not None or gate != "passed")):
         raise InfraFailure(
@@ -3526,6 +3578,8 @@ def audit_completed_v2_run_material(config, manifest_path, schedule,
         if (record.get("protocol_version") != PILOT_V2_PROTOCOL_VERSION
                 or record.get("environment_policy_id")
                 != PILOT_V2_ENVIRONMENT_POLICY_ID
+                or record.get("runtime_pins")
+                != protocol_v2_runtime_pins(config)
                 or record.get("schedule_digest")
                 != expected_schedule_digest
                 or record.get("config_digest") != expected_config_digest
@@ -3763,6 +3817,18 @@ def _run_schedule_locked(config, schedule_path, repos, output_dir, task_paths,
                 "from different schedules or configurations must not be "
                 "mixed"
             )
+        if (schedule.get("protocol_version") == PILOT_V2_PROTOCOL_VERSION
+                and (prior.get("protocol_version")
+                     != PILOT_V2_PROTOCOL_VERSION
+                     or prior.get("environment_policy_id")
+                     != PILOT_V2_ENVIRONMENT_POLICY_ID
+                     or prior.get("runtime_pins")
+                     != schedule.get("runtime_pins")
+                     or prior.get("config_digest")
+                     != schedule.get("config_digest"))):
+            raise InfraFailure(
+                "existing manifest has a protocol-v2 runtime binding "
+                "mismatch")
         results = list(prior.get("results", []))
 
     def write_manifest(complete):
@@ -3780,6 +3846,7 @@ def _run_schedule_locked(config, schedule_path, repos, output_dir, task_paths,
             manifest["protocol_version"] = PILOT_V2_PROTOCOL_VERSION
             manifest["environment_policy_id"] = (
                 PILOT_V2_ENVIRONMENT_POLICY_ID)
+            manifest["runtime_pins"] = schedule["runtime_pins"]
         atomic_write_text(manifest_path,
                           json.dumps(manifest, indent=2) + "\n")
         return manifest
@@ -3799,6 +3866,7 @@ def _run_schedule_locked(config, schedule_path, repos, output_dir, task_paths,
             "status": "terminal_invalid",
             "protocol_version": PILOT_V2_PROTOCOL_VERSION,
             "environment_policy_id": PILOT_V2_ENVIRONMENT_POLICY_ID,
+            "runtime_pins": schedule["runtime_pins"],
             "schedule_digest": sched_digest,
             "config_digest": schedule["config_digest"],
             "schedule_index": entry["index"],
@@ -3926,6 +3994,8 @@ def _run_schedule_locked(config, schedule_path, repos, output_dir, task_paths,
                         != PILOT_V2_PROTOCOL_VERSION
                         or record.get("environment_policy_id")
                         != PILOT_V2_ENVIRONMENT_POLICY_ID
+                        or record.get("runtime_pins")
+                        != schedule.get("runtime_pins")
                         or record.get("schedule_digest") != sched_digest
                         or record.get("config_digest")
                         != schedule["config_digest"]
@@ -4034,7 +4104,9 @@ def _run_schedule_locked(config, schedule_path, repos, output_dir, task_paths,
                         and record.get("protocol_version")
                         == PILOT_V2_PROTOCOL_VERSION
                         and record.get("environment_policy_id")
-                        == PILOT_V2_ENVIRONMENT_POLICY_ID):
+                        == PILOT_V2_ENVIRONMENT_POLICY_ID
+                        and record.get("runtime_pins")
+                        == schedule.get("runtime_pins")):
                     prior_attempts.add(record["attempt"])
                     continue
                 bad_paths.append(record_path)
@@ -4367,6 +4439,7 @@ def _run_schedule_locked(config, schedule_path, repos, output_dir, task_paths,
                 "schedule_digest": final.get("schedule_digest"),
                 "environment_policy_id": final.get(
                     "environment_policy_id"),
+                "runtime_pins": final.get("runtime_pins"),
                 "failure_kind": final.get("failure_kind"),
                 "artifact_gate": final.get("artifact_gate"),
                 "telemetry_policy_id": final.get("telemetry_policy_id"),

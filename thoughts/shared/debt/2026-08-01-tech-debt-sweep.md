@@ -54,6 +54,19 @@ Configuration health is five passing checks out of seven, and dependency
 health is two reproducibility checks out of five; both formulas are recorded
 here so future sweeps can compare like with like.
 
+### Pilot-execution follow-up
+
+The pre-schedule real-backend preflight later proved that the artifact parser
+was not part of runtime identity: a valid document could pass PyYAML on one
+host and fail the stricter dependency-free fallback in the operator image.
+The pilot now pins PyYAML `6.0.2`, its wheel SHA-256, and an exact,
+deterministically rebuilt `linux/arm64` operator-image digest; config identity
+and the fail-before-model gate bind those pins. The failed namespace remains
+immutable and a fresh seal is required, so the correction cannot select or
+repair an observed holdout outcome. This closes the immediate execution
+blocker; publishing the complete operator-image build manifest in-repo stays
+as post-pilot dependency-governance work.
+
 ## Debt by category
 
 ### Dependencies

@@ -254,6 +254,9 @@ def _load_and_verify_schedule(config, manifest, manifest_path):
     _require(manifest.get("environment_policy_id")
              == runner.PILOT_V2_ENVIRONMENT_POLICY_ID,
              "schedule manifest environment policy mismatch")
+    _require(manifest.get("runtime_pins")
+             == runner.protocol_v2_runtime_pins(config),
+             "schedule manifest operator runtime pins mismatch")
     _require(manifest.get("config_digest") == runner.config_digest(config),
              "schedule manifest config digest mismatch")
     schedule_path = _resolve_reference(
@@ -266,6 +269,9 @@ def _load_and_verify_schedule(config, manifest, manifest_path):
     _require(schedule.get("environment_policy_id")
              == runner.PILOT_V2_ENVIRONMENT_POLICY_ID,
              "schedule environment policy mismatch")
+    _require(schedule.get("runtime_pins")
+             == runner.protocol_v2_runtime_pins(config),
+             "schedule operator runtime pins mismatch")
     _require(schedule.get("config_digest") == runner.config_digest(config),
              "schedule config digest mismatch")
     _require(manifest.get("schedule_digest") == runner.schedule_digest(schedule),
@@ -391,6 +397,9 @@ def _audit_run_material(config, manifest_path, schedule, results, entries):
         _require(record.get("environment_policy_id")
                  == runner.PILOT_V2_ENVIRONMENT_POLICY_ID,
                  "run directory contains a foreign environment record")
+        _require(record.get("runtime_pins")
+                 == runner.protocol_v2_runtime_pins(config),
+                 "run directory contains foreign operator runtime pins")
         _require(record.get("schedule_digest") == expected_schedule_digest,
                  "run directory contains a record from another schedule")
         _require(record.get("config_digest") == expected_config_digest,
@@ -558,6 +567,12 @@ def _verify_runs(config, manifest, manifest_path, schedule, task_names):
                  == runner.PILOT_V2_ENVIRONMENT_POLICY_ID,
                  "run record and manifest result have the wrong "
                  "environment policy")
+        _require(record.get("runtime_pins")
+                 == runner.protocol_v2_runtime_pins(config)
+                 and summary.get("runtime_pins")
+                 == runner.protocol_v2_runtime_pins(config),
+                 "run record and manifest result have the wrong operator "
+                 "runtime pins")
         _require(record.get("config_digest") == expected_config_digest,
                  "run record config digest mismatch")
         _require(record.get("schedule_digest")

@@ -510,6 +510,13 @@ instruction «давай, шаг 4»):**
   "{effort}", "--plugin-dir", "{installation}", "--permission-mode",
   "acceptEdits", "--verbose"]`, backend version pinned at
   `2.1.220 (Claude Code)` (probed before every run),
+  operator image pinned at
+  `sha256:bbe9dbf152c933f4c3a69eae0809983cf698253a7a067fd6b73180ecc85c4975`
+  (`linux/arm64`, deterministically rebuilt twice from the prior exact image
+  plus a PyYAML wheel whose SHA-256 is
+  `5d225db5a45f21e78dd9358e58a98702a0302f2659a3c6cd320564b75b86f47c`),
+  artifact parser `pyyaml` version `6.0.2` (probed before any backend
+  observation and bound into runtime identity),
   `timeout_seconds 3600`, `max_infra_retries 2`,
   `workflow_abort_exit_codes []` (any registration of real abort
   codes happens at the formal preflight, before any scored run);
@@ -928,6 +935,18 @@ new schedule or outcome with digest
 Its disclosed identifiers remain only the six prospective basenames; the
 clean sealing boundary also verified canonical internal paths and exact
 target-pin availability before promotion.
+
+That third package was withdrawn before schedule creation after its throwaway
+real-backend preflight exposed an unbound validator-environment dependency.
+The first arm's immutable document was accepted by the registered full YAML
+parser but rejected by the dependency-free fallback solely because a legal
+plain scalar contained parentheses. No holdout task, document, or outcome was
+observed. The complete blocked preflight namespace is preserved; no workflow
+retry or selective arm rerun is permitted. The operator image now pins
+PyYAML `6.0.2`, and the image/parser identity is fail-closed before model
+launch and bound into the config and gate receipt. Conservatively, the seal is
+reset to the all-zero sentinel until a new uncontaminated package is authored
+after this runtime amendment.
 
 1. Implement strict role validation, bounded crash-safe judge attempts,
    all-document role coverage, immutable policy bindings, and deterministic

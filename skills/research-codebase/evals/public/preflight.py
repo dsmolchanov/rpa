@@ -499,6 +499,10 @@ def make_v2_aggregation_fixture(workspace, target_sha, label="golden"):
         "max_infra_retries": 2,
         "timeout_seconds": 20,
         "nonstandard_config": False,
+        "operator_image_sha256":
+            "sha256:bbe9dbf152c933f4c3a69eae0809983cf698253a7a067fd6b73180ecc85c4975",
+        "artifact_parser": "pyyaml",
+        "artifact_parser_version": "6.0.2",
         "sandbox_cmd": [
             sys.executable, str(HERE / "mock_sandbox.py"),
             "{workdir}", "{profile}", "--",
@@ -618,6 +622,7 @@ def make_v2_aggregation_fixture(workspace, target_sha, label="golden"):
             "protocol_version": runner.PILOT_V2_PROTOCOL_VERSION,
             "environment_policy_id": (
                 runner.PILOT_V2_ENVIRONMENT_POLICY_ID),
+            "runtime_pins": runner.protocol_v2_runtime_pins(config),
             "schedule_digest": runner.schedule_digest(schedule),
             "schedule_index": entry["index"],
             "failure_kind": None,
@@ -656,6 +661,7 @@ def make_v2_aggregation_fixture(workspace, target_sha, label="golden"):
             "protocol_version": runner.PILOT_V2_PROTOCOL_VERSION,
             "environment_policy_id": (
                 runner.PILOT_V2_ENVIRONMENT_POLICY_ID),
+            "runtime_pins": runner.protocol_v2_runtime_pins(config),
             "schedule_digest": record["schedule_digest"],
             "failure_kind": None,
             "artifact_gate": "passed",
@@ -668,6 +674,7 @@ def make_v2_aggregation_fixture(workspace, target_sha, label="golden"):
     manifest = {
         "protocol_version": runner.PILOT_V2_PROTOCOL_VERSION,
         "environment_policy_id": runner.PILOT_V2_ENVIRONMENT_POLICY_ID,
+        "runtime_pins": runner.protocol_v2_runtime_pins(config),
         "schedule": str(schedule_path),
         "seed": schedule["seed"],
         "schedule_digest": runner.schedule_digest(schedule),
@@ -2010,6 +2017,47 @@ def run_preflight():
             "wrong-typed config fields refused at load (full schema)",
             typed_ok and typed2_ok, notes)
 
+        runtime_cfg_path = ws / "config-runtime-pins.json"
+        runtime_cfg, _ = build_config(ws, "normal")
+        runtime_cfg.update({
+            "protocol_version": runner.PILOT_V2_PROTOCOL_VERSION,
+            "max_judge_attempts": runner.PILOT_V2_MAX_JUDGE_ATTEMPTS,
+            "max_infra_retries": runner.DEFAULT_MAX_INFRA_RETRIES,
+            "nonstandard_config": False,
+            "operator_image_sha256": "sha256:" + "a" * 64,
+            "artifact_parser": "pyyaml",
+            "artifact_parser_version": "6.0.2",
+        })
+        runtime_cfg_path.write_text(
+            json.dumps(runtime_cfg), encoding="utf-8")
+        runtime_shape_ok = bool(runner.load_config(runtime_cfg_path))
+        for field, bad_value in (
+                ("operator_image_sha256", "a" * 64),
+                ("artifact_parser", "PyYAML"),
+                ("artifact_parser_version", "6.0")):
+            malformed = json.loads(json.dumps(runtime_cfg))
+            malformed[field] = bad_value
+            runtime_cfg_path.write_text(
+                json.dumps(malformed), encoding="utf-8")
+            try:
+                runner.load_config(runtime_cfg_path)
+            except runner.InfraFailure as exc:
+                runtime_shape_ok &= field in str(exc)
+            else:
+                runtime_shape_ok = False
+        missing = json.loads(json.dumps(runtime_cfg))
+        missing.pop("operator_image_sha256")
+        runtime_cfg_path.write_text(json.dumps(missing), encoding="utf-8")
+        try:
+            runner.load_config(runtime_cfg_path)
+        except runner.InfraFailure as exc:
+            runtime_shape_ok &= "operator_image_sha256" in str(exc)
+        else:
+            runtime_shape_ok = False
+        ok &= check(
+            "standard v2 config requires strict operator runtime pin shapes",
+            runtime_shape_ok, notes)
+
         config, _ = build_config(ws, "normal")
         repo_s, sha_s = make_git_repo(ws, "sched")
         task_s = write_task(ws, "sched", sha_s)
@@ -3040,6 +3088,11 @@ def run_preflight():
         good_cfg = {
             "protocol_version": step5.REGISTERED_PROTOCOL_VERSION,
             "nonstandard_config": False,
+            "operator_image_sha256":
+                step5.REGISTERED_OPERATOR_IMAGE_SHA256,
+            "artifact_parser": step5.REGISTERED_ARTIFACT_PARSER,
+            "artifact_parser_version":
+                step5.REGISTERED_ARTIFACT_PARSER_VERSION,
             "arms": {
                 arm: {
                     "installation_dir": f"/x/{arm}",
@@ -3075,6 +3128,18 @@ def run_preflight():
             "judge_effort": step5.REGISTERED_JUDGE_EFFORT,
             "drift_fetch_cmd": list(step5.REGISTERED_DRIFT_FETCH_CMD),
         }
+        exact_runtime_observation = {
+            "operator_image_sha256":
+                step5.REGISTERED_OPERATOR_IMAGE_SHA256,
+            "artifact_parser": step5.REGISTERED_ARTIFACT_PARSER,
+            "artifact_parser_version":
+                step5.REGISTERED_ARTIFACT_PARSER_VERSION,
+            "artifact_parser_distribution_version":
+                step5.REGISTERED_ARTIFACT_PARSER_VERSION,
+        }
+        original_runtime_observation = step5.operator_runtime_observation
+        step5.operator_runtime_observation = (
+            lambda: dict(exact_runtime_observation))
         clean_problems, clean_warnings = step5.validate_config(good_cfg)
         pending_registration = (
             step5.REGISTERED_SEAL_PACKAGE_SHA256
@@ -3095,6 +3160,9 @@ def run_preflight():
         drifts = []
         for mutate in (
             lambda c: c.update(protocol_version=1),
+            lambda c: c.update(operator_image_sha256="sha256:" + "0" * 64),
+            lambda c: c.update(artifact_parser="other-parser"),
+            lambda c: c.update(artifact_parser_version="6.0.3"),
             lambda c: c["arms"]["candidate"].update(model="opus"),
             lambda c: c["arms"]["baseline"].update(effort="medium"),
             lambda c: c["arms"]["candidate"].update(sha256="0" * 64),
@@ -3131,6 +3199,55 @@ def run_preflight():
             cfg = json.loads(json.dumps(good_cfg))
             mutate(cfg)
             drifts.append(bool(non_pending_problems(cfg)))
+        base_runtime_digest = runner.config_digest(good_cfg)
+        runtime_digest_ok = all(
+            runner.config_digest({**good_cfg, field: value})
+            != base_runtime_digest
+            for field, value in (
+                ("operator_image_sha256", "sha256:" + "0" * 64),
+                ("artifact_parser", "other-parser"),
+                ("artifact_parser_version", "6.0.3"),
+            )
+        )
+
+        def runtime_gate_stops_before_subprocess(observation):
+            calls = []
+            original_run = step5.subprocess.run
+            step5.operator_runtime_observation = lambda: dict(observation)
+
+            def forbidden_backend_probe(*args, **kwargs):
+                calls.append((args, kwargs))
+                raise AssertionError("backend probe launched before runtime gate")
+
+            step5.subprocess.run = forbidden_backend_probe
+            try:
+                with contextlib.redirect_stderr(io.StringIO()):
+                    try:
+                        step5.phase_gates(SimpleNamespace(), good_cfg)
+                    except SystemExit:
+                        stopped = True
+                    else:
+                        stopped = False
+            finally:
+                step5.subprocess.run = original_run
+            return stopped and not calls
+
+        missing_image_observation = dict(exact_runtime_observation)
+        missing_image_observation["operator_image_sha256"] = None
+        wrong_parser_observation = dict(exact_runtime_observation)
+        wrong_parser_observation["artifact_parser_version"] = "6.0.3"
+        wrong_parser_observation[
+            "artifact_parser_distribution_version"] = "6.0.3"
+        operator_runtime_gate_ok = (
+            runtime_gate_stops_before_subprocess(missing_image_observation)
+            and runtime_gate_stops_before_subprocess(wrong_parser_observation)
+        )
+        step5.operator_runtime_observation = (
+            lambda: dict(exact_runtime_observation))
+        ok &= check(
+            "operator image/parser pins bind config and gate before backend",
+            runtime_digest_ok and operator_runtime_gate_ok,
+            notes)
         leaky_fetch_cfg = json.loads(json.dumps(good_cfg))
         leaky_fetch_cfg["drift_fetch_cmd"] = [
             "curl", "-fsSL", "{url}", "-o", "{dest}",
@@ -3167,6 +3284,8 @@ def run_preflight():
         def write_receipt(**overrides):
             body = {"identity": step5.gate_identity(good_cfg),
                     "gates": list(step5.REQUIRED_GATES),
+                    "operator_runtime_observed":
+                        dict(exact_runtime_observation),
                     "artifacts": json.loads(json.dumps(artifacts))}
             body.update(overrides)
             step5.gate_receipt_path(receipt_dir).write_text(
@@ -3241,6 +3360,7 @@ def run_preflight():
                 "protocol_version": step5.REGISTERED_PROTOCOL_VERSION,
                 "environment_policy_id": (
                     step5.REGISTERED_ENVIRONMENT_POLICY_ID),
+                "runtime_pins": runner.protocol_v2_runtime_pins(dev_cfg),
                 "status": "completed",
                 "failure_kind": None,
                 "artifact_gate": "passed",
@@ -3457,6 +3577,7 @@ def run_preflight():
                 "protocol_version": step5.REGISTERED_PROTOCOL_VERSION,
                 "environment_policy_id": (
                     step5.REGISTERED_ENVIRONMENT_POLICY_ID),
+                "runtime_pins": runner.protocol_v2_runtime_pins(good_cfg),
                 "telemetry_policy_id": (
                     step5.REGISTERED_AGGREGATION_POLICY["telemetry"]),
                 "telemetry_eligible": True,
@@ -3472,6 +3593,7 @@ def run_preflight():
             "protocol_version": step5.REGISTERED_PROTOCOL_VERSION,
             "environment_policy_id": (
                 step5.REGISTERED_ENVIRONMENT_POLICY_ID),
+            "runtime_pins": runner.protocol_v2_runtime_pins(good_cfg),
             "telemetry_policy_id": (
                 step5.REGISTERED_AGGREGATION_POLICY["telemetry"]),
             "telemetry_eligible": True,
@@ -3686,6 +3808,7 @@ def run_preflight():
                  or "operator" in (notmac.stdout + notmac.stderr))
             and rebuild_ok,
             notes)
+        step5.operator_runtime_observation = original_runtime_observation
 
         record, _, _, _ = run_case(ws, "stale-artifact")
         ok &= check(
@@ -5211,6 +5334,8 @@ def run_preflight():
             "status": "in_progress",
             "protocol_version": runner.PILOT_V2_PROTOCOL_VERSION,
             "environment_policy_id": runner.PILOT_V2_ENVIRONMENT_POLICY_ID,
+            "runtime_pins": runner.protocol_v2_runtime_pins(
+                v2_ambiguous["config"]),
             "schedule_digest": ambiguous_digest,
             "schedule_index": 0,
             "task_sha256": ambiguous_schedule["task_digests"][
@@ -5347,6 +5472,8 @@ def run_preflight():
                 "protocol_version": runner.PILOT_V2_PROTOCOL_VERSION,
                 "environment_policy_id": (
                     runner.PILOT_V2_ENVIRONMENT_POLICY_ID),
+                "runtime_pins": runner.protocol_v2_runtime_pins(
+                    v2_future_run["config"]),
                 "schedule_digest": runner.schedule_digest(future_schedule),
                 "schedule_index": future_entry["index"],
                 "task_sha256": future_schedule["task_digests"][
