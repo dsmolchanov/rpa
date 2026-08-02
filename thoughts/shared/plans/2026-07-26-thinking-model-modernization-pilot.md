@@ -898,6 +898,16 @@ before schedule creation with digest
 Its only disclosed task identifiers are the six prospective basenames above;
 no holdout outcome was observed before this registration.
 
+That package was subsequently withdrawn after seven terminal run records had
+been produced, before judging or aggregation. A read-only operator process
+inspection unexpectedly exposed one sealed task prompt in the implementation
+context, violating the rule that only the package digest and task basenames
+return there. No run document or judge result was inspected. The process was
+stopped, the complete namespace was preserved as invalid evidence, and no
+selective rerun is permitted: execution requires another fresh seal and a new
+complete randomized schedule. The operator registration is reset to its
+all-zero sentinel until that replacement is registered.
+
 1. Implement strict role validation, bounded crash-safe judge attempts,
    all-document role coverage, immutable policy bindings, and deterministic
    aggregation in `skills/research-codebase/evals/public/`.
