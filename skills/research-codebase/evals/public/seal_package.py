@@ -25,6 +25,19 @@ MANIFEST_NAME = "seal-manifest.json"
 HOLDOUT_TASKS = tuple(f"holdout-v2-{number}.md" for number in range(1, 7))
 ABLATION_TASKS = (HOLDOUT_TASKS[0], HOLDOUT_TASKS[2])
 ROLES = ("scorer", "verifier")
+CANONICAL_JUDGE_PROMPTS = {
+    "scorer": "judge-prompts/scorer.md",
+    "verifier": "judge-prompts/verifier.md",
+}
+CANONICAL_JUDGE_SCHEMAS = {
+    "scorer": "judge-schemas/scorer.json",
+    "verifier": "judge-schemas/verifier.json",
+}
+CANONICAL_QUALITY_RUBRIC = "quality-rubric.md"
+CANONICAL_COVERAGE_MATRIX = "coverage-matrix.json"
+CANONICAL_TASK_CONTEXTS = {
+    task: f"task-contexts/{task}" for task in HOLDOUT_TASKS
+}
 
 PROTOCOL_VERSION = 2
 MAX_JUDGE_ATTEMPTS = 3
@@ -317,6 +330,22 @@ def _validate_metadata(metadata, files, package_root):
         raise SealError("judge_retry_policy differs from pilot v2")
     if metadata["aggregation_policy"] != AGGREGATION_POLICY:
         raise SealError("aggregation_policy differs from pilot v2")
+    if metadata["judge_prompts"] != CANONICAL_JUDGE_PROMPTS:
+        raise SealError(
+            "judge_prompts must use the registered generic package paths")
+    if metadata["judge_response_schemas"] != CANONICAL_JUDGE_SCHEMAS:
+        raise SealError(
+            "judge_response_schemas must use the registered generic "
+            "package paths")
+    if metadata["quality_rubric"] != CANONICAL_QUALITY_RUBRIC:
+        raise SealError(
+            "quality_rubric must use the registered generic package path")
+    if metadata["coverage_matrix"] != CANONICAL_COVERAGE_MATRIX:
+        raise SealError(
+            "coverage_matrix must use the registered generic package path")
+    if metadata["task_contexts"] != CANONICAL_TASK_CONTEXTS:
+        raise SealError(
+            "task_contexts must use the registered generic package paths")
 
     prompt_paths = _validate_association_map(
         metadata["judge_prompts"], "judge_prompts", files

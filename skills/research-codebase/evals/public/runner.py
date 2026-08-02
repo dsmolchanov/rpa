@@ -1572,16 +1572,22 @@ def spawn_session(cmd, prompt, cwd, env, timeout, resume=None,
     full = list(cmd)
     if resume:
         full += ["--resume", resume]
-    full += ["-p", prompt, "--output-format", "stream-json"]
+    # `-p` selects Claude Code's non-interactive mode; when no positional
+    # prompt follows it, Claude 2.1.220 reads the prompt from stdin.  Task,
+    # continuation, document, rubric, and judge-policy bytes must never be
+    # placed in argv, where another process on the host could read them.
+    full += ["-p", "--output-format", "stream-json"]
     try:
         proc = subprocess.Popen(
             full, cwd=cwd, env=env, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, start_new_session=True
+            stderr=subprocess.PIPE, stdin=subprocess.PIPE, text=True,
+            encoding="utf-8", errors="strict",
+            start_new_session=True
         )
     except OSError as exc:
         raise InfraFailure(f"backend could not be spawned: {exc}") from exc
     try:
-        stdout, stderr = proc.communicate(timeout=timeout)
+        stdout, stderr = proc.communicate(input=prompt, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         # The session runs in its OWN process group (start_new_session):
         # on timeout the WHOLE tree is killed, so spawned tool
@@ -1622,14 +1628,23 @@ def spawn_judge_session_capped(cmd, prompt, cwd, env, timeout,
     ``external`` means the preserved sidecar is intentionally not embedded
     in the bounded attempt JSON.
     """
-    full = list(cmd) + ["-p", prompt, "--output-format", "stream-json"]
+    # See `spawn_session`: the full sealed judge input travels through stdin,
+    # never a process-list-visible positional argv element.
+    full = list(cmd) + ["-p", "--output-format", "stream-json"]
     raw_stream_path = Path(raw_stream_path)
     launch_defects = []
-    with raw_stream_path.open("w+b") as raw_handle, tempfile.TemporaryFile() as err:
+    with (raw_stream_path.open("w+b") as raw_handle,
+          tempfile.TemporaryFile() as err,
+          tempfile.TemporaryFile() as prompt_handle):
+        # Preload an anonymous, automatically unlinked file and present it as
+        # stdin. Unlike a pipe feeder, this cannot block on a full pipe or
+        # leave an unbounded writer-thread join after a timeout.
+        prompt_handle.write(prompt.encode("utf-8"))
+        prompt_handle.seek(0)
         try:
             proc = subprocess.Popen(
-                full, cwd=cwd, env=env, stdout=raw_handle, stderr=err,
-                start_new_session=True)
+                full, cwd=cwd, env=env, stdin=prompt_handle,
+                stdout=raw_handle, stderr=err, start_new_session=True)
         except OSError as exc:
             launch_defects.append(f"judge transport failed: {exc}")
             proc = None
@@ -4369,31 +4384,42 @@ def _fetch_live_source(fetch_cmd, url, timeout):
     """Source drift is verified against the LIVE authoritative source: the
     harness itself fetches each sealed URL through the registered
     `drift_fetch_cmd`. An operator-supplied local copy is never drift
-    evidence — it could be the sealed snapshot itself."""
+    evidence — it could be the sealed snapshot itself. The sealed URL is
+    delivered as curl-config data on stdin, never exposed in argv or copied
+    into an exception message."""
     dest_dir = Path(tempfile.mkdtemp(prefix="rpa-refetch-"))
     try:
         dest = dest_dir / "fetched"
-        cmd = [part.replace("{url}", url).replace("{dest}", str(dest))
-               for part in fetch_cmd]
+        cmd = [part.replace("{dest}", str(dest)) for part in fetch_cmd]
+        if any(url in part or "{url}" in part for part in cmd):
+            raise InfraFailure(
+                "drift_fetch_cmd must receive its sealed source URL only "
+                "through stdin, never argv")
+        # seal_package validates a credential-free HTTPS URL with no query,
+        # fragment, NUL, or whitespace. Curl's config syntax additionally
+        # requires backslash and quote escaping inside a quoted value.
+        escaped_url = url.replace("\\", "\\\\").replace('"', '\\"')
+        fetch_input = f'url = "{escaped_url}"\n'.encode("utf-8")
         try:
-            proc = subprocess.run(cmd, capture_output=True, timeout=timeout)
+            proc = subprocess.run(
+                cmd, input=fetch_input, capture_output=True, timeout=timeout)
         except subprocess.TimeoutExpired as exc:
             raise InfraFailure(
-                f"live-source fetch timed out for {url}") from exc
+                "live-source fetch timed out") from exc
         except OSError as exc:
             raise InfraFailure(
-                f"cannot execute drift_fetch_cmd for {url}: {exc}") from exc
+                f"cannot execute drift_fetch_cmd: {exc}") from exc
         if proc.returncode != 0:
             raise InfraFailure(
-                f"live-source fetch failed for {url} "
-                f"(exit {proc.returncode}): "
-                f"{proc.stderr.decode('utf-8', 'replace')[:200]}"
+                f"live-source fetch failed (exit {proc.returncode}); "
+                "backend detail suppressed because it may repeat the "
+                "sealed source URL"
             )
         try:
             return dest.read_bytes()
         except OSError as exc:
             raise InfraFailure(
-                f"drift_fetch_cmd produced no file for {url}: {exc}"
+                f"drift_fetch_cmd produced no output file: {exc}"
             ) from exc
     finally:
         shutil.rmtree(dest_dir, ignore_errors=True)
@@ -5267,14 +5293,15 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
             fetch_cmd = config.get("drift_fetch_cmd")
             if (not isinstance(fetch_cmd, list) or not fetch_cmd
                     or not all(isinstance(p, str) for p in fetch_cmd)
-                    or not any("{url}" in p for p in fetch_cmd)
+                    or any("{url}" in p for p in fetch_cmd)
                     or not any("{dest}" in p for p in fetch_cmd)):
                 raise InfraFailure(
                     "external-context scoring requires a registered "
-                    "`drift_fetch_cmd` (non-empty command with {url} and "
-                    "{dest} placeholders) — the harness itself re-fetches "
-                    "every sealed live source; local copies are not "
-                    "accepted as drift evidence"
+                    "`drift_fetch_cmd` (non-empty command with a {dest} "
+                    "placeholder and no {url} placeholder); the sealed "
+                    "source URL is supplied only through stdin while the "
+                    "harness re-fetches it — local copies are not accepted "
+                    "as drift evidence"
                 )
             snapshot_sources = seal_doc.get("snapshot_sources")
             if not isinstance(snapshot_sources, dict):

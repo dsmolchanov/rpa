@@ -294,27 +294,45 @@ def main():
     parser.add_argument("--judge-state-file")
     parser.add_argument("--run-state-file")
     parser.add_argument("--prompt-receipt-file")
+    parser.add_argument("--transport-receipt-file")
     parser.add_argument("--child-write-file")
     parser.add_argument("--resume")
     parser.add_argument("--verbose", action="store_true")
-    parser.add_argument("-p", dest="prompt", required=True)
+    # Claude Code 2.1.220 treats `-p` as the non-interactive/print switch;
+    # its optional positional prompt may be omitted, in which case the exact
+    # prompt is read from stdin. Keep accepting the historical positional
+    # form so direct transport-compatibility checks can exercise both forms.
+    parser.add_argument("-p", "--print", dest="print_mode",
+                        action="store_true", required=True)
+    parser.add_argument("prompt_arg", nargs="?")
     parser.add_argument("--output-format", default="text")
     args = parser.parse_args()
+
+    prompt_source = "argv" if args.prompt_arg is not None else "stdin"
+    prompt = args.prompt_arg if args.prompt_arg is not None else sys.stdin.read()
 
     if args.output_format == "stream-json" and not args.verbose:
         parser.error(
             "When using --print, --output-format=stream-json requires "
             "--verbose")
 
-    echo("prompt.txt", args.prompt)
+    echo("prompt.txt", prompt)
     echo("plugin-dir.txt", args.plugin_dir)
     echo("cwd-listing.txt",
          "\n".join(sorted(p.name for p in Path(".").iterdir())))
     if args.prompt_receipt_file:
         Path(args.prompt_receipt_file).write_text(
-            hashlib.sha256(args.prompt.encode("utf-8")).hexdigest() + "\n",
+            hashlib.sha256(prompt.encode("utf-8")).hexdigest() + "\n",
             encoding="utf-8",
         )
+    if args.transport_receipt_file:
+        with Path(args.transport_receipt_file).open(
+                "a", encoding="utf-8") as receipt:
+            receipt.write(json.dumps({
+                "argv": sys.argv[1:],
+                "prompt": prompt,
+                "prompt_source": prompt_source,
+            }, sort_keys=True) + "\n")
 
     if args.mode == "flaky-infra":
         # Transient fault: crash once, then behave normally. The explicit
@@ -449,7 +467,7 @@ def main():
             write_artifact()
             result_text = "MOCK-VERDICT: parent exited successfully"
         else:
-            result_text = judge_result(args.prompt)
+            result_text = judge_result(prompt)
         emit({"type": "result", "session_id": session_id,
               "result": result_text})
         return
@@ -471,9 +489,9 @@ def main():
                 count = 0
             state.write_text(str(count + 1), encoding="utf-8")
             result_text = ('```json\n{"total": 8}\n```'
-                           if count == 0 else judge_result(args.prompt))
+                           if count == 0 else judge_result(prompt))
         else:
-            result_text = judge_result(args.prompt)
+            result_text = judge_result(prompt)
         emit({"type": "result", "session_id": session_id,
               "result": result_text})
         return

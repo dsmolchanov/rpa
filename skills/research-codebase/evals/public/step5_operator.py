@@ -111,7 +111,7 @@ REGISTERED_JUDGE_BACKEND_CMD = [
 REGISTERED_JUDGE_MODEL = "claude-opus-5"
 REGISTERED_JUDGE_EFFORT = "high"
 REGISTERED_DRIFT_FETCH_CMD = [
-    "curl", "-fsSL", "{url}", "-o", "{dest}",
+    "curl", "-q", "-fsSL", "--config", "-", "-o", "{dest}",
 ]
 REGISTERED_ABORT_EXIT_CODES = []
 # The wrapper invocation is compared as a COMPLETE shape: a lookalike

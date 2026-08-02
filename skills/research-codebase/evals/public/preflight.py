@@ -89,7 +89,7 @@ def build_config(workspace, mode, timeout=20):
         "sandbox_cmd": [sys.executable, str(HERE / "mock_sandbox.py"),
                         "{workdir}", "--"],
         "drift_fetch_cmd": [sys.executable, str(HERE / "mock_fetch.py"),
-                            "{url}", "{dest}"],
+                            "{dest}"],
         "seal_package_sha256": SEAL_SHA,
         "seal_manifest": SEAL_PATH,
         "backend_version": "mock-claude 1.0.0",
@@ -184,7 +184,9 @@ def make_v2_fixture(workspace, label, repo, target_sha,
             f"## Ground truth\n\n{SECRET}\n",
             encoding="utf-8",
         )
-        context_path = sealed / f"context-v2-{label}-{number}.md"
+        context_path = (
+            sealed / seal_package.CANONICAL_TASK_CONTEXTS[task_path.name])
+        context_path.parent.mkdir(parents=True, exist_ok=True)
         context_path.write_text(
             f"SEALED-V2-CONTEXT {label}-{number}: synthetic prompt and "
             f"ground truth.\n",
@@ -201,9 +203,11 @@ def make_v2_fixture(workspace, label, repo, target_sha,
     task = selected_tasks[0]
     context = contexts[selected_numbers[0]]
     prompts = {
-        "scorer": sealed / f"scorer-prompt-v2-{label}.md",
-        "verifier": sealed / f"verifier-prompt-v2-{label}.md",
+        role: sealed / relative
+        for role, relative in seal_package.CANONICAL_JUDGE_PROMPTS.items()
     }
+    for path in prompts.values():
+        path.parent.mkdir(parents=True, exist_ok=True)
     prompts["scorer"].write_text(
         "SCORER-CONTRACT\nReturn exactly the sealed scorer JSON object.\n",
         encoding="utf-8",
@@ -213,21 +217,23 @@ def make_v2_fixture(workspace, label, repo, target_sha,
         encoding="utf-8",
     )
     schemas = {
-        role: sealed / f"{role}-response-v2-{label}.json"
-        for role in ("scorer", "verifier")
+        role: sealed / relative
+        for role, relative in seal_package.CANONICAL_JUDGE_SCHEMAS.items()
     }
+    for path in schemas.values():
+        path.parent.mkdir(parents=True, exist_ok=True)
     for role, path in schemas.items():
         path.write_text(
             json.dumps(judge_contract.contract_schema(role),
                        indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-    rubric = sealed / f"quality-rubric-v2-{label}.md"
+    rubric = sealed / seal_package.CANONICAL_QUALITY_RUBRIC
     rubric.write_text(
         "# Synthetic quality rubric\n\nScore only against sealed evidence.\n",
         encoding="utf-8",
     )
-    coverage = sealed / f"coverage-matrix-v2-{label}.json"
+    coverage = sealed / seal_package.CANONICAL_COVERAGE_MATRIX
     coverage.write_text(
         json.dumps({
             tasks[number].name: {"archetype": archetypes[number]}
@@ -245,6 +251,8 @@ def make_v2_fixture(workspace, label, repo, target_sha,
         sys.executable, str(HERE / "mock_claude.py"),
         "--mode", judge_mode, "--effort", "{effort}",
         "--prompt-receipt-file", str(root / "judge-prompt-receipt.txt"),
+        "--transport-receipt-file",
+        str(root / "judge-transport-receipt.ndjson"),
     ]
     if judge_mode == "judge-invalid-then-valid":
         judge_backend_cmd.extend([
@@ -276,15 +284,18 @@ def make_v2_fixture(workspace, label, repo, target_sha,
         "judge_retry_policy": runner.PILOT_V2_JUDGE_RETRY_POLICY,
         "aggregation_policy": runner.PILOT_V2_AGGREGATION_POLICY,
         "judge_prompts": {
-            role: path.name for role, path in prompts.items()
+            role: path.relative_to(sealed).as_posix()
+            for role, path in prompts.items()
         },
         "judge_response_schemas": {
-            role: path.name for role, path in schemas.items()
+            role: path.relative_to(sealed).as_posix()
+            for role, path in schemas.items()
         },
-        "quality_rubric": rubric.name,
-        "coverage_matrix": coverage.name,
+        "quality_rubric": rubric.relative_to(sealed).as_posix(),
+        "coverage_matrix": coverage.relative_to(sealed).as_posix(),
         "task_contexts": {
-            tasks[number].name: contexts[number].name
+            tasks[number].name: contexts[number].relative_to(
+                sealed).as_posix()
             for number in range(1, 7)
         },
         "ablation_tasks": ["holdout-v2-1.md", "holdout-v2-3.md"],
@@ -349,6 +360,7 @@ def make_v2_fixture(workspace, label, repo, target_sha,
         "docs": docs,
         "repo": Path(repo),
         "prompt_receipt": root / "judge-prompt-receipt.txt",
+        "transport_receipt": root / "judge-transport-receipt.ndjson",
     }
 
 
@@ -414,7 +426,8 @@ def make_v2_aggregation_fixture(workspace, target_sha, label="golden"):
             f"Synthetic aggregation task {number}.\n",
             encoding="utf-8",
         )
-        context = sealed / f"context-v2-{number}.md"
+        context = sealed / seal_package.CANONICAL_TASK_CONTEXTS[task.name]
+        context.parent.mkdir(parents=True, exist_ok=True)
         context.write_text(
             f"Synthetic sealed context {number}; {SECRET}\n",
             encoding="utf-8",
@@ -425,25 +438,27 @@ def make_v2_aggregation_fixture(workspace, target_sha, label="golden"):
     prompts = {}
     schemas = {}
     for role in ("scorer", "verifier"):
-        prompt = sealed / f"{role}-prompt-v2.md"
+        prompt = sealed / seal_package.CANONICAL_JUDGE_PROMPTS[role]
+        prompt.parent.mkdir(parents=True, exist_ok=True)
         prompt.write_text(
             f"{role.upper()}-CONTRACT: return strict JSON.\n",
             encoding="utf-8",
         )
         prompts[role] = prompt
-        schema = sealed / f"{role}-response-v2.json"
+        schema = sealed / seal_package.CANONICAL_JUDGE_SCHEMAS[role]
+        schema.parent.mkdir(parents=True, exist_ok=True)
         schema.write_text(
             json.dumps(judge_contract.contract_schema(role),
                        indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
         schemas[role] = schema
-    rubric = sealed / "quality-rubric-v2.md"
+    rubric = sealed / seal_package.CANONICAL_QUALITY_RUBRIC
     rubric.write_text(
         "# Synthetic quality rubric\n\nScore only against sealed evidence.\n",
         encoding="utf-8",
     )
-    coverage = sealed / "coverage-matrix-v2.json"
+    coverage = sealed / seal_package.CANONICAL_COVERAGE_MATRIX
     coverage.write_text(
         json.dumps({
             task.name: {"archetype": task_meta[index][1]}
@@ -490,7 +505,7 @@ def make_v2_aggregation_fixture(workspace, target_sha, label="golden"):
         ],
         "drift_fetch_cmd": [
             sys.executable, str(HERE / "mock_fetch.py"),
-            "{url}", "{dest}",
+            "{dest}",
         ],
         "backend_version": "mock-claude 1.0.0",
         "backend_version_cmd": [
@@ -519,15 +534,18 @@ def make_v2_aggregation_fixture(workspace, target_sha, label="golden"):
         "judge_retry_policy": runner.PILOT_V2_JUDGE_RETRY_POLICY,
         "aggregation_policy": runner.PILOT_V2_AGGREGATION_POLICY,
         "judge_prompts": {
-            role: path.name for role, path in prompts.items()
+            role: path.relative_to(sealed).as_posix()
+            for role, path in prompts.items()
         },
         "judge_response_schemas": {
-            role: path.name for role, path in schemas.items()
+            role: path.relative_to(sealed).as_posix()
+            for role, path in schemas.items()
         },
-        "quality_rubric": rubric.name,
-        "coverage_matrix": coverage.name,
+        "quality_rubric": rubric.relative_to(sealed).as_posix(),
+        "coverage_matrix": coverage.relative_to(sealed).as_posix(),
         "task_contexts": {
-            task: path.name for task, path in contexts.items()
+            task: path.relative_to(sealed).as_posix()
+            for task, path in contexts.items()
         },
         "ablation_tasks": [tasks[0].name, tasks[2].name],
         "snapshot_sources": {
@@ -888,6 +906,164 @@ def run_preflight():
         ok &= check(
             "backend stream transport adds verbose idempotently",
             existing_verbose == ["claude", "--verbose"], notes)
+
+        # All evaluated and judge input is private transport data. Claude
+        # 2.1.220's `-p` switch reads stdin when there is no positional
+        # prompt; prove initial, resumed/continuation, wrapper, and capped
+        # judge launches all use that form and preserve bytes exactly.
+        transport_receipt = ws / "stdin-transport.ndjson"
+        transport_cmd = runner.with_stream_json_transport([
+            sys.executable, str(HERE / "mock_claude.py"),
+            "--mode", "no-artifact", "--transport-receipt-file",
+            str(transport_receipt),
+        ])
+        initial_canary = "PRIVATE-INITIAL-PROMPT-CANARY\nточные байты 🧪"
+        continuation_canary = "PRIVATE-CONTINUATION-PROMPT-CANARY — 継続"
+        runner.spawn_session(
+            transport_cmd, initial_canary, ws, os.environ.copy(), 10)
+        runner.spawn_session(
+            transport_cmd, continuation_canary, ws, os.environ.copy(), 10,
+            resume="session-resume-token")
+        transport_rows = [
+            json.loads(line)
+            for line in transport_receipt.read_text(
+                encoding="utf-8").splitlines()
+        ]
+        ok &= check(
+            "initial and continuation prompts travel only through stdin",
+            len(transport_rows) == 2
+            and [row["prompt"] for row in transport_rows]
+            == [initial_canary, continuation_canary]
+            and all(row["prompt_source"] == "stdin"
+                    for row in transport_rows)
+            and all(
+                canary not in argv_part
+                for row in transport_rows
+                for argv_part in row["argv"]
+                for canary in (initial_canary, continuation_canary)
+            )
+            and "--resume" not in transport_rows[0]["argv"]
+            and transport_rows[1]["argv"][
+                transport_rows[1]["argv"].index("--resume") + 1]
+            == "session-resume-token"
+            and all(
+                row["argv"][-3:]
+                == ["-p", "--output-format", "stream-json"]
+                for row in transport_rows
+            ), notes)
+
+        passthrough = ws / "sandbox-passthrough.py"
+        passthrough.write_text(
+            "import os,sys\n"
+            "cut=sys.argv.index('--')\n"
+            "os.execv(sys.argv[cut+1], sys.argv[cut+1:])\n",
+            encoding="utf-8",
+        )
+        wrapper_receipt = ws / "wrapper-stdin-transport.ndjson"
+        wrapped_backend = runner.with_stream_json_transport([
+            sys.executable, str(HERE / "mock_claude.py"),
+            "--mode", "no-artifact", "--transport-receipt-file",
+            str(wrapper_receipt),
+        ])
+        wrapped_cmd = runner.apply_sandbox({
+            "nonstandard_config": True,
+            "sandbox_cmd": [
+                sys.executable, str(passthrough), "--verbose",
+                "{workdir}", "{profile}", "--",
+            ],
+        }, wrapped_backend, ws, ws)
+        wrapper_canary = "PRIVATE-WRAPPER-PROMPT-CANARY"
+        runner.spawn_session(
+            wrapped_cmd, wrapper_canary, ws, os.environ.copy(), 10)
+        wrapper_row = json.loads(
+            wrapper_receipt.read_text(encoding="utf-8").strip())
+        ok &= check(
+            "wrapper verbose collision keeps prompt off argv and on stdin",
+            wrapped_cmd.count("--verbose") == 2
+            and all(wrapper_canary not in part for part in wrapped_cmd)
+            and wrapper_row["prompt_source"] == "stdin"
+            and wrapper_row["prompt"] == wrapper_canary
+            and all(wrapper_canary not in part
+                    for part in wrapper_row["argv"]), notes)
+
+        judge_receipt = ws / "judge-stdin-transport.ndjson"
+        judge_cmd = runner.with_stream_json_transport([
+            sys.executable, str(HERE / "mock_claude.py"),
+            "--mode", "judge-auto", "--transport-receipt-file",
+            str(judge_receipt),
+        ])
+        judge_canary = "SCORER-CONTRACT\nPRIVATE-JUDGE-PROMPT-CANARY"
+        (judge_stream, _judge_bytes, _judge_digest, judge_defects,
+         judge_external) = runner.spawn_judge_session_capped(
+            judge_cmd, judge_canary, ws, os.environ.copy(), 10,
+            ws / "judge-stdin-stream.jsonl",
+            runner.PILOT_V2_MAX_RAW_STREAM_BYTES)
+        judge_row = json.loads(
+            judge_receipt.read_text(encoding="utf-8").strip())
+        _sid, _nodes, judge_response, stream_defects = (
+            runner._parse_judge_stream_tolerant(judge_stream))
+        ok &= check(
+            "capped scorer/verifier transport sends sealed input via stdin",
+            not judge_defects and not stream_defects and not judge_external
+            and judge_row["prompt_source"] == "stdin"
+            and judge_row["prompt"] == judge_canary
+            and all(judge_canary not in part for part in judge_row["argv"])
+            and json.loads(judge_response)["total"] == 8.0, notes)
+
+        fetch_root = ws / "stdin-fetch-root"
+        (fetch_root / "source").mkdir(parents=True)
+        (fetch_root / "source" / "reference.txt").write_bytes(
+            b"private live source bytes\n")
+        fetch_transport_receipt = ws / "fetch-transport-receipt.ndjson"
+        fetch_url = (
+            "https://private-source-canary.mock.invalid/live/"
+            "source/reference.txt")
+        os.environ["MOCK_LIVE_ROOT"] = str(fetch_root)
+        os.environ["MOCK_FETCH_TRANSPORT_LOG"] = str(
+            fetch_transport_receipt)
+        fetch_cmd = [
+            sys.executable, str(HERE / "mock_fetch.py"), "{dest}",
+        ]
+        try:
+            fetched = runner._fetch_live_source(fetch_cmd, fetch_url, 10)
+            fetch_row = json.loads(fetch_transport_receipt.read_text(
+                encoding="utf-8").strip())
+            before_bad_transport = fetch_transport_receipt.read_bytes()
+            try:
+                runner._fetch_live_source(
+                    [sys.executable, str(HERE / "mock_fetch.py"),
+                     "{url}", "{dest}"],
+                    fetch_url, 10)
+                argv_url_rejected = False
+            except runner.InfraFailure as exc:
+                argv_url_rejected = (
+                    "only through stdin" in str(exc)
+                    and fetch_url not in str(exc))
+            after_bad_transport = fetch_transport_receipt.read_bytes()
+            missing_url = (
+                "https://private-error-canary.mock.invalid/live/"
+                "source/missing.txt")
+            try:
+                runner._fetch_live_source(fetch_cmd, missing_url, 10)
+                fetch_error_private = False
+            except runner.InfraFailure as exc:
+                fetch_error_private = (
+                    "live-source fetch failed" in str(exc)
+                    and missing_url not in str(exc)
+                    and "private-error-canary" not in str(exc))
+        finally:
+            os.environ.pop("MOCK_FETCH_TRANSPORT_LOG", None)
+            os.environ.pop("MOCK_LIVE_ROOT", None)
+        ok &= check(
+            "live-source URL travels only through stdin and stays out of errors",
+            fetched == b"private live source bytes\n"
+            and fetch_url not in fetch_row["argv"]
+            and all(fetch_url not in part for part in fetch_row["argv"])
+            and fetch_row["stdin"] == f'url = "{fetch_url}"\n'
+            and argv_url_rejected
+            and before_bad_transport == after_bad_transport
+            and fetch_error_private,
+            notes)
 
         mock_base = [sys.executable, str(HERE / "mock_claude.py"),
                      "--mode", "no-artifact", "-p", "probe"]
@@ -2955,6 +3131,15 @@ def run_preflight():
             cfg = json.loads(json.dumps(good_cfg))
             mutate(cfg)
             drifts.append(bool(non_pending_problems(cfg)))
+        leaky_fetch_cfg = json.loads(json.dumps(good_cfg))
+        leaky_fetch_cfg["drift_fetch_cmd"] = [
+            "curl", "-fsSL", "{url}", "-o", "{dest}",
+        ]
+        ok &= check(
+            "operator rejects source-fetch configs that expose URL in argv",
+            any("drift_fetch_cmd differs" in problem
+                for problem in non_pending_problems(leaky_fetch_cfg)),
+            notes)
         # Scored phases require a durable gate receipt for THIS host
         # and config: `--phases schedule,runs` cannot bypass the
         # mandatory gates (on macOS, the host-side sandbox check), and
@@ -3350,14 +3535,9 @@ def run_preflight():
             drift_report=str(drift_path),
         )
         command_seal = {
-            "task_contexts": {
-                name: f"contexts/{name}.context.md"
-                for name in step5.REGISTERED_HOLDOUT_TASKS
-            },
-            "judge_prompts": {
-                "scorer": "judge/scorer.md",
-                "verifier": "judge/verifier.md",
-            },
+            "task_contexts": dict(seal_package.CANONICAL_TASK_CONTEXTS),
+            "judge_prompts": dict(
+                seal_package.CANONICAL_JUDGE_PROMPTS),
             "snapshot_sources": {
                 "snapshots/reference.txt":
                     "https://example.invalid/reference.txt",
@@ -5442,7 +5622,8 @@ def run_preflight():
         ok &= check(
             "protocol-v2 all-doc input order is canonical before shuffle",
             reversed_docs_blocked
-            and not v2_reversed_docs["prompt_receipt"].exists(), notes)
+            and not v2_reversed_docs["prompt_receipt"].exists()
+            and not v2_reversed_docs["transport_receipt"].exists(), notes)
 
         v2_raw_mutation = make_v2_fixture(
             ws, "raw-mutation", repo_v2, sha_v2,
@@ -5461,7 +5642,8 @@ def run_preflight():
         ok &= check(
             "raw artifact mutation blocks protocol-v2 judge prelaunch",
             raw_mutation_blocked
-            and not v2_raw_mutation["prompt_receipt"].exists(), notes)
+            and not v2_raw_mutation["prompt_receipt"].exists()
+            and not v2_raw_mutation["transport_receipt"].exists(), notes)
 
         v2_missing_contradiction = make_v2_fixture(
             ws, "missing-doc-contradiction", repo_v2, sha_v2,
@@ -5593,11 +5775,22 @@ def run_preflight():
             v2_valid, "scorer", v2_judge_out)
         scorer_prompt_receipt = v2_valid["prompt_receipt"].read_text(
             encoding="utf-8").strip()
+        scorer_transport_rows = [
+            json.loads(line)
+            for line in v2_valid["transport_receipt"].read_text(
+                encoding="utf-8").splitlines()
+        ]
         v2_verifier = score_v2_fixture(
             v2_valid, "verifier", v2_judge_out)
         verifier_prompt_receipt = v2_valid["prompt_receipt"].read_text(
             encoding="utf-8").strip()
+        verifier_transport_rows = [
+            json.loads(line)
+            for line in v2_valid["transport_receipt"].read_text(
+                encoding="utf-8").splitlines()
+        ]
         expected_prompt_receipts = {}
+        expected_composed_prompts = {}
         for judge_role in ("scorer", "verifier"):
             composed = runner.compose_v2_judge_prompt(
                 v2_valid["prompts"][judge_role].read_text(encoding="utf-8"),
@@ -5608,6 +5801,7 @@ def run_preflight():
             )
             expected_prompt_receipts[judge_role] = hashlib.sha256(
                 composed.encode("utf-8")).hexdigest()
+            expected_composed_prompts[judge_role] = composed
         v2_scorer_manifest = (
             v2_judge_out / "scoring-scorer-all-docs-manifest.json")
         v2_verifier_manifest = (
@@ -5629,6 +5823,18 @@ def run_preflight():
             == expected_prompt_receipts["scorer"]
             and verifier_prompt_receipt
             == expected_prompt_receipts["verifier"]
+            and len(scorer_transport_rows) == 1
+            and len(verifier_transport_rows) == 2
+            and [row["prompt"] for row in verifier_transport_rows]
+            == [expected_composed_prompts["scorer"],
+                expected_composed_prompts["verifier"]]
+            and all(row["prompt_source"] == "stdin"
+                    for row in verifier_transport_rows)
+            and all(
+                row["prompt"] not in argv_part
+                for row in verifier_transport_rows
+                for argv_part in row["argv"]
+            )
             and json.loads(v2_scorer_manifest.read_text(
                 encoding="utf-8"))["complete"] is True
             and json.loads(v2_verifier_manifest.read_text(
@@ -6575,16 +6781,47 @@ def run_preflight():
             query_source_rejected = False
         except seal_package.SealError:
             query_source_rejected = True
+        naming_package = (
+            aggregate_fixture["root"] / "semantic-name-package")
+        naming_package.mkdir()
+        for relative in source_seal["files"]:
+            source = aggregate_fixture["seal"].parent / relative
+            destination = naming_package / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(source.read_bytes())
+        semantic_prompt = (
+            naming_package / "judge-prompts" / "private-topic.md")
+        semantic_prompt.write_bytes((
+            naming_package / seal_package.CANONICAL_JUDGE_PROMPTS["scorer"]
+        ).read_bytes())
+        naming_metadata_doc = json.loads(json.dumps({
+            key: value for key, value in source_seal.items()
+            if key != "files"
+        }))
+        naming_metadata_doc["judge_prompts"]["scorer"] = (
+            "judge-prompts/private-topic.md")
+        naming_metadata = (
+            aggregate_fixture["root"] / "semantic-name-metadata.json")
+        naming_metadata.write_text(
+            json.dumps(naming_metadata_doc, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        try:
+            seal_package.build_package(naming_package, naming_metadata)
+            semantic_name_rejected = False
+        except seal_package.SealError as exc:
+            semantic_name_rejected = "registered generic" in str(exc)
         sanitized_registration = json.dumps(
             built_registration, sort_keys=True, allow_nan=False)
         ok &= check(
-            "atomic seal builder verifies package and refuses extras/query URLs",
+            "atomic seal builder enforces generic names and refuses extras/URLs",
             built_registration == verified_registration
             and built_registration.get("holdout_tasks")
             == list(seal_package.HOLDOUT_TASKS)
             and len(built_registration.get("seal_package_sha256", "")) == 64
             and extra_file_rejected
             and query_source_rejected
+            and semantic_name_rejected
             and str(aggregate_fixture["root"])
             not in sanitized_registration
             and SECRET not in sanitized_registration,

@@ -164,7 +164,11 @@ configurations; the archetype×repo coverage matrix (including the two
 designated third-arm tasks); and a manifest listing every file with
 per-file hashes, sealed under a single package SHA-256 recorded at sealing
 time. Any change after sealing means re-sealing, recorded in the results
-doc.
+doc. Seal-controlled paths that later enter operator argv are fixed generic
+identifiers: `judge-prompts/{scorer,verifier}.md`,
+`judge-schemas/{scorer,verifier}.json`, `quality-rubric.md`,
+`coverage-matrix.json`, and `task-contexts/holdout-v2-N.md`; private task
+semantics may not be encoded in those filenames.
 
 **The sealed package lives outside every evaluated plugin installation**
 (private eval workspace, not in any arm's installed plugin — the plugin's
@@ -511,8 +515,12 @@ instruction «давай, шаг 4»):**
   codes happens at the formal preflight, before any scored run);
   judge sessions mount-free with command selector `--model opus` and
   effective-model parity pinned as `judge_model claude-opus-5` /
-  `judge_effort high`; 3 replicates per arm per task in randomized
-  interleaved order (unchanged from the registered design);
+  `judge_effort high`; live-source re-fetch command fixed as
+  `drift_fetch_cmd = ["curl", "-q", "-fsSL", "--config", "-", "-o",
+  "{dest}"]` (`-q` disables ambient curl configuration; the sealed URL is
+  curl-config input on stdin and is absent from argv); 3 replicates per arm
+  per task in randomized interleaved order (unchanged from the registered
+  design);
   `sandbox_cmd = ["python3",
   "<orchestrating-checkout>/skills/research-codebase/evals/public/ns_sandbox.py",
   "--confine-to", "{workdir}", "--profile", "{profile}", "--"]` —
@@ -791,6 +799,11 @@ effort, and package digest are part of the schedule and scoring-batch identity.
 Every judge invocation receives the sealed role prompt, quality rubric, exact
 role schema, task context, and candidate document in that fixed order; prompt
 and rubric digests are recorded in batch, attempt, and result identity.
+These bytes, all evaluated-task and continuation prompts, and every judge
+document are transported only through the child process's UTF-8 stdin; `-p`
+remains a flag in argv but no prompt bytes are process-list-visible. Likewise,
+the credential-free sealed live-source URL reaches the fixed curl command only
+as safely quoted curl-config stdin and is suppressed from harness error text.
 
 All evaluated and judge processes use the fixed
 `claude-cli-minimal-env-v1` environment policy: only the pinned Claude auth,
