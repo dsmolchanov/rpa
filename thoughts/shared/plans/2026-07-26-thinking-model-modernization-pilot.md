@@ -1043,6 +1043,15 @@ new atomic seal, and new complete 42-slot schedule; the frozen candidate,
 three arms and installation hashes, runtime pins, seeds, six prospective task
 basenames, ablation scope, and run design remain unchanged.
 
+The canonical round-6 live probe completed on 2026-08-02 before any round-6
+holdout authoring. Its receipt revalidated without another model call. The
+registered receipt SHA-256 is
+`1e2453bb948abc369fd4e9b9c0bdb1bc29be48d6059bdbce37794dfc150f51aa` and
+the registered execution SHA-256 is
+`bba66fbd8f7e1d624ff0c1995fe8137d08ace68ebe8a49c533e449a8f732a58d`.
+The probe used only synthetic public material and no holdout task, context,
+document, ground truth, or snapshot.
+
 1. Implement strict role validation, bounded crash-safe judge attempts,
    all-document role coverage, immutable policy bindings, and deterministic
    aggregation in `skills/research-codebase/evals/public/`.

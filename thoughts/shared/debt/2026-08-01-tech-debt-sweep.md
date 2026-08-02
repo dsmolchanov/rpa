@@ -148,9 +148,10 @@ Fixed during the sweep:
 Open documentation debt:
 
 - `step5_operator.py` now represents the replacement v2 protocol but remains
-  intentionally blocked by pending live-probe and seal sentinels. The real
-  round-6 receipt/execution digests and then the fresh package hash must be
-  registered in order before it can emit the two v2 all-doc judge batches.
+  intentionally blocked by the pending seal sentinel. The round-6 one-shot
+  live-probe receipt/execution digests are registered and revalidated; the
+  fresh package hash must be registered next before it can emit the two v2
+  all-doc judge batches.
 - 57 of 114 public-by-name functions lack docstrings. Priority targets are
   `runner.run_task`, `build_installs.build`, and
   `validate_artifact.validate`; exhaustive docstring work is not a pilot
@@ -229,3 +230,7 @@ as protocol-invalid evidence and cannot be resumed or reused. The round-5
 live-probe and seal registrations are no longer production authority: all
 three public digest registrations are pending again, and the next attempt is
 isolated under `holdout-v2-round6` with a new one-shot probe and atomic seal.
+
+The round-6 one-shot public live probe is now complete and revalidated without
+another model call. Its receipt/execution digests are the current public
+registration; only the round-6 atomic package digest remains pending.
