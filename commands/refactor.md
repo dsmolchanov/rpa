@@ -2,7 +2,6 @@
 description: Refactor monolithic/God-like code into focused, testable modules
 argument-hint: "[file-path|directory] - Target to refactor or scan for candidates"
 allowed-tools: Read, Glob, Grep, LS, Task, Edit, Write, TodoWrite, Bash(git status:*), Bash(git diff:*), Bash(git checkout:*), Bash(git branch:*), Bash(git reset --hard HEAD:*), Bash(npm test:*), Bash(pnpm test:*), Bash(yarn test:*), Bash(go test:*), Bash(pytest:*), Bash(python -m pytest:*), Bash(make test:*), Bash(npm run lint:*), Bash(npm run typecheck:*), Bash(npx tsc:*), Bash(cargo test:*), Bash(cargo fmt:*), Bash(cargo clippy:*)
-model: opus
 ---
 
 # Refactor Code

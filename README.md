@@ -94,6 +94,8 @@ chmod +x ~/.claude/scripts/*.sh
 # Optional: hooks for deterministic quality gates — merge the "hooks" object
 # from hooks/hooks.json into ~/.claude/settings.json (hooks are read from
 # settings, not from a standalone file; see "How Hooks Work" below)
+cp hooks/run_gate.py ~/.claude/hooks/
+chmod +x ~/.claude/hooks/run_gate.py
 ```
 
 ### Plugin Install (Alternative)
@@ -196,6 +198,12 @@ After installation, your `~/.claude/` directory should look like:
 ├── scripts/
 │   ├── bootstrap_aidlc_project.sh
 │   └── spec_metadata.sh
+├── skills/
+│   └── research-codebase/
+│       ├── SKILL.md
+│       └── references/
+├── hooks/
+│   └── run_gate.py
 └── settings.json              # optional: "hooks" object merged from hooks/hooks.json
 ```
 
@@ -403,17 +411,29 @@ These specialized agents support the debt sweep:
 
 ### How Hooks Work
 
-`hooks/hooks.json` defines three deterministic quality gates that run automatically — no model judgment involved:
+`hooks/hooks.json` defines three deterministic quality gates implemented by
+`hooks/run_gate.py` — no model judgment involved:
 
-1. **PostToolUse (matcher: `Edit`)** — after every file edit, the hook extracts the edited file path from the tool input and runs `npx prettier --write` on it. If `prettier` is not installed, the hook silently no-ops, so it is safe in non-JS projects.
-2. **Stop (lint)** — when Claude finishes responding, `npm run lint --silent` runs. If `npm` is missing or the project has no `lint` script, the hook prints a one-line notice instead of failing.
-3. **Stop (related tests)** — also on Stop, the hook collects up to 5 modified files from `git diff --name-only` and runs `npm test -- --bail --findRelatedTests <files>`. This relies on Jest's `--findRelatedTests`; in repos without npm it degrades to a notice.
+1. **PostToolUse (`Edit|Write`)** — formats supported files with the
+   project-local Prettier binary. It never downloads tooling through `npx`.
+2. **Stop (lint)** — runs `npm run lint --silent` only when the root
+   `package.json` registers a lint script.
+3. **Stop (related tests)** — passes all tracked and untracked changed files
+   as separate argv elements to a Jest-backed test script.
 
-Together they ensure edited files are formatted, lint runs at the end of every response, and tests related to changed files run before you move on.
+Every gate prints `passed`, `failed`, or `not_applicable` with a reason.
+Applicable failures exit 2 and are not hidden; missing applicability is never
+reported as a pass.
 
-**Installation**: when installed as a plugin, `hooks/hooks.json` is picked up automatically. For a manual (non-plugin) install, merge the `"hooks"` object into your `~/.claude/settings.json` (or the project's `.claude/settings.json`) — Claude Code reads hooks from settings, not from a standalone file.
+**Installation**: plugin installs pick up `hooks/hooks.json` automatically.
+For a manual install, copy `hooks/run_gate.py` to `~/.claude/hooks/` and
+merge the `"hooks"` object into `~/.claude/settings.json` (or the project's
+`.claude/settings.json`).
 
-**Caveats**: all three hooks are npm/Jest-centric by design; adapt the commands for other toolchains (see `hooks/tech-debt-hooks.md` for cross-platform variants). Hooks execute shell commands with your environment credentials — review before enabling.
+**Caveats**: the bundled profile is npm/Jest-centric by design. Other
+toolchains should extend the runner while preserving its three-outcome
+contract. Hooks execute project commands with your environment credentials —
+review before enabling.
 
 ### Whitelist for False Positives
 
@@ -560,7 +580,8 @@ Verifies that an implementation matches its plan.
 ### Adding Custom Commands
 
 Create new `.md` files in `~/.claude/commands/` following the existing patterns. Commands can:
-- Specify a preferred model with `model: opus` in frontmatter
+- Inherit the active session model by default; add a model pin only for a
+  documented, evaluated capability or cost requirement
 - Include step-by-step instructions
 - Reference other commands
 - Use sub-agents for parallel work

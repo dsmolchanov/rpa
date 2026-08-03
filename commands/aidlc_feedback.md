@@ -2,7 +2,6 @@
 description: Collect structured retrospective feedback as an experimental AI-DLC extension
 argument-hint: "[operations-path] - Capture structured retrospective feedback"
 allowed-tools: Read, Glob, Grep, LS, Task, Edit, Write, TodoWrite, Bash(mkdir:*), Bash(date:*)
-model: opus
 ---
 
 # AI-DLC Feedback (Experimental)

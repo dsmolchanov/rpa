@@ -1,7 +1,7 @@
 # Contract: research locator
 
 Platform-neutral contract (conventions §3). Claude adapter:
-`agents/research-v2-locator.md`.
+`agents/codebase-locator.md`.
 
 1. **Trigger** — the caller needs to know WHERE code relevant to a topic
    lives, across an area too large to enumerate inline. *Not for*: reading

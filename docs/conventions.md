@@ -1,17 +1,12 @@
-# RPA Design Conventions — v0.2.1 (working draft)
+# RPA Design Conventions — v0.2.1
 
-Status: **draft; v0.2 revised 2026-07-26 per protocol review, v0.2.1
-amendments same day per second review (discovery/invocation contract, agent
-contract location, sealed-package semantics)**. Honest validation
-claim: v0.2 is a **Claude-side pilot convention**. Nothing here is
-"platform-neutral validated" until a Codex runtime eval exists. The
-`/research_codebase` pilot
-(`thoughts/shared/plans/2026-07-26-thinking-model-modernization-pilot.md`)
-can confirm only the Claude-side rewrite pattern on a pinned model, Claude
-Code version, and effort setting. Repo-wide adoption additionally requires
-representative gates for the planning family, the TDD/refactoring family,
-and a Codex skill runtime eval — one pilot does not authorize a repo-wide
-rewrite.
+Status: **operationally adopted 2026-08-03 by owner decision**. The
+`/research_codebase` pilot remains formally indeterminate and provides no
+repo-wide quality claim; the owner explicitly stopped further sealed rounds
+and accepted a pragmatic rollout under ordinary bounded checks. Treat this as
+a product policy decision, not as platform-neutral eval evidence. Future
+planning, TDD/refactoring, or Codex evaluations may revise the adapters without
+blocking current use.
 
 Motivation: the plugin was written for 2025-era models that needed scripted
 procedures, repeated warnings, and token rationing. Current reasoning models
@@ -141,8 +136,9 @@ exit status and evidence. Every gate defines:
 - evidence artifact it produces,
 - an explicit `not_applicable` outcome **with reason**.
 
-A gate that silently no-ops is a defect: degradation must be visible (the
-current `hooks.json` swallow-errors behavior violates this). Repos holding
+A gate that silently no-ops is a defect: degradation must be visible. The
+bundled hook runner therefore reports `passed`, `failed`, or
+`not_applicable` with a reason and blocks applicable failures. Repos holding
 kernel/adapter files must at minimum validate their own markdown in CI:
 frontmatter schema, internal links, and plugin manifest.
 

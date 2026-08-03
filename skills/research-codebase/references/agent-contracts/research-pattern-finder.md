@@ -1,7 +1,7 @@
 # Contract: research pattern-finder
 
 Platform-neutral contract (conventions §3). Claude adapter:
-`agents/research-v2-pattern-finder.md`.
+`agents/codebase-pattern-finder.md`.
 
 1. **Trigger** — the caller needs concrete existing examples of a named
    pattern/approach in this codebase (how do we do pagination, how are

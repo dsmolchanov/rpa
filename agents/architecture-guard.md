@@ -3,7 +3,7 @@ name: architecture-guard
 description: |
   Detects architectural erosion: boundary violations, circular dependencies, god modules, and layer violations. Builds a lightweight module map and flags structural issues that lead to recurring technical debt.
 tools: Grep, Glob, Read, LS
-model: sonnet
+model: inherit
 color: red
 ---
 

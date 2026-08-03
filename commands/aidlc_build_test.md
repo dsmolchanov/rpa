@@ -2,7 +2,6 @@
 description: Execute the global Build and Test stage after construction units are complete
 argument-hint: "[optional scope] - Run global build and test after construction units"
 allowed-tools: Read, Glob, Grep, LS, Task, Edit, Write, TodoWrite, Bash(npm test:*), Bash(npx jest:*), Bash(pytest:*), Bash(python -m pytest:*), Bash(go test:*), Bash(cargo test:*), Bash(make test:*), Bash(make lint:*), Bash(make typecheck:*), Bash(make build:*), Bash(npm run lint:*), Bash(npm run typecheck:*), Bash(npm run build:*), Bash(git diff:*), Bash(git status:*), Bash(mkdir:*)
-model: opus
 ---
 
 # AI-DLC Build and Test

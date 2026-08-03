@@ -3,7 +3,7 @@ name: dependency-auditor
 description: |
   Analyzes project dependency manifests for health indicators: missing lockfiles, outdated patterns, unused dependencies, and risky version specifications. Returns prioritized findings with verification commands.
 tools: Glob, Grep, Read, LS
-model: sonnet
+model: inherit
 color: orange
 ---
 

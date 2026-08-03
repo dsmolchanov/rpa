@@ -3,7 +3,7 @@ name: config-auditor
 description: |
   Detects hardcoded configuration values that should be externalized: file paths, URLs, API endpoints, environment-specific values, and potential credentials. Returns findings with recommendations for proper configuration management.
 tools: Grep, Glob, Read, LS
-model: sonnet
+model: inherit
 color: cyan
 ---
 

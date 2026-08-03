@@ -2,9 +2,8 @@
 
 Single source of truth for the `/research_codebase` output format
 (conventions §9). Extracted unchanged from the frozen baseline
-(`commands/research_codebase.md`, steps 5–6 at plugin SHA `a7de5f6`); the
-pilot's candidate must emit documents that satisfy this same contract so
-legacy `/create_plan` and `/enhance_research` keep consuming them.
+(`commands/research_codebase.md`, steps 5–6 at plugin SHA `a7de5f6`) so
+`/create_plan` and `/enhance_research` keep consuming the same stable shape.
 
 ## Path
 

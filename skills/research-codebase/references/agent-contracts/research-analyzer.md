@@ -1,7 +1,7 @@
 # Contract: research analyzer
 
 Platform-neutral contract (conventions §3). Claude adapter:
-`agents/research-v2-analyzer.md`.
+`agents/codebase-analyzer.md`.
 
 1. **Trigger** — the caller has specific files/components (usually from a
    locator pass) and needs to understand HOW they work: control flow, data

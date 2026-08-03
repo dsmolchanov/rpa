@@ -2,7 +2,6 @@
 description: Execute one approved construction unit through the per-unit construction loop
 argument-hint: "[unit-path|unit-id] - Execute a specific construction unit"
 allowed-tools: Read, Glob, Grep, LS, Task, Edit, Write, TodoWrite, Bash(git diff:*), Bash(git status:*), Bash(git log:*), Bash(npm test:*), Bash(npx jest:*), Bash(pytest:*), Bash(python -m pytest:*), Bash(go test:*), Bash(cargo test:*), Bash(make test:*), Bash(make build:*), Bash(npm run test:*), Bash(npm run build:*), Bash(mkdir:*)
-model: opus
 ---
 
 # AI-DLC Bolt

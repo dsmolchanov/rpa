@@ -2,7 +2,6 @@
 description: Execute approved inception stages and write canonical AI-DLC artifacts
 argument-hint: "[description] [--type hotfix|feature|refactor|migration] [--depth minimal|standard|comprehensive]"
 allowed-tools: Read, Glob, Grep, LS, Task, Edit, Write, TodoWrite, Bash(mkdir:*), Bash(git rev-parse:*), Bash(git diff:*)
-model: opus
 ---
 
 # AI-DLC Inception

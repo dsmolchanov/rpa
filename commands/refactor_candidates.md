@@ -2,7 +2,6 @@
 description: Discover and index God-like modules for refactoring candidates
 argument-hint: "[path] - Directory to scan (default: repo root)"
 allowed-tools: Read, Glob, Grep, LS, Task, Write, Bash(wc -l:*), Bash(git log:*), Bash(git rev-parse:*)
-model: opus
 ---
 
 # Refactor Candidates Discovery

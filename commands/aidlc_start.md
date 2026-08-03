@@ -2,7 +2,6 @@
 description: Initialize or resume the AI-DLC compatibility workflow and write the execution plan
 argument-hint: "[description or ticket path] - Describe the work to initialize"
 allowed-tools: Read, Glob, Grep, LS, Edit, Write, TodoWrite, Bash(mkdir:*), Bash(date:*), Bash(git rev-parse:*), Bash(git branch:*), Bash(git status:*)
-model: opus
 ---
 
 # AI-DLC Start

@@ -1318,6 +1318,54 @@ no task, ground-truth, rubric, snapshot, or judge-prompt content crossed back
 into the implementation context. Independent verification in the pinned
 operator image reproduced the same package digest.
 
+Round 11 then passed the registered installation, seal, sandbox, synthetic,
+and all-arm real-backend preflight gates and created a fresh randomized
+42-slot schedule. Its first scheduled slot made the three permitted
+infrastructure attempts, with no completed workflow outcome. Each attempt
+ended only after the backend had run and then failed identically in the
+prospective Agent-stream reconciler: `delegation launch does not precede its
+child assistant`. The third failure atomically created the terminal-invalid
+journal required by the registered retry policy. The schedule manifest,
+terminal journal, package, and all three attempts are immutable historical
+evidence; round 11 is indeterminate and cannot be resumed, repaired, or used
+selectively.
+
+Shape-only inspection of the retained pinned-CLI session records identified
+the false rejection without reading holdout or artifact prose. Claude Code
+2.1.220 may emit several synchronous sibling `Agent` tool-use blocks as split
+chunks of one parent assistant message. Each child can legitimately start
+immediately after its own tool-use block while later sibling launch blocks of
+that same parent message are still being emitted. The v4 reconciler instead
+compared every child with the maximum stream position of the whole grouped
+parent message, so a valid first sibling appeared to start too early.
+
+**Owner decision after round 11:** stop the pilot rather than spend additional
+model budget on another sealed round. No round-12 package, proof, schedule,
+run, or judge session will be created. The indeterminate result remains the
+honest experimental conclusion; it is not rewritten as a pass. The owner
+nevertheless authorizes an operational rollout of the already frozen
+research kernel and the low-risk conventions cleanup, accepting that this is
+a product decision rather than an eval-backed quality claim. Rollout uses the
+repository's ordinary bounded checks (documentation validation, static
+checks, and focused smoke tests), not the sealed pilot harness.
+
+**Operational rollout scope (2026-08-03):** the production
+`/research_codebase` adapter inherits the active session model and routes to
+the shared `codebase-*`, `thoughts-*`, and `web-search-researcher` adapters.
+Those six adapters now point to the already-reviewed platform-neutral
+contracts in the research skill; historical `research-v2-*` aliases remain
+only for frozen-install reproduction. Existing consumers are intentionally in
+scope: planning (`create_plan`, `enhance_plan`, `iterate_plan`), research
+enhancement, TDD/test planning, tech-debt sweep, and AI-DLC inception. Their
+read-only discovery/analysis roles and names remain stable; locator adapters
+gain `Read` only to load their contract. Legacy command-level Opus/Sonnet pins
+and undocumented agent Sonnet pins are removed in favor of session model
+inheritance. The hook profile is replaced by a portable runner with explicit
+`passed` / `failed` / `not_applicable` outcomes; applicable failures are no
+longer swallowed. This scope deliberately preserves the remaining command
+bodies rather than turning every workflow into a new skill package in the
+same release.
+
 1. Implement strict role validation, bounded crash-safe judge attempts,
    all-document role coverage, immutable policy bindings, and deterministic
    aggregation in `skills/research-codebase/evals/public/`.

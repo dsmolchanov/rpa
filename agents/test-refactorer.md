@@ -3,7 +3,7 @@ name: test-refactorer
 description: |
   Migrates tests between frameworks (Mocha→Jest, unittest→pytest). Rewrites assertions, moves files to the majority convention, flags dead tests. Extension of test-updater with framework-aware transformations. Produces migration plans by default; never applies changes itself.
 tools: Grep, Glob, Read, LS
-model: sonnet
+model: inherit
 color: orange
 ---
 

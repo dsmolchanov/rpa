@@ -2,7 +2,6 @@
 description: Analyze technical debt trends over time from sweep reports
 argument-hint: "[weeks] - Number of weeks to analyze (default: 4)"
 allowed-tools: Read, Glob, Grep, LS, Write
-model: sonnet
 ---
 
 # Tech Debt Trends

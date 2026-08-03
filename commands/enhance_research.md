@@ -1,7 +1,6 @@
 ---
 description: Enhance existing research documents by synthesizing user feedback and opinions
 argument-hint: "[research-file] [feedback or opinions]"
-model: opus
 ---
 
 # Enhance Research Document

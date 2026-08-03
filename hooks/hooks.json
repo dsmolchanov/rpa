@@ -2,11 +2,11 @@
   "hooks": {
     "PostToolUse": [
       {
-        "matcher": "Edit",
+        "matcher": "Edit|Write",
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c 'FILE=$(cat | jq -r \".tool_input.file_path\"); command -v prettier >/dev/null 2>&1 && npx prettier --write \"$FILE\" 2>/dev/null || true'"
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/hooks/run_gate.py\" format"
           }
         ]
       }
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c 'command -v npm >/dev/null 2>&1 && npm run lint --silent 2>/dev/null || echo \"Lint: npm not found or no lint script\"'"
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/hooks/run_gate.py\" lint"
           }
         ]
       },
@@ -24,7 +24,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c 'MODIFIED=$(git diff --name-only 2>/dev/null | head -5); if [ -n \"$MODIFIED\" ]; then command -v npm >/dev/null 2>&1 && npm test -- --bail --findRelatedTests $MODIFIED 2>/dev/null || echo \"Tests: npm not found\"; fi'"
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/hooks/run_gate.py\" related-tests"
           }
         ]
       }

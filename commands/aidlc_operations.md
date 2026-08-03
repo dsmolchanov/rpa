@@ -2,7 +2,6 @@
 description: Generate experimental operations artifacts beyond the current upstream AI-DLC core
 argument-hint: "[build-test-report-path] - Generate experimental operations artifacts"
 allowed-tools: Read, Glob, Grep, LS, Task, Edit, Write, TodoWrite, Bash(git diff:*), Bash(git log:*), Bash(git rev-parse:*), Bash(mkdir:*)
-model: opus
 ---
 
 # AI-DLC Operations (Experimental)

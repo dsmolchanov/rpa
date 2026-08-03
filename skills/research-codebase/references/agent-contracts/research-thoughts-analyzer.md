@@ -1,7 +1,7 @@
 # Contract: research thoughts-analyzer
 
 Platform-neutral contract (conventions §3). Claude adapter:
-`agents/research-v2-thoughts-analyzer.md`.
+`agents/thoughts-analyzer.md`.
 
 1. **Trigger** — the caller has identified a specific `thoughts/`
    document (usually via the thoughts-locator) and needs its load-bearing

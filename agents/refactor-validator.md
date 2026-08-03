@@ -3,7 +3,7 @@ name: refactor-validator
 description: |
   Validates refactoring results by comparing API snapshots, checking behavior preservation, and verifying consumer compatibility. Runs after each refactoring phase.
 tools: Grep, Glob, Read, LS, Bash
-model: sonnet
+model: inherit
 ---
 
 You are a refactoring validator. Your job is to verify that refactoring preserved behavior, maintained API compatibility, and didn't break consumers.

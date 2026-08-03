@@ -2,7 +2,7 @@
 date: 2026-08-01
 type: pilot-results
 scope: /research_codebase workflow family (Claude-side)
-status: primary verdict indeterminate; operational no-go pending protocol decision
+status: primary verdict indeterminate; owner-approved operational rollout without further pilot rounds
 plan: thoughts/shared/plans/2026-07-26-thinking-model-modernization-pilot.md
 seal_package_sha256: e611ada9427954e34b597e093d7da35acb278d534dbdf54dffef72700a5da95c
 ---
@@ -13,7 +13,13 @@ seal_package_sha256: e611ada9427954e34b597e093d7da35acb278d534dbdf54dffef72700a5
 
 The candidate's pre-registered **primary pass is not established**. The
 formal pass/fail verdict is **indeterminate**, and rollout remains an
-operational **no-go** until the protocol gap below is resolved.
+experimental **no-go** under this protocol.
+
+**Post-report owner decision (2026-08-03):** stop further sealed evaluation
+because its cost is disproportionate to this repository, and roll out the
+frozen research kernel plus low-risk adapter/hook cleanup under ordinary
+bounded checks. This does not convert the result into a pass; it records an
+explicit product-risk decision outside the experiment.
 
 The execution itself is complete and auditable: 42 final runs, 25 primary
 scorer records, 25 primary verifier records, and 42 diagnostic scorer

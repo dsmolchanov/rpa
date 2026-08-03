@@ -2,7 +2,6 @@
 description: Scan codebase for technical debt and generate actionable paydown plan
 argument-hint: "[apply] - Run without args to scan, with 'apply' to auto-fix safe issues"
 allowed-tools: Read, Glob, Grep, LS, Task, Edit, Write, Bash
-model: opus
 ---
 
 # Tech Debt Sweep

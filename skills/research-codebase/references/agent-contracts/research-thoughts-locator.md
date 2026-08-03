@@ -1,7 +1,7 @@
 # Contract: research thoughts-locator
 
 Platform-neutral contract (conventions §3). Claude adapter:
-`agents/research-v2-thoughts-locator.md`.
+`agents/thoughts-locator.md`.
 
 1. **Trigger** — the caller needs to know which documents in the
    `thoughts/` store (research, plans, tickets, PRs, handoffs, notes)

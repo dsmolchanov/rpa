@@ -3,7 +3,7 @@ name: docs-auditor
 description: |
   Audits documentation for staleness and drift. Compares README, API docs, and docstrings against actual code. Identifies outdated examples, missing documentation, and inconsistencies.
 tools: Grep, Glob, Read, LS
-model: sonnet
+model: inherit
 color: purple
 ---
 

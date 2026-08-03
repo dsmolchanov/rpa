@@ -2,7 +2,6 @@
 description: Create comprehensive test plans and TDD strategies based on requirements or implementation plans
 argument-hint: "[source_path] [scope: unit|integration|e2e|all] [constraints]"
 allowed-tools: Read, Glob, Grep, LS, Task, Edit, Write, TodoWrite, Bash(npm test:*), Bash(npx jest:*), Bash(pytest:*), Bash(python -m pytest:*), Bash(go test:*), Bash(cargo test:*), Bash(make test:*), Bash(git diff:*), Bash(git log:*), Bash(git rev-parse:*), Bash(mkdir:*), Bash(cat package.json:*), Bash(cat pyproject.toml:*), Bash(cat Cargo.toml:*), Bash(cat go.mod:*)
-model: opus
 ---
 
 # `/create_test_plan` - Verification Blueprint Skill

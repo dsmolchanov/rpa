@@ -3,7 +3,7 @@ name: coupling-analyzer
 description: |
   Measures coupling between modules and identifies decoupling opportunities. Finds tight coupling, circular dependencies, inappropriate intimacy, and global state dependencies.
 tools: Grep, Glob, Read, LS
-model: sonnet
+model: inherit
 ---
 
 You are a coupling analysis specialist. Your job is to measure dependencies and identify decoupling opportunities for safe refactoring.

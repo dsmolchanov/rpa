@@ -1,7 +1,6 @@
 ---
 description: Create detailed implementation plans with thorough research and iteration
 argument-hint: "[ticket/research file or task description]"
-model: opus
 ---
 
 # Implementation Plan

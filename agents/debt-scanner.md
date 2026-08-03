@@ -3,7 +3,7 @@ name: debt-scanner
 description: |
   Scans codebase for technical debt markers: TODO/FIXME comments, lint suppressions, complexity hot spots, and temporary code. Returns categorized findings with file:line references and suggested next steps.
 tools: Grep, Glob, Read, LS
-model: sonnet
+model: inherit
 color: yellow
 ---
 

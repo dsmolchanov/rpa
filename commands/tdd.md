@@ -2,7 +2,6 @@
 description: Execute full TDD cycle - implement tests from plan, verify Red/Green/Refactor phases with 80%+ coverage
 argument-hint: "[test_plan_path] [phase: red|green|refactor|full]"
 allowed-tools: Read, Glob, Grep, LS, Task, Edit, Write, TodoWrite, Bash(npm test:*), Bash(npx jest:*), Bash(pytest:*), Bash(python -m pytest:*), Bash(go test:*), Bash(cargo test:*), Bash(make test:*), Bash(npm run test:*), Bash(git diff:*), Bash(git log:*), Bash(git status:*), Bash(git add:*), Bash(mkdir:*)
-model: opus
 ---
 
 # `/tdd` - Test-Driven Development Cycle Skill

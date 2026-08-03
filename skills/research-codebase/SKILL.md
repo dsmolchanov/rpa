@@ -93,11 +93,10 @@ in this package is the signal:
   re-verify your own reading. Routing and the delegation cap live in
   the routing file; each fleet agent's contract is under
   [`references/agent-contracts/`](references/agent-contracts/).
-- **Without the fleet** — including the pilot's fleet-ablation build,
-  which removes the routing file and the `research-v2-*` agents — do
-  every investigation in the main context and spawn **no subagents of
-  any kind** (the pre-registered no-subagent policy: a spawn is a
-  counted policy violation, not a judgment call).
+- **Without the fleet** — when the routing file or shared adapters are not
+  installed — do every investigation in the main context and spawn no
+  subagents. Do not substitute unrelated agents merely to preserve a
+  delegation shape.
 
 ## Acceptance criteria & evidence
 

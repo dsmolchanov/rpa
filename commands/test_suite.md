@@ -2,7 +2,6 @@
 description: Create, update, and maintain test suites with coverage tracking
 argument-hint: "[audit|adopt|init|update|gaps|run|ci|standardize] [options]"
 allowed-tools: Read, Glob, Grep, LS, Task, Edit, Write, TodoWrite, Bash(npm test:*), Bash(npx jest:*), Bash(pytest:*), Bash(python -m pytest:*), Bash(go test:*), Bash(cargo test:*), Bash(make test:*), Bash(git diff:*), Bash(git log:*), Bash(git rev-parse:*), Bash(mkdir:*)
-model: opus
 ---
 
 # Test Suite Management

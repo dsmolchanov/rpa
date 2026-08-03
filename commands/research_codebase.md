@@ -1,7 +1,6 @@
 ---
 description: Document codebase as-is with thoughts directory for historical context
 argument-hint: "[research question or files to read]"
-model: opus
 ---
 
 # Research Codebase — Claude adapter
@@ -19,7 +18,7 @@ single short sentence.
 
 The kernel defines intent, scope and authority (documentarian: describe
 what exists, never critique or propose), the artifact contract, process
-guidance, delegation policy (the `research-v2-*` fleet), acceptance
+guidance, delegation policy (the shared research fleet), acceptance
 criteria, verification gates, and escalation conditions — follow it as
 written. The artifact contract is also included below: emit its
 frontmatter schema and body template exactly.
@@ -48,12 +47,8 @@ read the same two files from the project's
 
 Platform wiring:
 
-- **Model pin `opus`** — pilot-only parity control: the frozen baseline
-  command pins `model: opus`, and the pilot's registered runtime
-  configuration requires both arms to resolve to the same model
-  (`thoughts/shared/plans/2026-07-26-thinking-model-modernization-pilot.md`,
-  Runtime configuration). Re-evaluate against conventions §5 (default: no
-  pin) when the pilot concludes.
-- Subagents: the kernel's fleet is adapted by `agents/research-v2-*.md`;
-  the legacy shared fleet stays reserved for the frozen baseline and the
-  other command families.
+- Model: inherited from the active Claude session; the pilot-only Opus pin
+  ended with the pilot.
+- Subagents: the kernel routes through the shared `codebase-*`, `thoughts-*`,
+  and `web-search-researcher` adapters. Historical `research-v2-*` aliases
+  remain only so frozen pilot installations can be reproduced.

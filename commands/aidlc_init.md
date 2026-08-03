@@ -2,7 +2,6 @@
 description: Bootstrap the current repository for the AI-DLC compatibility workflow
 argument-hint: "[--force-overlay] [--force-claude] - Optional bootstrap flags"
 allowed-tools: Read, Glob, Grep, LS, Bash(pwd:*), Bash(git rev-parse:*), Bash(test:*), Bash(ls:*), Bash(bash:*), Bash(cat:*)
-model: opus
 ---
 
 # AI-DLC Init

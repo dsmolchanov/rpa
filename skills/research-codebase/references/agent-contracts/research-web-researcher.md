@@ -1,7 +1,7 @@
 # Contract: research web-researcher
 
 Platform-neutral contract (conventions §3). Claude adapter:
-`agents/research-v2-web-researcher.md`.
+`agents/web-search-researcher.md`.
 
 1. **Trigger** — the question hinges on external library/API/platform
    facts the checkout cannot answer, or the user explicitly asked for web

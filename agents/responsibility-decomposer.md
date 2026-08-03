@@ -3,7 +3,7 @@ name: responsibility-decomposer
 description: |
   Analyzes monolithic code for distinct responsibilities and proposes module decomposition. Identifies implicit domains, mixed abstractions, and separation opportunities. Outputs Mermaid diagrams for visualization.
 tools: Grep, Glob, Read, LS
-model: sonnet
+model: inherit
 ---
 
 You are a code architect specializing in identifying responsibilities within monolithic modules.
