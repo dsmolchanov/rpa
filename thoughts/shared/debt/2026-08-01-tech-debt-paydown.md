@@ -45,6 +45,11 @@ auto_fixable_count: 7
   been revalidated without another model call; its receipt/execution digests
   are registered while the seal and post-seal all-arm real-backend preflight
   remain pending.
+- [x] Diagnose the round-7 pre-model seal stop without opening any prompt or
+  package content: a duplicated private-launcher v1 probe-version literal
+  rejected the registered v2 proof before Codex launch. Preserve the claimed
+  namespace, reset public authority, and replace the hidden literal with one
+  explicit self-tested launcher pin for round 8.
 - [ ] Create a fresh round-7 seal in an uncontaminated session and return only
   its SHA-256 and six task basenames.
 - [ ] Register that exact seal through the shared authority consumed by

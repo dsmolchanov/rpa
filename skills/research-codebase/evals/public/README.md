@@ -44,7 +44,7 @@ installation (`docs/conventions.md` §1; pilot plan, "Atomic seal").
   persists digest-bound raw streams plus a revalidatable receipt. Run it with
   `python3 judge_live_probe.py --config FILLED_CONFIG`; the only output
   namespace is derived from
-  `<private-root>/holdout-v2-round7/package/seal-manifest.json` as its sibling
+  `<private-root>/holdout-v2-round8/package/seal-manifest.json` as its sibling
   `judge-live-probe/`. Namespace creation is an irreversible launch claim:
   an existing complete receipt is only revalidated, while incomplete or
   tampered state permanently blocks relaunch. `--verify` rechecks the same

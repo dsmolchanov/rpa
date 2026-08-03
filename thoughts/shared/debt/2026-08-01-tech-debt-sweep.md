@@ -259,3 +259,13 @@ revalidated without a second model observation, and only its public receipt
 and execution digests were registered. No round-7 holdout task or package
 existed during the probe. The seal registration remains pending; the next
 authorized mutation is the separate atomic one-shot seal.
+
+That round-7 seal launch then stopped before prompt creation or model launch:
+the private launcher contained a duplicated legacy v1 probe-version literal
+and rejected the correctly registered v2 receipt. The empty public package
+placeholder and claimed clean root are preserved as invalid evidence; no
+holdout material was authored or observed. This exposed a configuration-
+ownership debt rather than an eval outcome. The prospective round-8 launcher
+uses one named expected-version pin checked against the imported public
+registration, and its no-model self-test covers the exact binding. Public
+probe/seal authority is pending again until the fresh round-8 boundary.

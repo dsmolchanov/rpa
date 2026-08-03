@@ -1106,6 +1106,24 @@ The probe used only public synthetic material. The seal registration remains
 the exact all-zero sentinel until a separate one-shot session atomically
 authors and promotes the genuinely new round-7 package.
 
+The subsequent round-7 seal launch failed closed before any authoring prompt
+or Codex model launch. The private launcher correctly observed that its
+duplicated expected probe-version literal still named
+`public-live-dual-output-v1`, while the frozen public registration required
+`public-live-dual-output-v2`. The clean root had already been exclusively
+created, so the one-shot namespace remains invalid and is preserved; the
+canonical package placeholder is still empty. No round-7 holdout task,
+context, ground truth, snapshot, judge material, package digest, or outcome
+was authored or observed. Nevertheless, neither the probe nor any part of the
+claimed round-7 namespace may be reused.
+
+Prospectively, the replacement launcher exposes one explicit expected public
+probe-version pin and verifies the imported registration against it, instead
+of carrying a hidden function-local legacy literal. The public live-probe and
+seal registrations are reset to their exact all-zero sentinels. The next
+attempt uses the fresh `holdout-v2-round8` namespace and requires a new
+one-shot public probe, a new atomic seal, and a complete new schedule.
+
 1. Implement strict role validation, bounded crash-safe judge attempts,
    all-document role coverage, immutable policy bindings, and deterministic
    aggregation in `skills/research-codebase/evals/public/`.
