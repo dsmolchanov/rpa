@@ -135,6 +135,8 @@ REGISTERED_JUDGE_RETRY_POLICY = pilot_registration.JUDGE_RETRY_POLICY
 REGISTERED_JUDGE_OUTPUT_POLICY = pilot_registration.JUDGE_OUTPUT_POLICY
 REGISTERED_STRUCTURED_OUTPUT_SCHEMA_SHA256 = (
     pilot_registration.STRUCTURED_OUTPUT_SCHEMA_SHA256)
+REGISTERED_FINAL_RESPONSE_CONTRACT_SHA256 = (
+    pilot_registration.FINAL_RESPONSE_CONTRACT_SHA256)
 REGISTERED_AGGREGATION_POLICY = pilot_registration.AGGREGATION_POLICY
 
 PHASES = (
@@ -375,6 +377,8 @@ def all_docs_population(results, runs_out):
                         REGISTERED_JUDGE_OUTPUT_POLICY,
                     "structured_output_schema_sha256":
                         REGISTERED_STRUCTURED_OUTPUT_SCHEMA_SHA256,
+                    "final_response_contract_sha256":
+                        REGISTERED_FINAL_RESPONSE_CONTRACT_SHA256,
                 }
                 or result.get("telemetry_policy_id")
                 != REGISTERED_AGGREGATION_POLICY["telemetry"]
@@ -813,6 +817,11 @@ def validate_config(config, *, allow_pending_probe=False,
             for role in ("scorer", "verifier")
          }, REGISTERED_STRUCTURED_OUTPUT_SCHEMA_SHA256,
          "structured-output schemas"),
+        ({
+            role: judge_contract.final_response_contract_sha256(role)
+            for role in ("scorer", "verifier")
+         }, REGISTERED_FINAL_RESPONSE_CONTRACT_SHA256,
+         "final-response contracts"),
         (runner.PILOT_V2_AGGREGATION_POLICY,
          REGISTERED_AGGREGATION_POLICY, "aggregation policy"),
     )

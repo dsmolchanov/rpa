@@ -49,6 +49,9 @@ CRITICAL_ERROR_CATEGORIES = (
 )
 
 OUTPUT_GUARD_VERSION = "exact-object-keys-v1"
+# The CLI structural schema bytes are unchanged.  The broader harness output
+# policy is versioned independently in pilot_registration.py because it also
+# binds the high-recency semantic reminder.
 STRUCTURED_OUTPUT_POLICY_ID = "claude-cli-json-schema-structural-v1"
 
 
@@ -344,6 +347,49 @@ def _exact_object_keys(role):
     raise JudgeResponseError("role must be 'scorer' or 'verifier'")
 
 
+def _semantic_constraints(role):
+    """Return the exact, deterministic semantic invariants for one role.
+
+    These strings describe only invariants already enforced by
+    ``validate_response``.  Both the sealed contract document and the
+    high-recency final-response reminder consume this single source so their
+    language cannot drift independently.
+    """
+
+    if role == "scorer":
+        return (
+            "all textual fields are nonempty after trimming whitespace",
+            (
+                "total quarter-ticks equal coverage + relevance + "
+                "synthesis quarter-ticks"
+            ),
+        )
+    if role == "verifier":
+        return (
+            (
+                "all textual fields and string-array items are nonempty "
+                "after trimming whitespace"
+            ),
+            (
+                "verifiable_claims = supported_claims + "
+                "unsupported_claims + unverifiable_claims"
+            ),
+            "claim_ledger length = verifiable_claims",
+            "claim_ledger status counts equal their root count fields",
+            (
+                "supported ledger entries have nonempty "
+                "candidate_citations and evidence"
+            ),
+            "critical_error_count = critical_errors length",
+            (
+                "critical error propositions are unique after NFKC, "
+                "lowercase, whitespace collapse, and terminal-punctuation "
+                "removal"
+            ),
+        )
+    raise JudgeResponseError("role must be 'scorer' or 'verifier'")
+
+
 def output_contract(role):
     """Return sealed, model-facing clarification of the strict key contract.
 
@@ -369,13 +415,17 @@ def output_contract(role):
 
 
 def output_contract_reminder(role):
-    """Render the deterministic end-of-prompt exact-key reminder."""
+    """Render the deterministic end-of-prompt response-contract reminder."""
 
     contract = output_contract(role)
     key_lines = [
         f"- `{location}`: "
         + json.dumps(keys, ensure_ascii=False, separators=(",", ":"))
         for location, keys in contract["exact_object_keys"].items()
+    ]
+    semantic_lines = [
+        f"- [ ] {constraint}"
+        for constraint in _semantic_constraints(role)
     ]
     return "\n".join((
         "## Mandatory final response contract",
@@ -393,10 +443,24 @@ def output_contract_reminder(role):
             "listed `rationale`, `evidence`, or `summary` values."
         ),
         (
-            "Before responding, silently compare every object's key set for "
-            "exact equality with this list. Then output the JSON object only."
+            "Before responding, silently reconcile every already-enforced "
+            "semantic invariant in this checklist:"
+        ),
+        *semantic_lines,
+        (
+            "Silently compare every object's key set for exact equality with "
+            "the list above, verify every checklist item, and then output the "
+            "JSON object only."
         ),
     ))
+
+
+def final_response_contract_sha256(role):
+    """Hash the exact UTF-8 bytes appended to the judge prompt."""
+
+    return hashlib.sha256(
+        output_contract_reminder(role).encode("utf-8")
+    ).hexdigest()
 
 
 def validate_response(text, role):
@@ -586,40 +650,8 @@ def contract_schema(role):
 
     if role == "scorer":
         schema = _SCORER_SCHEMA
-        semantic_constraints = [
-            (
-                "all textual fields are nonempty after trimming "
-                "whitespace"
-            ),
-            (
-                "total quarter-ticks equal coverage + relevance + "
-                "synthesis quarter-ticks"
-            ),
-        ]
     elif role == "verifier":
         schema = _VERIFIER_SCHEMA
-        semantic_constraints = [
-            (
-                "all textual fields and string-array items are nonempty "
-                "after trimming whitespace"
-            ),
-            (
-                "verifiable_claims = supported_claims + "
-                "unsupported_claims + unverifiable_claims"
-            ),
-            "claim_ledger length = verifiable_claims",
-            "claim_ledger status counts equal their root count fields",
-            (
-                "supported ledger entries have nonempty "
-                "candidate_citations and evidence"
-            ),
-            "critical_error_count = critical_errors length",
-            (
-                "critical error propositions are unique after NFKC, "
-                "lowercase, whitespace collapse, and terminal-punctuation "
-                "removal"
-            ),
-        ]
     else:
         raise JudgeResponseError("role must be 'scorer' or 'verifier'")
 
@@ -640,7 +672,7 @@ def contract_schema(role):
         },
         "schema": copy.deepcopy(schema),
         "output_contract": output_contract(role),
-        "semantic_constraints": semantic_constraints,
+        "semantic_constraints": list(_semantic_constraints(role)),
     }
 
 
@@ -683,4 +715,18 @@ if __name__ == "__main__":
             raise AssertionError("extreme Decimal exponent was accepted")
     json.dumps(contract_schema("scorer"), allow_nan=False)
     json.dumps(contract_schema("verifier"), allow_nan=False)
+    for role in ("scorer", "verifier"):
+        reminder = output_contract_reminder(role)
+        for constraint in _semantic_constraints(role):
+            if reminder.count(constraint) != 1:
+                raise AssertionError(
+                    f"{role} semantic constraint reminder drifted: "
+                    f"{constraint}"
+                )
+        expected_digest = hashlib.sha256(
+            reminder.encode("utf-8")
+        ).hexdigest()
+        if final_response_contract_sha256(role) != expected_digest:
+            raise AssertionError(
+                f"{role} final-response contract digest drifted")
     print("judge_contract self-test: PASS")

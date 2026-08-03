@@ -857,12 +857,19 @@ harness and proven with a secret-canary preflight before sealing.
 - Native structured generation is an output aid, not a replacement validator.
   The CLI's ordinary string `result` and object `structured_output` must each
   independently pass the existing full role validator and normalize to exactly
-  the same object; neither view may repair the other. The registered policy is
-  `claude-cli-json-schema-structural-v1`. Its public structural-schema SHA-256
-  is `ec21f5722725501edf6d29741a85e93f0ed4611d443540452a3b907e382adcc7`
+  the same object; neither view may repair the other. The registered harness
+  policy is `claude-cli-json-schema-semantic-reminder-v2`; its unchanged
+  public structural subset remains `claude-cli-json-schema-structural-v1`.
+  The public structural-schema SHA-256 is
+  `ec21f5722725501edf6d29741a85e93f0ed4611d443540452a3b907e382adcc7`
   for the scorer and
   `feba3d9047ff1aa9b2da959e8431e177bdf9e6117ed2ffed972772e2ebddebe0`
-  for the verifier. Policy and role digest bind the seal, runtime pins,
+  for the verifier. The deterministic high-recency final-response contract
+  SHA-256 is
+  `6276198554f6a13544cb8a1f39102ddb290d16d6311a982a4ca9d3919c80c14c`
+  for the scorer and
+  `5db809fa94dd4027078f58bb5e51406963e6f57087b141927cb7112e9dd51505`
+  for the verifier. Policy and both role digests bind the seal, runtime pins,
   schedule, batch, every attempt, terminal exhaustion, accepted result, and
   sanitized aggregate evidence; aggregation checks them independently.
 - Attempt JSON, pending journals, and external raw-stream sidecars are an
@@ -1060,6 +1067,32 @@ clean-boundary checks. Its registered package SHA-256 is
 The only returned identifiers were `holdout-v2-1.md` through
 `holdout-v2-6.md`; no task, context, ground truth, snapshot, judge prompt, or
 holdout outcome returned to the implementation context before registration.
+
+Round 6 then completed its new 42-slot randomized schedule and the complete
+all-document scorer batch. The separately isolated verifier accepted four
+records, but one required record exhausted all three fixed attempts. Every
+attempt carried valid runtime/accounting evidence and no transport defect; all
+three independently failed the already-registered semantic reconciliation of
+claim counters with the claim ledger. The incomplete verifier manifest and
+terminal exhaustion record make the entire round permanently indeterminate.
+The aggregate was not launched and no diagnostic outcome was published. All round-6 seal,
+schedule, run, scorer, verifier, and raw-attempt evidence remains immutable in
+the private workspace and none of it may be repaired, selectively rejudged,
+or reused in a later outcome.
+
+Before any new holdout authoring, the output contract is prospectively
+hardened without changing the accepted response language or the fixed
+three-attempt/no-repair rule. Every already-enforced role semantic invariant
+is repeated once in the deterministic final prompt tail; the exact UTF-8 tail
+digests above are independently registered and propagated through runtime,
+live-probe, batch, attempt/result, exhaustion, and aggregate evidence. The
+live-probe policy is now `public-live-dual-output-v2`. Because the public code,
+prompt bytes, output policy, runtime-registration digest, and probe execution
+identity changed, the round-6 probe and seal cannot authorize another launch:
+all live-probe and seal registrations are reset to their exact all-zero
+sentinels. The replacement must use a new `holdout-v2-round7` one-shot probe,
+six genuinely new tasks, a new atomic seal, and a complete new 42-slot
+schedule before scorer, verifier, sanitized reporting, or aggregation.
 
 1. Implement strict role validation, bounded crash-safe judge attempts,
    all-document role coverage, immutable policy bindings, and deterministic

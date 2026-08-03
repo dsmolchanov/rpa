@@ -868,6 +868,8 @@ def make_v2_aggregation_fixture(workspace, target_sha, label="golden"):
                     runner.PILOT_V2_JUDGE_OUTPUT_POLICY),
                 "structured_output_schema_sha256": (
                     judge_contract.structured_output_schema_sha256(role)),
+                "final_response_contract_sha256": (
+                    judge_contract.final_response_contract_sha256(role)),
                 "judge_prompt_sha256": hashlib.sha256(
                     prompts[role].read_bytes()).hexdigest(),
                 "quality_rubric_sha256": hashlib.sha256(
@@ -975,6 +977,8 @@ def make_v2_aggregation_fixture(workspace, target_sha, label="golden"):
             "judge_output_policy": runner.PILOT_V2_JUDGE_OUTPUT_POLICY,
             "structured_output_schema_sha256": (
                 judge_contract.structured_output_schema_sha256(role)),
+            "final_response_contract_sha256": (
+                judge_contract.final_response_contract_sha256(role)),
             "judge_prompt_sha256": hashlib.sha256(
                 prompts[role].read_bytes()).hexdigest(),
             "quality_rubric_sha256": hashlib.sha256(
@@ -1333,6 +1337,14 @@ def _run_preflight(registration_isolation_ok):
                     "structured_output_schema_sha256"]
                 == judge_contract.structured_output_schema_sha256(role)
                 for role in ("scorer", "verifier"))
+            and probe_receipt["identity"].get(
+                "final_response_contract_sha256")
+            == pilot_registration.FINAL_RESPONSE_CONTRACT_SHA256
+            and all(
+                probe_receipt["observations"][role].get(
+                    "final_response_contract_sha256")
+                == judge_contract.final_response_contract_sha256(role)
+                for role in ("scorer", "verifier"))
             and all(
                 observation["backend_version_observed"]
                 == probe_config["backend_version"]
@@ -1346,8 +1358,8 @@ def _run_preflight(registration_isolation_ok):
             and replay_receipt == probe_receipt and not replay_launches
             and incomplete_namespace_rejected
             and probe_help.returncode == 0 and "--out" not in probe_help.stdout
-            and judge_live_probe.ROUND_NAMESPACE == "holdout-v2-round6"
-            and "holdout-v2-round6" in probe_help.stdout
+            and judge_live_probe.ROUND_NAMESPACE == "holdout-v2-round7"
+            and "holdout-v2-round7" in probe_help.stdout
             and probe_out_arg.returncode == 2
             and "unrecognized arguments: --out" in probe_out_arg.stderr
             and pending_probe_registration_rejected
@@ -1442,6 +1454,64 @@ def _run_preflight(registration_isolation_ok):
         scorer_rationale_note["coverage"]["rationale_note"] = "forbidden"
         scorer_code_context = json.loads(scorer_json)
         scorer_code_context["coverage"]["code_context"] = "forbidden"
+        verifier_wrong_sum = json.loads(verifier_json)
+        verifier_wrong_sum["verifiable_claims"] = 3
+        verifier_wrong_ledger_length = json.loads(verifier_json)
+        verifier_wrong_ledger_length["claim_ledger"].pop()
+        verifier_wrong_status_count = json.loads(verifier_json)
+        verifier_wrong_status_count["claim_ledger"][0]["status"] = (
+            "unsupported")
+        verifier_wrong_critical_count = json.loads(verifier_json)
+        verifier_wrong_critical_count["critical_error_count"] = 1
+        verifier_empty_citations = json.loads(verifier_json)
+        verifier_empty_citations["claim_ledger"][0][
+            "candidate_citations"] = []
+        verifier_empty_evidence = json.loads(verifier_json)
+        verifier_empty_evidence["claim_ledger"][0]["evidence"] = []
+        verifier_blank_text = json.loads(verifier_json)
+        verifier_blank_text["summary"] = " \t "
+        verifier_blank_array_item = json.loads(verifier_json)
+        verifier_blank_array_item["claim_ledger"][0][
+            "candidate_citations"] = [" \t "]
+        verifier_duplicate_critical = json.loads(verifier_json)
+        verifier_duplicate_critical["critical_errors"] = [
+            {
+                "proposition": "ＦＯＯ.",
+                "category": "architecture",
+                "rationale": "first form",
+                "evidence": ["mock/file.py:1"],
+            },
+            {
+                "proposition": "foo",
+                "category": "architecture",
+                "rationale": "normalized duplicate",
+                "evidence": ["mock/file.py:1"],
+            },
+        ]
+        verifier_duplicate_critical["critical_error_count"] = 2
+        verifier_semantic_cases = [
+            (verifier_wrong_sum,
+             "verifiable_claims must equal supported + unsupported + "
+             "unverifiable"),
+            (verifier_wrong_ledger_length,
+             "claim_ledger length must equal verifiable_claims"),
+            (verifier_wrong_status_count,
+             "claim_ledger supported count must equal supported_claims"),
+            (verifier_wrong_critical_count,
+             "critical_error_count must equal critical_errors length"),
+            (verifier_empty_citations,
+             "claim_ledger[0]: supported claims require citations and "
+             "evidence"),
+            (verifier_empty_evidence,
+             "claim_ledger[0]: supported claims require citations and "
+             "evidence"),
+            (verifier_blank_text, "summary must be nonempty"),
+            (verifier_blank_array_item,
+             "claim_ledger[0].candidate_citations[0] must be nonempty"),
+            (verifier_duplicate_critical,
+             "critical error propositions must be unique after "
+             "normalization"),
+        ]
         invalid_judge_responses = [
             ("scorer", f"```json\n{scorer_json}\n```"),
             ("scorer", "analysis before the JSON object"),
@@ -1456,8 +1526,10 @@ def _run_preflight(registration_isolation_ok):
                                              '"score": true', 1)),
             ("verifier", verifier_json[:-1]
              + ',"evidence_accuracy":0.5}'),
-            ("verifier", verifier_json.replace(
-                '"verifiable_claims": 2', '"verifiable_claims": 3')),
+            ("verifier", json.dumps(verifier_wrong_sum)),
+            ("verifier", json.dumps(verifier_wrong_ledger_length)),
+            ("verifier", json.dumps(verifier_wrong_status_count)),
+            ("verifier", json.dumps(verifier_wrong_critical_count)),
         ]
         contract_rejects = True
         for role, response in invalid_judge_responses:
@@ -1466,6 +1538,15 @@ def _run_preflight(registration_isolation_ok):
                 contract_rejects = False
             except judge_contract.JudgeResponseError:
                 pass
+        semantic_defects_exact = True
+        for value, expected_error in verifier_semantic_cases:
+            try:
+                judge_contract.validate_response(
+                    json.dumps(value), "verifier")
+                semantic_defects_exact = False
+            except judge_contract.JudgeResponseError as exc:
+                if str(exc) != expected_error:
+                    semantic_defects_exact = False
 
         structured_schemas = {
             role: judge_contract.structured_output_schema(role)
@@ -1512,6 +1593,17 @@ def _run_preflight(registration_isolation_ok):
             role: judge_contract.structured_output_schema_sha256(role)
             for role in ("scorer", "verifier")
         }
+        final_contract_digests = {
+            role: judge_contract.final_response_contract_sha256(role)
+            for role in ("scorer", "verifier")
+        }
+        independently_hashed_final_contracts = {
+            role: hashlib.sha256(
+                judge_contract.output_contract_reminder(role).encode(
+                    "utf-8")
+            ).hexdigest()
+            for role in ("scorer", "verifier")
+        }
         structural_binding_ok = (
             structural_digests["scorer"] != structural_digests["verifier"]
             and all(
@@ -1527,6 +1619,12 @@ def _run_preflight(registration_isolation_ok):
                         "structured_output_policy_id"]
                 == judge_contract.STRUCTURED_OUTPUT_POLICY_ID
                 for role, digest in structural_digests.items())
+            and final_contract_digests
+            == pilot_registration.FINAL_RESPONSE_CONTRACT_SHA256
+            == independently_hashed_final_contracts
+            and runner.PILOT_V2_JUDGE_OUTPUT_POLICY.get(
+                "final_response_contract_sha256")
+            == final_contract_digests
         )
         invalid_structural_role_rejected = False
         try:
@@ -1588,7 +1686,7 @@ def _run_preflight(registration_isolation_ok):
             "protocol-v2 judge schemas fail closed on malformed semantics",
             scorer_parsed["total"] == 8
             and verifier_parsed["supported_claims"] == 1
-            and contract_rejects
+            and contract_rejects and semantic_defects_exact
             and judge_contract.contract_schema("scorer")[
                 "output_contract"]["exact_object_keys"]["$.coverage"]
             == ["score", "rationale"]
@@ -3578,6 +3676,11 @@ def _run_preflight(registration_isolation_ok):
                 digest in plan_text
                 for digest in (
                     step5.REGISTERED_STRUCTURED_OUTPUT_SCHEMA_SHA256
+                ).values())
+            and all(
+                digest in plan_text
+                for digest in (
+                    step5.REGISTERED_FINAL_RESPONSE_CONTRACT_SHA256
                 ).values()))
         good_cfg = {
             "protocol_version": step5.REGISTERED_PROTOCOL_VERSION,
@@ -3702,6 +3805,8 @@ def _run_preflight(registration_isolation_ok):
             is seal_package.JUDGE_OUTPUT_POLICY
             is step5.REGISTERED_JUDGE_OUTPUT_POLICY
             is pilot_registration.JUDGE_OUTPUT_POLICY
+            and step5.REGISTERED_FINAL_RESPONSE_CONTRACT_SHA256
+            is pilot_registration.FINAL_RESPONSE_CONTRACT_SHA256
             and step5.REGISTERED_INSTALL_SHA256
             is pilot_registration.INSTALL_SHA256)
         fake_python_dir = ws / "fake-python-interpreter"
@@ -6601,6 +6706,8 @@ def _run_preflight(registration_isolation_ok):
         )
         prompt_suffix_ok = all(
             prompt.endswith(judge_contract.output_contract_reminder(role))
+            and prompt.count(judge_contract.output_contract_reminder(role))
+            == 1
             and prompt.rfind(
                 v2_valid["docs"][0].read_text(encoding="utf-8"))
             < prompt.rfind(judge_contract.output_contract_reminder(role))
@@ -6618,9 +6725,14 @@ def _run_preflight(registration_isolation_ok):
                 == runner.PILOT_V2_JUDGE_OUTPUT_POLICY
                 and batch["identity"].get(
                     "structured_output_schema_sha256") == digest
+                and batch["identity"].get(
+                    "final_response_contract_sha256")
+                == judge_contract.final_response_contract_sha256(role)
                 and result.get("judge_output_policy")
                 == runner.PILOT_V2_JUDGE_OUTPUT_POLICY
                 and result.get("structured_output_schema_sha256") == digest
+                and result.get("final_response_contract_sha256")
+                == judge_contract.final_response_contract_sha256(role)
                 and result.get("structured_output")
                 == result.get("parsed_response")
                 and not runner._validate_v2_judge_response_pair(
@@ -7218,6 +7330,9 @@ def _run_preflight(registration_isolation_ok):
                     == runner.PILOT_V2_JUDGE_OUTPUT_POLICY
                     and record.get("structured_output_schema_sha256")
                     == scorer_structured_digest
+                    and record.get("final_response_contract_sha256")
+                    == judge_contract.final_response_contract_sha256(
+                        "scorer")
                     for record in attempt_records)
                 and len(retry_transport_rows) == 2
                 and retry_transport_rows[0]["prompt"]
@@ -7380,6 +7495,8 @@ def _run_preflight(registration_isolation_ok):
             == runner.PILOT_V2_JUDGE_OUTPUT_POLICY
             and terminal.get("structured_output_schema_sha256")
             == judge_contract.structured_output_schema_sha256("scorer")
+            and terminal.get("final_response_contract_sha256")
+            == judge_contract.final_response_contract_sha256("scorer")
             and all(
                 json.loads(path.read_text(encoding="utf-8")).get(
                     "judge_output_policy")
@@ -7387,6 +7504,9 @@ def _run_preflight(registration_isolation_ok):
                 and json.loads(path.read_text(encoding="utf-8")).get(
                     "structured_output_schema_sha256")
                 == judge_contract.structured_output_schema_sha256("scorer")
+                and json.loads(path.read_text(encoding="utf-8")).get(
+                    "final_response_contract_sha256")
+                == judge_contract.final_response_contract_sha256("scorer")
                 for path in exhausted_attempts)
             and len(terminal.get("attempt_response_sha256", [])) == 3
             and exhausted_after == exhausted_bytes
@@ -7443,12 +7563,19 @@ def _run_preflight(registration_isolation_ok):
         (corrupt_out / f"judge-{corrupt_id}-0.json").unlink()
         corrupt_attempt = (
             corrupt_out / f"judge-{corrupt_id}-0-attempt-1.json")
-        corrupt_attempt.write_text("{}\n", encoding="utf-8")
+        corrupt_attempt_record = json.loads(
+            corrupt_attempt.read_text(encoding="utf-8"))
+        corrupt_attempt_record["final_response_contract_sha256"] = "e" * 64
+        corrupt_attempt.write_text(
+            json.dumps(corrupt_attempt_record, indent=2) + "\n",
+            encoding="utf-8")
+        corrupt_transport_before = v2_valid["transport_receipt"].read_bytes()
         try:
             score_v2_fixture(v2_valid, "scorer", corrupt_out)
             corrupt_attempt_blocked = False
         except runner.InfraFailure as exc:
             corrupt_attempt_blocked = "invalid_attempt_history" in str(exc)
+        corrupt_transport_after = v2_valid["transport_receipt"].read_bytes()
         corrupt_marker = (
             corrupt_out / f"judge-{corrupt_id}-0-terminal-invalid.json")
         corrupt_attempt.unlink()
@@ -7458,8 +7585,9 @@ def _run_preflight(registration_isolation_ok):
         except runner.InfraFailure as exc:
             corrupt_delete_resume = "cannot be resumed" in str(exc)
         ok &= check(
-            "corrupt persisted judge attempt irreversibly invalidates batch",
+            "tampered judge-contract digest blocks orphan adoption without relaunch",
             corrupt_attempt_blocked and corrupt_delete_resume
+            and corrupt_transport_after == corrupt_transport_before
             and corrupt_marker.exists()
             and not list(corrupt_out.glob(
                 f"judge-{corrupt_id}-0-attempt-*.json")),
@@ -7924,10 +8052,15 @@ def _run_preflight(registration_isolation_ok):
             and aggregate.get("population", {}).get(
                 "scheduled_final_runs") == 42
             and aggregate.get("policy_ids", {}).get("judge_output")
-            == judge_contract.STRUCTURED_OUTPUT_POLICY_ID
+            == aggregate_results.JUDGE_OUTPUT_POLICY["id"]
             and aggregate.get("input_sha256", {}).get(
                 "structured_output_schemas") == {
                     role: judge_contract.structured_output_schema_sha256(role)
+                for role in ("scorer", "verifier")
+                }
+            and aggregate.get("input_sha256", {}).get(
+                "final_response_contracts") == {
+                    role: judge_contract.final_response_contract_sha256(role)
                     for role in ("scorer", "verifier")
                 }
             and len(aggregate.get("input_sha256", {}).get(
@@ -8573,6 +8706,7 @@ def _run_preflight(registration_isolation_ok):
                 "result_binding": "forged-but-self-consistent",
             }),
             ("structured_output_schema_sha256", "f" * 64),
+            ("final_response_contract_sha256", "e" * 64),
         ):
             forged_manifest = json.loads(
                 scorer_manifest_bytes.decode("utf-8"))
@@ -8607,7 +8741,7 @@ def _run_preflight(registration_isolation_ok):
         ok &= check(
             "aggregation independently rejects self-consistent judge-output pin drift",
             all(independent_output_pin_rejections)
-            and len(independent_output_pin_rejections) == 2,
+            and len(independent_output_pin_rejections) == 3,
             notes)
 
         scorer_manifest = json.loads(

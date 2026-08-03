@@ -147,11 +147,10 @@ Fixed during the sweep:
 
 Open documentation debt:
 
-- `step5_operator.py` now represents the replacement v2 protocol but remains
-  intentionally blocked by the pending seal sentinel. The round-6 one-shot
-  live-probe receipt/execution digests are registered and revalidated; the
-  fresh package hash must be registered next before it can emit the two v2
-  all-doc judge batches.
+- `step5_operator.py` represents the replacement v2 protocol and is again
+  intentionally blocked by pending round-7 live-probe and seal sentinels.
+  Round 6 is terminally indeterminate; its private evidence is immutable and
+  cannot satisfy any current registration.
 - 57 of 114 public-by-name functions lack docstrings. Priority targets are
   `runner.run_task`, `build_installs.build`, and
   `validate_artifact.validate`; exhaustive docstring work is not a pilot
@@ -201,11 +200,11 @@ It establishes the metric baseline for `tech-debt-trends`.
 
 ## Top actions
 
-1. Keep every invalid round immutable and unregistered. The round-5 seal
-   launch ended after controls without a conclusive final response or promoted
-   package, so preserve it and require a fresh round-6 one-shot live-probe
+1. Keep every invalid round immutable and unregistered. Round 6 completed its
+   runs and scorer, then its verifier terminally exhausted one required slot;
+   preserve all evidence and require a fresh round-7 one-shot live-probe
    receipt/execution proof before a new seal and full replacement schedule.
-2. Complete the fresh round sequentially: all 42 runs, scorer, verifier, then
+2. Complete round 7 sequentially: all 42 runs, scorer, verifier, then
    deterministic aggregation. Never reuse a prior task, document, attempt, or
    score.
 3. After the pilot, snapshot the runner API and characterize immutable record
@@ -231,10 +230,25 @@ live-probe and seal registrations are no longer production authority: all
 three public digest registrations are pending again, and the next attempt is
 isolated under `holdout-v2-round6` with a new one-shot probe and atomic seal.
 
-The round-6 one-shot public live probe is now complete and revalidated without
-another model call. Its receipt/execution digests are the current public
-registration. The separate one-shot sealing boundary then atomically promoted
-the round-6 package and returned only its six generic basenames plus registered
+The round-6 one-shot public live probe completed and revalidated without
+another model call. Its receipt/execution digests were registered before the
+separate one-shot sealing boundary atomically promoted the round-6 package
+and returned only its six generic basenames plus registered
 digest `2e0aef16a6ce9bc91b8c1865a695e1550c0788ca6ef6aa559b9506c36ea0296f`.
-The remaining operational debt is the all-arm real-backend preflight, fresh
-42-slot schedule, judging, and deterministic aggregate.
+Round 6 subsequently completed its 42 runs and all-document scorer. Its
+verifier accepted four slots, then exhausted all three attempts for one
+required slot on the same semantic claim-count reconciliation invariant. The
+attempts had valid accounting and no transport/runtime defect. The harness
+correctly stopped without aggregation and retained the incomplete manifest,
+attempt streams, and terminal marker. This closes the detection/fail-closed
+side of the debt; it does not produce a pilot verdict.
+
+The prospective reliability paydown is now explicit and digest-bound: every
+existing role semantic invariant is repeated at the highest-recency prompt
+position, with the exact role-specific UTF-8 SHA-256 carried through runtime,
+probe, batch, attempt, terminal, accepted-result, and independent aggregate
+checks. Attempts remain fixed at three and receive no previous defect or
+repair hint. Because these public bytes and policies changed, the old probe
+and seal are no longer authority and all three registrations are pending. The
+remaining operational work is a fresh round-7 probe, atomic seal, all-arm
+real-backend preflight, complete schedule, judging, and aggregation.

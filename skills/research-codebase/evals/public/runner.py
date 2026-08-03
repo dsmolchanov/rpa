@@ -835,6 +835,10 @@ def protocol_v2_runtime_pins(config):
             role: judge_contract.structured_output_schema_sha256(role)
             for role in ("scorer", "verifier")
         },
+        "final_response_contract_sha256": {
+            role: judge_contract.final_response_contract_sha256(role)
+            for role in ("scorer", "verifier")
+        },
     }
 
 
@@ -862,13 +866,28 @@ def require_standard_v2_registration(config, *, allow_pending_probe=False,
     """
     if config.get("protocol_version") != PILOT_V2_PROTOCOL_VERSION:
         return
-    problem = pilot_registration.standard_v2_registration_problem(
+    problems = pilot_registration.standard_v2_registration_problems(
         config, allow_pending_probe=allow_pending_probe,
         allow_pending_seal=allow_pending_seal)
-    if problem:
+    if config.get("nonstandard_config") is False:
+        actual_final_contracts = {
+            role: judge_contract.final_response_contract_sha256(role)
+            for role in ("scorer", "verifier")
+        }
+        if (actual_final_contracts
+                != pilot_registration.FINAL_RESPONSE_CONTRACT_SHA256):
+            problems.append(
+                "public final-response contracts differ from the "
+                "standard-v2 registration")
+        if PILOT_V2_JUDGE_OUTPUT_POLICY.get(
+                "final_response_contract_sha256") != actual_final_contracts:
+            problems.append(
+                "judge output policy does not bind the exact public "
+                "final-response contracts")
+    if problems:
         raise InfraFailure(
             "standard protocol-v2 runtime differs from its public "
-            f"registration: {problem}")
+            f"registration: {'; '.join(problems)}")
 
 
 def load_config(path):
@@ -5758,6 +5777,8 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
             "judge_output_policy": PILOT_V2_JUDGE_OUTPUT_POLICY,
             "structured_output_schema_sha256": (
                 judge_contract.structured_output_schema_sha256(role)),
+            "final_response_contract_sha256": (
+                judge_contract.final_response_contract_sha256(role)),
             "judge_prompt_sha256": judge_prompt_sha256,
             "quality_rubric_sha256": quality_rubric_sha256,
         })
@@ -5967,6 +5988,8 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
             "judge_output_policy": PILOT_V2_JUDGE_OUTPUT_POLICY,
             "structured_output_schema_sha256": (
                 judge_contract.structured_output_schema_sha256(batch_role)),
+            "final_response_contract_sha256": (
+                judge_contract.final_response_contract_sha256(batch_role)),
             "judge_prompt_sha256": prompt_digest,
             "quality_rubric_sha256": quality_rubric_sha256,
             "config_digest": config_digest(config),
@@ -6319,6 +6342,8 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
             "judge_output_policy": PILOT_V2_JUDGE_OUTPUT_POLICY,
             "structured_output_schema_sha256": (
                 judge_contract.structured_output_schema_sha256(role)),
+            "final_response_contract_sha256": (
+                judge_contract.final_response_contract_sha256(role)),
             "judge_prompt_sha256": judge_prompt_sha256,
             "quality_rubric_sha256": quality_rubric_sha256,
             "config_digest": config_digest(config),
@@ -6383,6 +6408,8 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
             "judge_output_policy": PILOT_V2_JUDGE_OUTPUT_POLICY,
             "structured_output_schema_sha256": (
                 judge_contract.structured_output_schema_sha256(role)),
+            "final_response_contract_sha256": (
+                judge_contract.final_response_contract_sha256(role)),
             "judge_prompt_sha256": judge_prompt_sha256,
             "quality_rubric_sha256": quality_rubric_sha256,
             "max_attempts": PILOT_V2_MAX_JUDGE_ATTEMPTS,
@@ -6499,6 +6526,8 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
                 != PILOT_V2_JUDGE_OUTPUT_POLICY
                 or identity.get("structured_output_schema_sha256")
                 != judge_contract.structured_output_schema_sha256("scorer")
+                or identity.get("final_response_contract_sha256")
+                != judge_contract.final_response_contract_sha256("scorer")
                 or identity.get("judge_prompt_sha256")
                 != seal_files.get(
                     seal_doc.get("judge_prompts", {}).get("scorer"))
@@ -6556,6 +6585,9 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
                     != PILOT_V2_JUDGE_OUTPUT_POLICY
                     or result.get("structured_output_schema_sha256")
                     != judge_contract.structured_output_schema_sha256(
+                        "scorer")
+                    or result.get("final_response_contract_sha256")
+                    != judge_contract.final_response_contract_sha256(
                         "scorer")
                     or result.get("judge_prompt_sha256")
                     != identity["judge_prompt_sha256"]
@@ -6710,6 +6742,8 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
                     "judge_output_policy": PILOT_V2_JUDGE_OUTPUT_POLICY,
                     "structured_output_schema_sha256": (
                         judge_contract.structured_output_schema_sha256(role)),
+                    "final_response_contract_sha256": (
+                        judge_contract.final_response_contract_sha256(role)),
                     "judge_prompt_sha256": judge_prompt_sha256,
                     "quality_rubric_sha256": quality_rubric_sha256,
                 }

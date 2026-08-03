@@ -28,7 +28,7 @@ import step5_operator as operator_contract  # noqa: E402
 
 
 ROLES = ("scorer", "verifier")
-ROUND_NAMESPACE = "holdout-v2-round6"
+ROUND_NAMESPACE = "holdout-v2-round7"
 PACKAGE_NAMESPACE = "package"
 OUTPUT_NAMESPACE = "judge-live-probe"
 RECEIPT_NAME = "judge-structured-output-live-probe.json"
@@ -206,6 +206,10 @@ def _execution_identity(config):
             role: judge_contract.structured_output_schema_sha256(role)
             for role in ROLES
         },
+        "final_response_contract_sha256": {
+            role: judge_contract.final_response_contract_sha256(role)
+            for role in ROLES
+        },
         "judge_backend_cmd": judge_cmd,
         "judge_model": config["judge_model"],
         "judge_effort": config["judge_effort"],
@@ -230,6 +234,8 @@ def _execution_identity(config):
         "sandbox_wrapper_sha256": sandbox_wrapper_sha256,
         "structured_output_schema_sha256": material[
             "structured_output_schema_sha256"],
+        "final_response_contract_sha256": material[
+            "final_response_contract_sha256"],
         "judge_model": config["judge_model"],
         "judge_effort": config["judge_effort"],
         "backend_version": config["backend_version"],
@@ -288,6 +294,8 @@ def _validated_observation(role, raw_text, config):
         "backend_version_observed": config["backend_version"],
         "structured_output_schema_sha256": (
             judge_contract.structured_output_schema_sha256(role)),
+        "final_response_contract_sha256": (
+            judge_contract.final_response_contract_sha256(role)),
         "prompt_sha256": _sha256_bytes(
             _public_prompt(role).encode("utf-8")),
         "response_sha256": _sha256_bytes(response.encode("utf-8")),
@@ -430,7 +438,7 @@ def receipt_sha256(config):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True,
-                        help="filled runner config for holdout-v2-round6")
+                        help="filled runner config for holdout-v2-round7")
     parser.add_argument("--verify", action="store_true",
                         help="only revalidate an existing receipt")
     args = parser.parse_args()

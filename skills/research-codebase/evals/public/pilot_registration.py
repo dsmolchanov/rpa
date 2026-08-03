@@ -82,17 +82,29 @@ JUDGE_RETRY_POLICY = {
     "fresh_session_each_attempt": True,
     "repair": "none",
 }
-JUDGE_OUTPUT_POLICY = {
-    "id": "claude-cli-json-schema-structural-v1",
-    "schema": "public-structural-exact-keys-v1",
-    "argv": "generic-public-schema-only",
-    "result_binding": "result-equals-structured-output",
-}
 STRUCTURED_OUTPUT_SCHEMA_SHA256 = {
     "scorer":
         "ec21f5722725501edf6d29741a85e93f0ed4611d443540452a3b907e382adcc7",
     "verifier":
         "feba3d9047ff1aa9b2da959e8431e177bdf9e6117ed2ffed972772e2ebddebe0",
+}
+# Exact UTF-8 bytes of the deterministic, role-specific prompt tail.  These
+# values are intentionally literal public registration data: step-5 checks
+# the implementation-derived digests before any private task read or model
+# launch, while the runtime-registration digest binds them into every seal.
+FINAL_RESPONSE_CONTRACT_SHA256 = {
+    "scorer":
+        "6276198554f6a13544cb8a1f39102ddb290d16d6311a982a4ca9d3919c80c14c",
+    "verifier":
+        "5db809fa94dd4027078f58bb5e51406963e6f57087b141927cb7112e9dd51505",
+}
+JUDGE_OUTPUT_POLICY = {
+    "id": "claude-cli-json-schema-semantic-reminder-v2",
+    "schema": "public-structural-exact-keys-v1",
+    "argv": "generic-public-schema-only",
+    "result_binding": "result-equals-structured-output",
+    "final_response_contract_sha256": dict(
+        FINAL_RESPONSE_CONTRACT_SHA256),
 }
 AGGREGATION_POLICY = {
     "id": "pilot-v2-all-docs-v1",
@@ -100,17 +112,17 @@ AGGREGATION_POLICY = {
     "critical": "candidate-absolute-zero-v1",
 }
 
-LIVE_PROBE_VERSION = "public-live-dual-output-v1"
+LIVE_PROBE_VERSION = "public-live-dual-output-v2"
 PENDING_LIVE_PROBE_RECEIPT_SHA256 = "0" * 64
 PENDING_LIVE_PROBE_EXECUTION_SHA256 = "0" * 64
 REGISTERED_LIVE_PROBE_RECEIPT_SHA256 = (
-    "1e2453bb948abc369fd4e9b9c0bdb1bc29be48d6059bdbce37794dfc150f51aa")
+    PENDING_LIVE_PROBE_RECEIPT_SHA256)
 REGISTERED_LIVE_PROBE_EXECUTION_SHA256 = (
-    "bba66fbd8f7e1d624ff0c1995fe8137d08ace68ebe8a49c533e449a8f732a58d")
+    PENDING_LIVE_PROBE_EXECUTION_SHA256)
 
 PENDING_SEAL_PACKAGE_SHA256 = "0" * 64
 REGISTERED_SEAL_PACKAGE_SHA256 = (
-    "2e0aef16a6ce9bc91b8c1865a695e1550c0788ca6ef6aa559b9506c36ea0296f")
+    PENDING_SEAL_PACKAGE_SHA256)
 
 
 def live_probe_binding():
@@ -185,6 +197,8 @@ def standard_v2_runtime_binding():
         "judge_output_policy": dict(JUDGE_OUTPUT_POLICY),
         "structured_output_schema_sha256": dict(
             STRUCTURED_OUTPUT_SCHEMA_SHA256),
+        "final_response_contract_sha256": dict(
+            FINAL_RESPONSE_CONTRACT_SHA256),
         "aggregation_policy": dict(AGGREGATION_POLICY),
         "judge_live_probe": live_probe_binding(),
     }

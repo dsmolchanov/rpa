@@ -29,6 +29,10 @@ auto_fixable_count: 7
 - [x] Add policy-bound exact-key prompting and native public structural-output
   guidance while retaining the full strict semantic validator and exactly
   three harness attempts.
+- [x] Add a deterministic high-recency reconciliation checklist for every
+  already-enforced semantic invariant and bind each role's exact UTF-8 digest
+  through standard runtime, live probe, judge state, and aggregation. No
+  repair path or additional attempt was introduced.
 - [x] Centralize the complete path-free standard-v2 pilot registration and
   enforce it at direct-runner, atomic-seal, and step-5 boundaries before any
   task read, output mutation, or backend launch.
@@ -36,15 +40,13 @@ auto_fixable_count: 7
   privacy, and stream parser parity in synthetic and real-backend preflights.
   The synthetic side now also proves exact-pin rejection before launch,
   canonical one-shot probe state, pending/tampered receipt refusal, and
-  seal/config proof binding. The one-shot real scorer + verifier transport
-  probe passed and its receipt/execution digests are registered; the post-seal
-  all-arm real-backend preflight remains.
-- [x] Create a replacement seal in an uncontaminated session and return only its
-  SHA-256 and six task basenames.
-- [x] Register that exact seal through the shared authority consumed by
-  `step5_operator.py`; replace v1
-  primary/diagnostic output with two v2 all-doc batches plus deterministic
-  aggregation.
+  seal/config proof binding. The prior probe is invalidated by the prospective
+  semantic-reminder/code change; a fresh round-7 live probe and post-seal
+  all-arm real-backend preflight remain.
+- [ ] Create a fresh round-7 seal in an uncontaminated session and return only
+  its SHA-256 and six task basenames.
+- [ ] Register that exact seal through the shared authority consumed by
+  `step5_operator.py` before any round-7 schedule or backend outcome.
 - [ ] Rebuild all three arm installations in the pinned operator image and
   verify the registered hashes.
 - [ ] Run the real-backend preflight with an unrelated environment canary and

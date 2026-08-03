@@ -37,11 +37,19 @@ JUDGE_RETRY_POLICY = {
     "fresh_session_each_attempt": True,
     "repair": "none",
 }
+FINAL_RESPONSE_CONTRACT_SHA256 = {
+    "scorer":
+        "6276198554f6a13544cb8a1f39102ddb290d16d6311a982a4ca9d3919c80c14c",
+    "verifier":
+        "5db809fa94dd4027078f58bb5e51406963e6f57087b141927cb7112e9dd51505",
+}
 JUDGE_OUTPUT_POLICY = {
-    "id": "claude-cli-json-schema-structural-v1",
+    "id": "claude-cli-json-schema-semantic-reminder-v2",
     "schema": "public-structural-exact-keys-v1",
     "argv": "generic-public-schema-only",
     "result_binding": "result-equals-structured-output",
+    "final_response_contract_sha256": dict(
+        FINAL_RESPONSE_CONTRACT_SHA256),
 }
 FINAL_STATUSES = {"completed", "workflow_failure"}
 FAILURE_KINDS = {
@@ -226,6 +234,15 @@ def _verify_seal(config, seal_manifest_path):
              "sealed judge retry policy is not the registered v2 policy")
     _require(seal_doc.get("judge_output_policy") == JUDGE_OUTPUT_POLICY,
              "sealed judge output policy is not the registered v2 policy")
+    actual_final_contracts = {
+        role: judge_contract.final_response_contract_sha256(role)
+        for role in ("scorer", "verifier")
+    }
+    _require(actual_final_contracts == FINAL_RESPONSE_CONTRACT_SHA256,
+             "public final-response contract differs from independent pins")
+    _require(JUDGE_OUTPUT_POLICY.get("final_response_contract_sha256")
+             == FINAL_RESPONSE_CONTRACT_SHA256,
+             "judge output policy does not bind final-response contracts")
     _require(seal_doc.get("aggregation_policy") == AGGREGATION_POLICY,
              "sealed aggregation policy is not the registered v2 policy")
     associations = seal_doc.get("judge_response_schemas")
@@ -906,11 +923,16 @@ def _verify_judge_manifest(path, role, config, schedule_manifest_path,
              f"{role} batch response schema digest mismatch")
     expected_structured_sha = (
         judge_contract.structured_output_schema_sha256(role))
+    expected_final_contract_sha = (
+        judge_contract.final_response_contract_sha256(role))
     _require(identity.get("judge_output_policy") == JUDGE_OUTPUT_POLICY,
              f"{role} batch judge output policy mismatch")
     _require(identity.get("structured_output_schema_sha256")
              == expected_structured_sha,
              f"{role} batch structured-output schema digest mismatch")
+    _require(identity.get("final_response_contract_sha256")
+             == expected_final_contract_sha,
+             f"{role} batch final-response contract digest mismatch")
     prompt_ref = seal_doc.get("judge_prompts", {}).get(role)
     rubric_ref = seal_doc.get("quality_rubric")
     expected_prompt_sha = seal_files.get(prompt_ref)
@@ -1041,6 +1063,9 @@ def _verify_judge_manifest(path, role, config, schedule_manifest_path,
         _require(result.get("structured_output_schema_sha256")
                  == expected_structured_sha,
                  f"{role} result structured-output schema digest mismatch")
+        _require(result.get("final_response_contract_sha256")
+                 == expected_final_contract_sha,
+                 f"{role} result final-response contract digest mismatch")
         _require(result.get("judge_prompt_sha256") == expected_prompt_sha,
                  f"{role} result judge prompt digest mismatch")
         _require(result.get("quality_rubric_sha256") == expected_rubric_sha,
@@ -1131,6 +1156,8 @@ def _verify_judge_manifest(path, role, config, schedule_manifest_path,
                 "schema_sha256": schema_sha,
                 "judge_output_policy": JUDGE_OUTPUT_POLICY,
                 "structured_output_schema_sha256": expected_structured_sha,
+                "final_response_contract_sha256": (
+                    expected_final_contract_sha),
                 "judge_prompt_sha256": expected_prompt_sha,
                 "quality_rubric_sha256": expected_rubric_sha,
                 "config_digest": config_digest,
@@ -1894,6 +1921,10 @@ def aggregate(config_path, manifest_path, scorer_manifest_path,
         "judge_attempt_records": judge_attempt_hashes,
         "structured_output_schemas": {
             role: judge_contract.structured_output_schema_sha256(role)
+            for role in ("scorer", "verifier")
+        },
+        "final_response_contracts": {
+            role: judge_contract.final_response_contract_sha256(role)
             for role in ("scorer", "verifier")
         },
     }
