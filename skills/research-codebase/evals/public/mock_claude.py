@@ -371,7 +371,9 @@ def main():
         time.sleep(30)
         sys.exit(0)
 
-    session_id = f"mock-{uuid.uuid4().hex[:8]}"
+    session_id = (
+        args.resume if args.resume and args.mode != "resume-session-drift"
+        else f"mock-{uuid.uuid4().hex[:8]}")
 
     if args.mode == "real-stream":
         emit_real_stream(args.model, session_id)
@@ -626,7 +628,7 @@ def main():
               "result": "MOCK-VERDICT: wrote only whitespace"})
         return
 
-    if args.mode == "silent-stop":
+    if args.mode in ("silent-stop", "resume-session-drift"):
         # First call: greet-and-wait (no artifact). Only a resumed session
         # (the driver's fixed continuation) produces the artifact.
         if args.resume:
@@ -637,7 +639,8 @@ def main():
         write_artifact()
 
     result_text = "MOCK-VERDICT: coverage 7/10, evidence 9/10"
-    if args.mode == "silent-stop" and not args.resume:
+    if args.mode in ("silent-stop", "resume-session-drift") \
+            and not args.resume:
         # Ritual stop: a question-shaped pause instead of proceeding.
         result_text = "Ready to research the mock subsystem. Shall I proceed?"
     emit({"type": "result", "session_id": session_id, "result": result_text})

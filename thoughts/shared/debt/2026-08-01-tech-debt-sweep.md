@@ -317,3 +317,42 @@ prospective paydown is a harness-constructed, runtime-bound
 `CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-5` plus a separately digest-registered
 public live probe that exercises a conflicting `model: sonnet` child before
 round-10 sealing.
+
+Round 10 confirmed that the preventive environment pin works, but exposed
+version drift in the public proof and general accounting grammar. The pinned
+CLI emitted an `Agent` lifecycle with its child model and usage in a correlated
+completion result, while the registered probe and runner modeled legacy
+`Task` plus child-`assistant` events. The same real stream split one assistant
+message across multiple events carrying duplicate usage, and reported a
+separate Haiku control-plane ledger. This is a pre-seal contract defect, not
+effective-model drift. The round-10 namespace stopped before holdout creation
+and remains unchanged. The immediate prospective paydown is one versioned
+stream reconciler: de-duplicate stable assistant identities, correlate both
+legacy and pinned-CLI delegation schemas without double charging, reconcile
+root/child/terminal ledgers, include only the pre-registered auxiliary model
+in tree-wide cost, and reject ambiguous or unregistered evidence. Both public
+proofs then run afresh in round 11 before sealing.
+
+Prospective round-11 hardening also inspected the pinned CLI 2.1.220
+implementation before any new model call. Its `Agent` completion usage is the
+last child assistant turn rather than a cumulative child ledger, and
+tool-using completions add a typed `toolStats` object. The versioned accounting
+policy therefore uses completion data for child identity/model/last-turn and
+tool evidence, derives complete aggregate child cost only as terminal
+registered-model usage minus authoritative root usage, and fails closed for a
+completed tool-using Agent when that terminal ledger is absent. A realistic
+two-turn synthetic fixture now prevents both last-turn undercounting and
+sidechain/summary tool-count forgery.
+
+The same source audit found that `SendMessage` can resume a completed Agent
+under its original task/model identity while emitting a new lifecycle keyed by
+the SendMessage tool-use ID. Ambient background-task behavior would make that
+continuation return before its otherwise hidden child accounting completed.
+Round 11 therefore pins `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` after the
+minimal-environment allowlist for every arm and judge, binds that overwrite in
+runtime identity, and reconciles the deterministic synchronous continuation
+without counting it as another spawn. Exact success wording distinguishes a
+warm cumulative registry count from a cold/evicted reset count that is added as
+the next delta. Missing terminal usage, ambiguous branch wording, regressing
+warm tools, nonpositive duration, asynchronous-shaped results, or cross-linked
+identities fail closed.

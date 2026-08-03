@@ -253,10 +253,28 @@ def check(name, condition, notes, detail=""):
 
 
 def synthetic_subagent_probe_events():
-    """One strict real-stream-shaped parent/Task/child probe transcript."""
+    """One strict pinned-CLI Agent-lifecycle probe transcript."""
     session_id = "public-subagent-model-probe-session"
+    tool_use_id = "public-subagent-model-probe-tool-use"
     task_id = "public-subagent-model-probe-task"
-    usage = {"input_tokens": 10, "output_tokens": 5}
+    launch_usage = {
+        "input_tokens": 10,
+        "cache_creation_input_tokens": 2,
+        "cache_read_input_tokens": 3,
+        "output_tokens": 2,
+    }
+    response_usage = {
+        "input_tokens": 5,
+        "cache_creation_input_tokens": 1,
+        "cache_read_input_tokens": 2,
+        "output_tokens": 1,
+    }
+    child_usage = {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 6,
+        "cache_read_input_tokens": 1,
+        "output_tokens": 4,
+    }
     return [
         {
             "type": "system",
@@ -268,14 +286,36 @@ def synthetic_subagent_probe_events():
             "type": "assistant",
             "session_id": session_id,
             "parent_tool_use_id": None,
+            "request_id": "public-subagent-model-probe-request-launch",
             "message": {
+                "id": "public-subagent-model-probe-message-launch",
                 "model": subagent_model_live_probe.EXPECTED_MODEL,
-                "usage": dict(usage),
+                "usage": dict(launch_usage),
+                "content": [{
+                    "type": "thinking",
+                    "thinking": "Use the one registered public fixture.",
+                    "signature": "public-synthetic-signature",
+                }],
+            },
+        },
+        {
+            "type": "assistant",
+            "session_id": session_id,
+            "parent_tool_use_id": None,
+            "request_id": "public-subagent-model-probe-request-launch",
+            "message": {
+                "id": "public-subagent-model-probe-message-launch",
+                "model": subagent_model_live_probe.EXPECTED_MODEL,
+                "usage": dict(launch_usage),
                 "content": [{
                     "type": "tool_use",
-                    "id": task_id,
-                    "name": "Task",
+                    "id": tool_use_id,
+                    "name": "Agent",
+                    "caller": {"type": "direct"},
                     "input": {
+                        "description": (
+                            subagent_model_live_probe
+                            .EXPECTED_SUBAGENT_DESCRIPTION),
                         "subagent_type": (
                             subagent_model_live_probe.EXPECTED_SUBAGENT_TYPE),
                         "prompt": subagent_model_live_probe.CHILD_TASK_PROMPT,
@@ -284,25 +324,98 @@ def synthetic_subagent_probe_events():
             },
         },
         {
-            "type": "assistant",
+            "type": "system",
+            "subtype": "task_started",
             "session_id": session_id,
-            "parent_tool_use_id": task_id,
+            "task_id": task_id,
+            "tool_use_id": tool_use_id,
+            "task_type": "local_agent",
+            "subagent_type": subagent_model_live_probe.EXPECTED_SUBAGENT_TYPE,
+            "description": (
+                subagent_model_live_probe.EXPECTED_SUBAGENT_DESCRIPTION),
+            "prompt": subagent_model_live_probe.CHILD_TASK_PROMPT,
+        },
+        {
+            "type": "user",
+            "session_id": session_id,
+            "parent_tool_use_id": tool_use_id,
+            "subagent_type": subagent_model_live_probe.EXPECTED_SUBAGENT_TYPE,
+            "task_description": (
+                subagent_model_live_probe.EXPECTED_SUBAGENT_DESCRIPTION),
             "message": {
-                "model": subagent_model_live_probe.EXPECTED_MODEL,
-                "usage": dict(usage),
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    "text": subagent_model_live_probe.CHILD_TASK_PROMPT,
+                }],
+            },
+        },
+        {
+            "type": "system",
+            "subtype": "task_updated",
+            "session_id": session_id,
+            "task_id": task_id,
+            "patch": {"status": "completed", "end_time": 1},
+        },
+        {
+            "type": "system",
+            "subtype": "task_notification",
+            "session_id": session_id,
+            "task_id": task_id,
+            "tool_use_id": tool_use_id,
+            "status": "completed",
+            "summary": subagent_model_live_probe.CHILD_MARKER,
+            "output_file": "/public/synthetic/subagent-output.txt",
+            # Pinned CLI 2.1.220's notification total is advisory and may
+            # differ from the authoritative completion-summary total.
+            "usage": {"total_tokens": 10, "tool_uses": 0, "duration_ms": 1},
+        },
+        {
+            "type": "user",
+            "session_id": session_id,
+            "parent_tool_use_id": None,
+            "message": {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": [{
+                        "type": "text",
+                        "text": subagent_model_live_probe.CHILD_MARKER,
+                    }, {
+                        "type": "text",
+                        "text": subagent_model_live_probe
+                        ._agent_completion_metadata(
+                            task_id, sum(child_usage.values()), 0, 1),
+                    }],
+                }],
+            },
+            "tool_use_result": {
+                "status": "completed",
+                "prompt": subagent_model_live_probe.CHILD_TASK_PROMPT,
+                "agentId": task_id,
+                "agentType": (
+                    subagent_model_live_probe.EXPECTED_SUBAGENT_TYPE),
                 "content": [{
                     "type": "text",
                     "text": subagent_model_live_probe.CHILD_MARKER,
                 }],
+                "resolvedModel": subagent_model_live_probe.EXPECTED_MODEL,
+                "totalDurationMs": 1,
+                "totalTokens": sum(child_usage.values()),
+                "totalToolUseCount": 0,
+                "usage": dict(child_usage),
             },
         },
         {
             "type": "assistant",
             "session_id": session_id,
             "parent_tool_use_id": None,
+            "request_id": "public-subagent-model-probe-request-response",
             "message": {
+                "id": "public-subagent-model-probe-message-response",
                 "model": subagent_model_live_probe.EXPECTED_MODEL,
-                "usage": dict(usage),
+                "usage": dict(response_usage),
                 "content": [{
                     "type": "text",
                     "text": subagent_model_live_probe.PARENT_MARKER,
@@ -313,7 +426,32 @@ def synthetic_subagent_probe_events():
             "type": "result",
             "subtype": "success",
             "session_id": session_id,
+            "is_error": False,
             "result": subagent_model_live_probe.PARENT_MARKER,
+            "usage": {
+                "input_tokens": 15,
+                "cache_creation_input_tokens": 3,
+                "cache_read_input_tokens": 5,
+                # The pinned CLI's per-assistant output counters are not the
+                # authoritative root total; result.usage is.
+                "output_tokens": 30,
+            },
+            "modelUsage": {
+                subagent_model_live_probe.EXPECTED_MODEL: {
+                    "canonicalModel": subagent_model_live_probe.EXPECTED_MODEL,
+                    "inputTokens": 17,
+                    "cacheCreationInputTokens": 9,
+                    "cacheReadInputTokens": 6,
+                    "outputTokens": 34,
+                },
+                "claude-haiku-4-5-20251001": {
+                    "canonicalModel": "claude-haiku-4-5",
+                    "inputTokens": 1,
+                    "cacheCreationInputTokens": 2,
+                    "cacheReadInputTokens": 3,
+                    "outputTokens": 4,
+                },
+            },
         },
     ]
 
@@ -1568,8 +1706,8 @@ def _run_preflight(registration_isolation_ok):
             and replay_receipt == probe_receipt and not replay_launches
             and incomplete_namespace_rejected
             and probe_help.returncode == 0 and "--out" not in probe_help.stdout
-            and judge_live_probe.ROUND_NAMESPACE == "holdout-v2-round10"
-            and "holdout-v2-round10" in probe_help.stdout
+            and judge_live_probe.ROUND_NAMESPACE == "holdout-v2-round11"
+            and "holdout-v2-round11" in probe_help.stdout
             and probe_out_arg.returncode == 2
             and "unrecognized arguments: --out" in probe_out_arg.stderr
             and pending_probe_registration_rejected
@@ -1587,36 +1725,306 @@ def _run_preflight(registration_isolation_ok):
         subagent_observation = (
             subagent_model_live_probe._validated_observation(
                 subagent_probe_raw, probe_config))
+        redacted_probe_events = json.loads(json.dumps(
+            subagent_probe_events))
+        redacted_probe_events[1]["message"]["content"][0] = {
+            "type": "redacted_thinking",
+            "data": "public-redacted-thinking-payload",
+        }
+        redacted_probe_accepted = False
+        try:
+            subagent_model_live_probe._validated_observation(
+                "\n".join(json.dumps(event, sort_keys=True)
+                          for event in redacted_probe_events) + "\n",
+                probe_config)
+            redacted_probe_accepted = True
+        except subagent_model_live_probe.ProbeError:
+            redacted_probe_accepted = False
+
+        progress_probe_events = json.loads(json.dumps(
+            subagent_probe_events))
+        progress_task_id = progress_probe_events[3]["task_id"]
+        progress_tool_id = progress_probe_events[2]["message"]["content"][0][
+            "id"]
+        progress_session = progress_probe_events[0]["session_id"]
+        progress_probe_events[5:5] = [{
+            "type": "tool_progress",
+            "tool_use_id": (
+                "agent_public-subagent-model-probe-message-launch"),
+            "tool_name": "Agent",
+            "parent_tool_use_id": None,
+            "elapsed_time_seconds": 0,
+            "uuid": "public-agent-retry-progress",
+            "session_id": progress_session,
+            "subagent_type": (
+                subagent_model_live_probe.EXPECTED_SUBAGENT_TYPE),
+            "subagent_retry": {
+                "agent_id": progress_task_id,
+                "attempt": 1,
+                "max_retries": 3,
+                "retry_delay_ms": 10,
+                "error_status": 529,
+                "error_category": "public_transient",
+            },
+        }, {
+            "type": "tool_progress",
+            "tool_use_id": (
+                "agent_public-subagent-model-probe-message-launch"),
+            "tool_name": "Agent",
+            "parent_tool_use_id": None,
+            "elapsed_time_seconds": 0,
+            "uuid": "public-agent-retry-resolved",
+            "session_id": progress_session,
+            "subagent_type": (
+                subagent_model_live_probe.EXPECTED_SUBAGENT_TYPE),
+        }, {
+            "type": "system",
+            "subtype": "task_progress",
+            "task_id": progress_task_id,
+            "description": "Public child still working",
+            "usage": {
+                "total_tokens": 1,
+                "tool_uses": 0,
+                "duration_ms": 1,
+            },
+            "uuid": "public-task-progress",
+            "session_id": progress_session,
+            "tool_use_id": progress_tool_id,
+            "subagent_type": (
+                subagent_model_live_probe.EXPECTED_SUBAGENT_TYPE),
+            "summary": "Public progress summary",
+        }]
+        progress_probe_accepted = False
+        try:
+            subagent_model_live_probe._validated_observation(
+                "\n".join(json.dumps(event, sort_keys=True)
+                          for event in progress_probe_events) + "\n",
+                probe_config)
+            progress_probe_accepted = True
+        except subagent_model_live_probe.ProbeError:
+            progress_probe_accepted = False
+
+        api_retry_probe_events = json.loads(json.dumps(
+            subagent_probe_events))
+        api_retry_probe_events.insert(1, {
+            "type": "system",
+            "subtype": "api_retry",
+            "attempt": 1,
+            "max_retries": 3,
+            "retry_delay_ms": 10,
+            "error_status": 529,
+            "error": "public_transient",
+            "session_id": api_retry_probe_events[0]["session_id"],
+            "uuid": "public-root-api-retry",
+        })
+        api_retry_probe_accepted = False
+        try:
+            subagent_model_live_probe._validated_observation(
+                "\n".join(json.dumps(event, sort_keys=True)
+                          for event in api_retry_probe_events) + "\n",
+                probe_config)
+            api_retry_probe_accepted = True
+        except subagent_model_live_probe.ProbeError:
+            api_retry_probe_accepted = False
+
+        nullable_usage_events = json.loads(json.dumps(
+            subagent_probe_events))
+        for event in nullable_usage_events:
+            if event.get("type") == "assistant":
+                usage = event.get("message", {}).get("usage", {})
+                usage["cache_creation_input_tokens"] = None
+                usage["cache_read_input_tokens"] = None
+        nullable_summary_event = next(
+            event for event in nullable_usage_events
+            if isinstance(event.get("tool_use_result"), dict))
+        nullable_summary = nullable_summary_event["tool_use_result"]
+        nullable_summary["usage"]["cache_creation_input_tokens"] = None
+        nullable_summary["usage"]["cache_read_input_tokens"] = None
+        nullable_summary["totalTokens"] = sum(
+            subagent_model_live_probe._usage_categories(
+                nullable_summary["usage"], "nullable fixture usage").values())
+        nullable_summary_event["message"]["content"][0]["content"][-1][
+            "text"] = subagent_model_live_probe._agent_completion_metadata(
+                nullable_summary["agentId"], nullable_summary["totalTokens"],
+                nullable_summary["totalToolUseCount"],
+                nullable_summary["totalDurationMs"])
+        nullable_usage_events[-1]["modelUsage"][
+            subagent_model_live_probe.EXPECTED_MODEL][
+                "cacheCreationInputTokens"] -= 7
+        nullable_usage_accepted = False
+        try:
+            subagent_model_live_probe._validated_observation(
+                "\n".join(json.dumps(event, sort_keys=True)
+                          for event in nullable_usage_events) + "\n",
+                probe_config)
+            nullable_usage_accepted = True
+        except subagent_model_live_probe.ProbeError:
+            nullable_usage_accepted = False
         subagent_parser_rejections = {}
         parser_mutations = {}
 
+        malformed_redacted = json.loads(json.dumps(redacted_probe_events))
+        malformed_redacted[1]["message"]["content"][0]["data"] = 7
+        parser_mutations["malformed redacted thinking"] = malformed_redacted
+
+        malformed_retry = json.loads(json.dumps(progress_probe_events))
+        retry_progress = next(
+            event for event in malformed_retry
+            if isinstance(event.get("subagent_retry"), dict))
+        retry_progress["subagent_retry"]["agent_id"] = "foreign-agent"
+        parser_mutations["cross-linked Agent retry"] = malformed_retry
+
+        malformed_task_progress = json.loads(json.dumps(
+            progress_probe_events))
+        task_progress_event = next(
+            event for event in malformed_task_progress
+            if event.get("subtype") == "task_progress")
+        task_progress_event["usage"]["tool_uses"] = 1
+        parser_mutations[
+            "tool-using public task progress"] = malformed_task_progress
+
+        malformed_api_retry = json.loads(json.dumps(
+            api_retry_probe_events))
+        api_retry_event = next(
+            event for event in malformed_api_retry
+            if event.get("subtype") == "api_retry")
+        api_retry_event["attempt"] = 0
+        parser_mutations["malformed root API retry"] = malformed_api_retry
+
+        late_api_retry = json.loads(json.dumps(api_retry_probe_events))
+        api_retry_index = next(
+            index for index, event in enumerate(late_api_retry)
+            if event.get("subtype") == "api_retry")
+        api_retry_event = late_api_retry.pop(api_retry_index)
+        late_api_retry.append(api_retry_event)
+        parser_mutations["root API retry after terminal"] = late_api_retry
+
+        raw_api_error = json.loads(json.dumps(subagent_probe_events))
+        raw_api_error.insert(1, {
+            "type": "system",
+            "subtype": "api_error",
+            "session_id": raw_api_error[0]["session_id"],
+            "uuid": "public-root-api-error",
+            "error": "public_transient",
+        })
+        parser_mutations["raw root API error"] = raw_api_error
+
         wrong_child_model = json.loads(json.dumps(subagent_probe_events))
-        wrong_child_model[2]["message"]["model"] = "claude-sonnet-5"
+        wrong_child_model[7]["tool_use_result"]["resolvedModel"] = (
+            "claude-sonnet-5")
         parser_mutations["wrong child model"] = wrong_child_model
 
+        wrong_parent_model = json.loads(json.dumps(subagent_probe_events))
+        wrong_parent_model[2]["message"]["model"] = "claude-sonnet-5"
+        parser_mutations["wrong parent model"] = wrong_parent_model
+
+        wrong_secondary_model = json.loads(json.dumps(subagent_probe_events))
+        wrong_secondary_model[7]["tool_use_result"]["modelsUsed"] = [
+            subagent_model_live_probe.EXPECTED_MODEL,
+            "claude-sonnet-5",
+        ]
+        parser_mutations["wrong secondary child model"] = (
+            wrong_secondary_model)
+
         no_child = json.loads(json.dumps(subagent_probe_events))
-        del no_child[2]
-        parser_mutations["no child"] = no_child
+        del no_child[7]
+        parser_mutations["no completion summary"] = no_child
 
         wrong_lineage = json.loads(json.dumps(subagent_probe_events))
-        wrong_lineage[2]["parent_tool_use_id"] = "wrong-parent-tool-use"
+        wrong_lineage[4]["parent_tool_use_id"] = "wrong-parent-tool-use"
         parser_mutations["wrong lineage"] = wrong_lineage
 
         wrong_type = json.loads(json.dumps(subagent_probe_events))
-        wrong_type[1]["message"]["content"][0]["input"][
+        wrong_type[2]["message"]["content"][0]["input"][
             "subagent_type"] = "unregistered:model-probe-child"
         parser_mutations["wrong subagent type"] = wrong_type
 
-        no_task = json.loads(json.dumps(subagent_probe_events))
-        no_task[1]["message"]["content"] = []
-        parser_mutations["zero Task launches"] = no_task
+        background_agent_shape = json.loads(json.dumps(
+            subagent_probe_events))
+        background_agent_shape[2]["message"]["content"][0]["input"][
+            "run_in_background"] = False
+        parser_mutations[
+            "background-capable Agent input schema"] = background_agent_shape
 
-        two_tasks = json.loads(json.dumps(subagent_probe_events))
-        second_task = json.loads(json.dumps(
-            two_tasks[1]["message"]["content"][0]))
-        second_task["id"] = "public-subagent-model-probe-task-2"
-        two_tasks[1]["message"]["content"].append(second_task)
-        parser_mutations["two Task launches"] = two_tasks
+        no_agent = json.loads(json.dumps(subagent_probe_events))
+        no_agent[2]["message"]["content"] = []
+        parser_mutations["zero Agent launches"] = no_agent
+
+        two_agents = json.loads(json.dumps(subagent_probe_events))
+        second_agent = json.loads(json.dumps(
+            two_agents[2]["message"]["content"][0]))
+        second_agent["id"] = "public-subagent-model-probe-tool-use-2"
+        two_agents[2]["message"]["content"].append(second_agent)
+        parser_mutations["two Agent launches"] = two_agents
+
+        task_alias = json.loads(json.dumps(subagent_probe_events))
+        task_alias[2]["message"]["content"][0]["name"] = "Task"
+        parser_mutations["legacy Task alias"] = task_alias
+
+        mixed_aliases = json.loads(json.dumps(subagent_probe_events))
+        task_block = json.loads(json.dumps(
+            mixed_aliases[2]["message"]["content"][0]))
+        task_block["id"] = "public-subagent-model-probe-legacy-task"
+        task_block["name"] = "Task"
+        mixed_aliases[2]["message"]["content"].append(task_block)
+        parser_mutations["mixed Agent and Task aliases"] = mixed_aliases
+
+        duplicate_started = json.loads(json.dumps(subagent_probe_events))
+        duplicate_started.insert(4, json.loads(json.dumps(
+            duplicate_started[3])))
+        parser_mutations["duplicate task_started"] = duplicate_started
+
+        duplicate_completion = json.loads(json.dumps(subagent_probe_events))
+        duplicate_completion.insert(8, json.loads(json.dumps(
+            duplicate_completion[7])))
+        parser_mutations["duplicate completion summary"] = (
+            duplicate_completion)
+
+        wrong_child_total = json.loads(json.dumps(subagent_probe_events))
+        wrong_child_total[7]["tool_use_result"]["totalTokens"] += 1
+        parser_mutations["child usage total mismatch"] = wrong_child_total
+
+        wrong_wrapper_metadata = json.loads(json.dumps(
+            subagent_probe_events))
+        wrapper_text = wrong_wrapper_metadata[7]["message"]["content"][0][
+            "content"][1]["text"]
+        wrong_wrapper_metadata[7]["message"]["content"][0]["content"][1][
+            "text"] = wrapper_text.replace("tool_uses: 0", "tool_uses: 1")
+        parser_mutations["wrapper metadata mismatch"] = (
+            wrong_wrapper_metadata)
+
+        wrong_root_usage = json.loads(json.dumps(subagent_probe_events))
+        wrong_root_usage[-1]["usage"]["output_tokens"] += 1
+        parser_mutations["root usage mismatch"] = wrong_root_usage
+
+        wrong_registered_model_usage = json.loads(json.dumps(
+            subagent_probe_events))
+        wrong_registered_model_usage[-1]["modelUsage"][
+            subagent_model_live_probe.EXPECTED_MODEL]["outputTokens"] -= 1
+        parser_mutations["tree model usage mismatch"] = (
+            wrong_registered_model_usage)
+
+        unexpected_auxiliary = json.loads(json.dumps(subagent_probe_events))
+        unexpected_auxiliary[-1]["modelUsage"]["unregistered-model"] = {
+            "inputTokens": 1,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "outputTokens": 1,
+        }
+        parser_mutations["unexpected auxiliary model"] = unexpected_auxiliary
+
+        auxiliary_canonical_drift = json.loads(json.dumps(
+            subagent_probe_events))
+        auxiliary_canonical_drift[-1]["modelUsage"][
+            "claude-haiku-4-5-20251001"]["canonicalModel"] = (
+                "claude-haiku-drifted")
+        parser_mutations["auxiliary canonical-model drift"] = (
+            auxiliary_canonical_drift)
+
+        lifecycle_reordered = json.loads(json.dumps(subagent_probe_events))
+        lifecycle_reordered[5], lifecycle_reordered[6] = (
+            lifecycle_reordered[6], lifecycle_reordered[5])
+        parser_mutations["out-of-order lifecycle"] = lifecycle_reordered
 
         error_terminal = json.loads(json.dumps(subagent_probe_events))
         error_terminal[-1]["subtype"] = "error"
@@ -1632,6 +2040,1359 @@ def _run_preflight(registration_isolation_ok):
                 subagent_parser_rejections[label] = False
             except subagent_model_live_probe.ProbeError:
                 subagent_parser_rejections[label] = True
+
+        def runner_accepts_agent_stream(events):
+            raw = "\n".join(
+                json.dumps(event, sort_keys=True) for event in events) + "\n"
+            try:
+                _session, parsed_nodes, _result = runner.parse_transcript(
+                    raw,
+                    registered_model=subagent_model_live_probe.EXPECTED_MODEL,
+                    protocol_version=runner.PILOT_V2_PROTOCOL_VERSION,
+                )
+                runner.validate_models(
+                    parsed_nodes, subagent_model_live_probe.EXPECTED_MODEL)
+                runner.account(parsed_nodes)
+            except runner.InfraFailure:
+                return False
+            return True
+
+        runner_agent_mutations = {}
+        runner_agent_mutations[
+            "background-capable Agent input schema"] = (
+                background_agent_shape)
+        runner_wrong_child_model = json.loads(json.dumps(
+            subagent_probe_events))
+        runner_wrong_child_model[7]["tool_use_result"]["resolvedModel"] = (
+            "claude-sonnet-5")
+        runner_agent_mutations[
+            "completion model differs from registration"] = (
+                runner_wrong_child_model)
+
+        started_prompt_drift = json.loads(json.dumps(subagent_probe_events))
+        started_prompt_drift[3]["prompt"] = "drifted child prompt"
+        runner_agent_mutations["started prompt drift"] = started_prompt_drift
+
+        child_description_drift = json.loads(json.dumps(
+            subagent_probe_events))
+        child_description_drift[4]["task_description"] = "drifted description"
+        runner_agent_mutations["child description drift"] = (
+            child_description_drift)
+
+        child_prompt_drift = json.loads(json.dumps(subagent_probe_events))
+        child_prompt_drift[4]["message"]["content"][0]["text"] = (
+            "drifted child prompt")
+        runner_agent_mutations["child prompt drift"] = child_prompt_drift
+
+        summary_prompt_drift = json.loads(json.dumps(subagent_probe_events))
+        summary_prompt_drift[7]["tool_use_result"]["prompt"] = (
+            "drifted child prompt")
+        runner_agent_mutations["summary prompt drift"] = summary_prompt_drift
+
+        completion_role_drift = json.loads(json.dumps(subagent_probe_events))
+        completion_role_drift[7]["message"]["role"] = "assistant"
+        runner_agent_mutations["completion role drift"] = (
+            completion_role_drift)
+
+        completion_extra_content = json.loads(json.dumps(
+            subagent_probe_events))
+        completion_extra_content[7]["message"]["content"].append({
+            "type": "text", "text": "unregistered completion content"})
+        runner_agent_mutations["completion extra content"] = (
+            completion_extra_content)
+
+        completion_raw_content = json.loads(json.dumps(
+            subagent_probe_events))
+        completion_raw_content[7]["message"]["content"].append(
+            "unregistered raw content")
+        runner_agent_mutations["completion raw content"] = (
+            completion_raw_content)
+
+        colliding_tool_id = json.loads(json.dumps(subagent_probe_events))
+        launch_block = colliding_tool_id[2]["message"]["content"][0]
+        colliding_tool_id[2]["message"]["content"].append({
+            "type": "tool_use",
+            "id": launch_block["id"],
+            "name": "Read",
+            "input": {"file_path": "/public/synthetic/input"},
+        })
+        runner_agent_mutations["ordinary tool id collides with Agent"] = (
+            colliding_tool_id)
+
+        split_request_drift = json.loads(json.dumps(subagent_probe_events))
+        split_request_drift[2]["request_id"] = "drifted-split-request"
+        runner_agent_mutations["split request identity drift"] = (
+            split_request_drift)
+
+        split_message_drift = json.loads(json.dumps(subagent_probe_events))
+        split_message_drift[2]["message"]["id"] = "drifted-split-message"
+        runner_agent_mutations["split message identity drift"] = (
+            split_message_drift)
+
+        early_terminal = json.loads(json.dumps(subagent_probe_events))
+        terminal_event = early_terminal.pop()
+        early_terminal.insert(1, terminal_event)
+        runner_agent_mutations["terminal result before lifecycle"] = (
+            early_terminal)
+
+        untyped_update = json.loads(json.dumps(subagent_probe_events))
+        untyped_update[5]["patch"]["end_time"] = "1"
+        runner_agent_mutations["untyped task update"] = untyped_update
+
+        untyped_notification = json.loads(json.dumps(subagent_probe_events))
+        untyped_notification[6]["usage"]["tool_uses"] = False
+        runner_agent_mutations["untyped task notification"] = (
+            untyped_notification)
+
+        for event_index, label in (
+                (3, "task_started type drift"),
+                (5, "task_updated type drift"),
+                (6, "task_notification type drift")):
+            lifecycle_type_drift = json.loads(json.dumps(
+                subagent_probe_events))
+            lifecycle_type_drift[event_index]["type"] = "user"
+            runner_agent_mutations[label] = lifecycle_type_drift
+
+        for event_index, label in (
+                (3, "task_started missing session"),
+                (4, "child-start missing session"),
+                (6, "notification missing session"),
+                (7, "completion missing session"),
+                (-1, "terminal missing session")):
+            missing_session = json.loads(json.dumps(subagent_probe_events))
+            del missing_session[event_index]["session_id"]
+            runner_agent_mutations[label] = missing_session
+
+        reordered_runner_lifecycle = json.loads(json.dumps(
+            subagent_probe_events))
+        reordered_runner_lifecycle[3], reordered_runner_lifecycle[4] = (
+            reordered_runner_lifecycle[4],
+            reordered_runner_lifecycle[3],
+        )
+        runner_agent_mutations["reordered lifecycle"] = (
+            reordered_runner_lifecycle)
+
+        split_launch_reordered = json.loads(json.dumps(
+            subagent_probe_events))
+        split_launch_reordered[2], split_launch_reordered[3] = (
+            split_launch_reordered[3], split_launch_reordered[2])
+        runner_agent_mutations["task_started before split launch block"] = (
+            split_launch_reordered)
+
+        orphan_update = json.loads(json.dumps(subagent_probe_events))
+        foreign_update = json.loads(json.dumps(orphan_update[5]))
+        foreign_update["task_id"] = "foreign-task"
+        orphan_update.insert(6, foreign_update)
+        runner_agent_mutations["orphan task update"] = orphan_update
+
+        orphan_notification = json.loads(json.dumps(subagent_probe_events))
+        foreign_notification = json.loads(json.dumps(orphan_notification[6]))
+        foreign_notification["tool_use_id"] = "foreign-tool-use"
+        orphan_notification.insert(7, foreign_notification)
+        runner_agent_mutations["orphan task notification"] = (
+            orphan_notification)
+
+        orphan_child_start = json.loads(json.dumps(subagent_probe_events))
+        foreign_child = json.loads(json.dumps(orphan_child_start[4]))
+        foreign_child["parent_tool_use_id"] = "foreign-tool-use"
+        orphan_child_start.insert(5, foreign_child)
+        runner_agent_mutations["orphan child start"] = orphan_child_start
+
+        orphan_lifecycle = json.loads(json.dumps(subagent_probe_events))
+        orphan_lifecycle[2]["message"]["content"] = []
+        runner_agent_mutations[
+            "Agent lifecycle survives removed launch"] = orphan_lifecycle
+
+        nonlocal_started = json.loads(json.dumps(subagent_probe_events))
+        nonlocal_started[3]["task_type"] = "remote_agent"
+        runner_agent_mutations[
+            "unregistered task_started type"] = nonlocal_started
+
+        synthetic_launch = json.loads(json.dumps(subagent_probe_events))
+        synthetic_launch[1]["message"]["model"] = "<synthetic>"
+        synthetic_launch[2]["message"]["model"] = "<synthetic>"
+        runner_agent_mutations[
+            "synthetic assistant launch evidence"] = synthetic_launch
+
+        valid_tool_child = json.loads(json.dumps(subagent_probe_events))
+        agent_tool_id = valid_tool_child[2]["message"]["content"][0]["id"]
+        child_summary_event = next(
+            event for event in valid_tool_child
+            if isinstance(event.get("tool_use_result"), dict))
+        child_summary = child_summary_event["tool_use_result"]
+        child_summary["totalToolUseCount"] = 1
+        child_summary["toolStats"] = {
+            "readCount": 1,
+            "searchCount": 0,
+            "bashCount": 0,
+            "editFileCount": 0,
+            "linesAdded": 0,
+            "linesRemoved": 0,
+            "otherToolCount": 0,
+        }
+        child_notification = next(
+            event for event in valid_tool_child
+            if event.get("subtype") == "task_notification")
+        child_notification["usage"]["tool_uses"] = 1
+        child_summary_event["message"]["content"][0]["content"][-1][
+            "text"] = subagent_model_live_probe._agent_completion_metadata(
+                child_summary["agentId"], child_summary["totalTokens"], 1,
+                child_summary["totalDurationMs"])
+        child_tool_id = "public-child-read-tool"
+        child_tool_usage = {
+            "input_tokens": 3,
+            "cache_creation_input_tokens": 1,
+            "cache_read_input_tokens": 1,
+            "output_tokens": 2,
+        }
+        child_assistant = {
+            "type": "assistant",
+            "session_id": valid_tool_child[0]["session_id"],
+            "parent_tool_use_id": agent_tool_id,
+            "request_id": "public-child-read-request",
+            "message": {
+                "id": "public-child-read-message",
+                "model": subagent_model_live_probe.EXPECTED_MODEL,
+                "usage": dict(child_tool_usage),
+                "content": [{
+                    "type": "tool_use",
+                    "id": child_tool_id,
+                    "name": "Read",
+                    "input": {"file_path": "/public/synthetic/input"},
+                }],
+            },
+        }
+        child_response = {
+            "type": "assistant",
+            "session_id": valid_tool_child[0]["session_id"],
+            "parent_tool_use_id": agent_tool_id,
+            "request_id": "public-child-response-request",
+            "message": {
+                "id": "public-child-response-message",
+                "model": subagent_model_live_probe.EXPECTED_MODEL,
+                # Pinned CLI Agent completion usage is exactly this final
+                # child turn, not the preceding tool-using turn.
+                "usage": dict(child_summary["usage"]),
+                "content": [{
+                    "type": "text",
+                    "text": "public child tool response",
+                }],
+            },
+        }
+        child_tool_result = {
+            "type": "user",
+            "session_id": valid_tool_child[0]["session_id"],
+            "parent_tool_use_id": agent_tool_id,
+            "subagent_type": (
+                subagent_model_live_probe.EXPECTED_SUBAGENT_TYPE),
+            "task_description": (
+                subagent_model_live_probe.EXPECTED_SUBAGENT_DESCRIPTION),
+            "tool_use_result": {"kind": "public-read-result"},
+            "message": {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": child_tool_id,
+                    "content": [{"type": "text", "text": "public result"}],
+                }],
+            },
+        }
+        valid_tool_child[5:5] = [
+            child_assistant, child_tool_result, child_response]
+        registered_model_usage = valid_tool_child[-1]["modelUsage"][
+            subagent_model_live_probe.EXPECTED_MODEL]
+        registered_model_usage["inputTokens"] += sum((
+            child_tool_usage["input_tokens"],
+            child_tool_usage["cache_creation_input_tokens"],
+            child_tool_usage["cache_read_input_tokens"],
+        ))
+        registered_model_usage["outputTokens"] += child_tool_usage[
+            "output_tokens"]
+        valid_tool_result_without_payload = json.loads(json.dumps(
+            valid_tool_child))
+        payload_free_result = next(
+            event for event in valid_tool_result_without_payload
+            if event.get("tool_use_result")
+            == {"kind": "public-read-result"})
+        del payload_free_result["tool_use_result"]
+
+        valid_agent_continuation = json.loads(json.dumps(valid_tool_child))
+        continuation_tool_id = "public-sendmessage-resume-tool"
+        continuation_summary = "Continue public child"
+        continuation_prompt = "Return the public continuation marker."
+        continuation_message = (
+            'Agent "public-child" was stopped (completed); resumed it with '
+            "your message and ran to completion. Result:\n\n"
+            "PUBLIC-CONTINUATION-OK")
+        continuation_result_data = {
+            "success": True,
+            "message": continuation_message,
+        }
+        continuation_root_usage = {
+            "input_tokens": 1,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 1,
+        }
+        continuation_events = [{
+            "type": "assistant",
+            "session_id": valid_agent_continuation[0]["session_id"],
+            "parent_tool_use_id": None,
+            "request_id": "public-sendmessage-resume-request",
+            "message": {
+                "id": "public-sendmessage-resume-message",
+                "model": subagent_model_live_probe.EXPECTED_MODEL,
+                "usage": dict(continuation_root_usage),
+                "content": [{
+                    "type": "tool_use",
+                    "id": continuation_tool_id,
+                    "name": "SendMessage",
+                    "input": {
+                        "to": child_summary["agentId"],
+                        "summary": continuation_summary,
+                        "message": continuation_prompt,
+                    },
+                }],
+            },
+        }, {
+            "type": "system",
+            "subtype": "task_started",
+            "session_id": valid_agent_continuation[0]["session_id"],
+            "uuid": "public-sendmessage-resume-started",
+            "task_id": child_summary["agentId"],
+            "tool_use_id": continuation_tool_id,
+            "task_type": "local_agent",
+            "subagent_type": (
+                subagent_model_live_probe.EXPECTED_SUBAGENT_TYPE),
+            "description": (
+                subagent_model_live_probe.EXPECTED_SUBAGENT_DESCRIPTION),
+            "prompt": continuation_prompt,
+        }, {
+            "type": "system",
+            "subtype": "task_updated",
+            "session_id": valid_agent_continuation[0]["session_id"],
+            "task_id": child_summary["agentId"],
+            "patch": {"status": "completed", "end_time": 2},
+        }, {
+            "type": "system",
+            "subtype": "task_notification",
+            "session_id": valid_agent_continuation[0]["session_id"],
+            "uuid": "public-sendmessage-resume-notification",
+            "task_id": child_summary["agentId"],
+            "tool_use_id": continuation_tool_id,
+            "status": "completed",
+            "summary": "PUBLIC-CONTINUATION-OK",
+            "output_file": "/public/synthetic/continuation-output.txt",
+            "usage": {
+                "total_tokens": 5,
+                "tool_uses": 2,
+                "duration_ms": 2,
+            },
+        }, {
+            "type": "user",
+            "session_id": valid_agent_continuation[0]["session_id"],
+            "parent_tool_use_id": None,
+            "message": {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": continuation_tool_id,
+                    "content": [{
+                        "type": "text",
+                        "text": json.dumps(
+                            continuation_result_data,
+                            sort_keys=True,
+                            separators=(",", ":")),
+                    }],
+                }],
+            },
+            "tool_use_result": continuation_result_data,
+        }]
+        continuation_parent_index = next(
+            index for index, event in enumerate(valid_agent_continuation)
+            if event.get("request_id")
+            == "public-subagent-model-probe-request-response")
+        valid_agent_continuation[
+            continuation_parent_index:continuation_parent_index] = (
+                continuation_events)
+        continuation_terminal = valid_agent_continuation[-1]
+        continuation_terminal["usage"]["input_tokens"] += 1
+        continuation_terminal["usage"]["output_tokens"] += 1
+        continuation_registered = continuation_terminal["modelUsage"][
+            subagent_model_live_probe.EXPECTED_MODEL]
+        continuation_registered["inputTokens"] += 5
+        continuation_registered["outputTokens"] += 2
+        continuation_without_terminal = valid_agent_continuation[:-1]
+
+        valid_two_agent_continuations = json.loads(json.dumps(
+            valid_agent_continuation))
+        second_continuation_tool_id = "public-sendmessage-resume-tool-2"
+        second_continuation_prompt = "Return the second continuation marker."
+        second_continuation_result_data = {
+            "success": True,
+            "message": (
+                'Agent "public-child" had no active task; resumed from '
+                "transcript with your message and ran to completion. "
+                "Result:\n\nPUBLIC-CONTINUATION-2-OK"),
+        }
+        second_continuation_events = json.loads(json.dumps(
+            continuation_events))
+        second_assistant = second_continuation_events[0]
+        second_assistant["request_id"] = "public-sendmessage-resume-request-2"
+        second_assistant["message"]["id"] = (
+            "public-sendmessage-resume-message-2")
+        second_send_block = second_assistant["message"]["content"][0]
+        second_send_block["id"] = second_continuation_tool_id
+        second_send_block["input"]["summary"] = "Continue child again"
+        second_send_block["input"]["message"] = second_continuation_prompt
+        second_started = second_continuation_events[1]
+        second_started["uuid"] = "public-sendmessage-resume-started-2"
+        second_started["tool_use_id"] = second_continuation_tool_id
+        second_started["prompt"] = second_continuation_prompt
+        second_continuation_events[2]["patch"]["end_time"] = 3
+        second_notification = second_continuation_events[3]
+        second_notification["uuid"] = (
+            "public-sendmessage-resume-notification-2")
+        second_notification["tool_use_id"] = second_continuation_tool_id
+        second_notification["summary"] = "PUBLIC-CONTINUATION-2-OK"
+        second_notification["output_file"] = (
+            "/public/synthetic/continuation-output-2.txt")
+        second_notification["usage"] = {
+            "total_tokens": 5,
+            # Cold/evicted registry epochs reset the public tool count. The
+            # reconciler adds this delta to the prior authoritative total.
+            "tool_uses": 1,
+            # c$e re-registers the same task with a fresh start time, so a
+            # later valid round duration may be smaller than the prior one.
+            "duration_ms": 1,
+        }
+        second_result = second_continuation_events[4]
+        second_result["message"]["content"][0]["tool_use_id"] = (
+            second_continuation_tool_id)
+        second_result["tool_use_result"] = second_continuation_result_data
+        second_result["message"]["content"][0]["content"][0]["text"] = (
+            json.dumps(second_continuation_result_data, sort_keys=True,
+                       separators=(",", ":")))
+        second_parent_index = next(
+            index for index, event in enumerate(valid_two_agent_continuations)
+            if event.get("request_id")
+            == "public-subagent-model-probe-request-response")
+        valid_two_agent_continuations[
+            second_parent_index:second_parent_index] = (
+                second_continuation_events)
+        two_continuation_terminal = valid_two_agent_continuations[-1]
+        two_continuation_terminal["usage"]["input_tokens"] += 1
+        two_continuation_terminal["usage"]["output_tokens"] += 1
+        two_continuation_registered = two_continuation_terminal["modelUsage"][
+            subagent_model_live_probe.EXPECTED_MODEL]
+        two_continuation_registered["inputTokens"] += 5
+        two_continuation_registered["outputTokens"] += 2
+
+        valid_three_agent_continuations = json.loads(json.dumps(
+            valid_two_agent_continuations))
+        third_continuation_tool_id = "public-sendmessage-resume-tool-3"
+        third_continuation_prompt = "Return the third continuation marker."
+        third_continuation_result_data = {
+            "success": True,
+            "message": (
+                'Agent "public-child" was stopped (completed); resumed it '
+                "with your message and ran to completion. Result:\n\n"
+                "PUBLIC-CONTINUATION-3-OK"),
+        }
+        third_continuation_events = json.loads(json.dumps(
+            continuation_events))
+        third_assistant = third_continuation_events[0]
+        third_assistant["request_id"] = "public-sendmessage-resume-request-3"
+        third_assistant["message"]["id"] = (
+            "public-sendmessage-resume-message-3")
+        third_send_block = third_assistant["message"]["content"][0]
+        third_send_block["id"] = third_continuation_tool_id
+        third_send_block["input"]["summary"] = "Continue child after cold"
+        third_send_block["input"]["message"] = third_continuation_prompt
+        third_started = third_continuation_events[1]
+        third_started["uuid"] = "public-sendmessage-resume-started-3"
+        third_started["tool_use_id"] = third_continuation_tool_id
+        third_started["prompt"] = third_continuation_prompt
+        third_continuation_events[2]["patch"]["end_time"] = 4
+        third_notification = third_continuation_events[3]
+        third_notification["uuid"] = (
+            "public-sendmessage-resume-notification-3")
+        third_notification["tool_use_id"] = third_continuation_tool_id
+        third_notification["summary"] = "PUBLIC-CONTINUATION-3-OK"
+        third_notification["output_file"] = (
+            "/public/synthetic/continuation-output-3.txt")
+        third_notification["usage"] = {
+            "total_tokens": 5,
+            # Warm after a cold reset: epoch 1 -> 2 is delta 1, while the
+            # global authoritative total advances from 3 -> 4.
+            "tool_uses": 2,
+            "duration_ms": 2,
+        }
+        third_result = third_continuation_events[4]
+        third_result["message"]["content"][0]["tool_use_id"] = (
+            third_continuation_tool_id)
+        third_result["tool_use_result"] = third_continuation_result_data
+        third_result["message"]["content"][0]["content"][0]["text"] = (
+            json.dumps(third_continuation_result_data, sort_keys=True,
+                       separators=(",", ":")))
+        third_parent_index = next(
+            index for index, event in enumerate(
+                valid_three_agent_continuations)
+            if event.get("request_id")
+            == "public-subagent-model-probe-request-response")
+        valid_three_agent_continuations[
+            third_parent_index:third_parent_index] = (
+                third_continuation_events)
+        three_continuation_terminal = valid_three_agent_continuations[-1]
+        three_continuation_terminal["usage"]["input_tokens"] += 1
+        three_continuation_terminal["usage"]["output_tokens"] += 1
+        three_continuation_registered = three_continuation_terminal[
+            "modelUsage"][subagent_model_live_probe.EXPECTED_MODEL]
+        three_continuation_registered["inputTokens"] += 5
+        three_continuation_registered["outputTokens"] += 2
+
+        nested_agent_stream = json.loads(json.dumps(valid_tool_child))
+        nested_session = nested_agent_stream[0]["session_id"]
+        nested_tool_use_id = "public-nested-agent-tool"
+        nested_task_id = "public-nested-agent-task"
+        nested_child_tool_id = "public-nested-read-tool"
+        nested_type = "public:nested-child"
+        nested_description = "Public nested child"
+        nested_prompt = "Return the public nested marker."
+        nested_marker = "PUBLIC-NESTED-CHILD-OK"
+        nested_launch_usage = {
+            "input_tokens": 1,
+            "cache_creation_input_tokens": 1,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 1,
+        }
+        nested_tool_usage = {
+            "input_tokens": 2,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 1,
+            "output_tokens": 1,
+        }
+        nested_final_usage = {
+            "input_tokens": 1,
+            "cache_creation_input_tokens": 1,
+            "cache_read_input_tokens": 1,
+            "output_tokens": 2,
+        }
+        nested_summary = {
+            "status": "completed",
+            "prompt": nested_prompt,
+            "agentId": nested_task_id,
+            "agentType": nested_type,
+            "content": [{"type": "text", "text": nested_marker}],
+            "resolvedModel": subagent_model_live_probe.EXPECTED_MODEL,
+            "totalDurationMs": 1,
+            "totalTokens": sum(nested_final_usage.values()),
+            "totalToolUseCount": 1,
+            "usage": dict(nested_final_usage),
+            "toolStats": {
+                "readCount": 1,
+                "searchCount": 0,
+                "bashCount": 0,
+                "editFileCount": 0,
+                "linesAdded": 0,
+                "linesRemoved": 0,
+                "otherToolCount": 0,
+            },
+        }
+        nested_events = [{
+            "type": "assistant",
+            "session_id": nested_session,
+            "parent_tool_use_id": agent_tool_id,
+            "request_id": "public-nested-launch-request",
+            "message": {
+                "id": "public-nested-launch-message",
+                "model": subagent_model_live_probe.EXPECTED_MODEL,
+                "usage": dict(nested_launch_usage),
+                "content": [{
+                    "type": "tool_use",
+                    "id": nested_tool_use_id,
+                    "name": "Agent",
+                    "caller": {"type": "direct"},
+                    "input": {
+                        "description": nested_description,
+                        "prompt": nested_prompt,
+                        "subagent_type": nested_type,
+                    },
+                }],
+            },
+        }, {
+            "type": "system",
+            "subtype": "task_started",
+            "session_id": nested_session,
+            "task_id": nested_task_id,
+            "tool_use_id": nested_tool_use_id,
+            "task_type": "local_agent",
+            "subagent_type": nested_type,
+            "description": nested_description,
+            "prompt": nested_prompt,
+        }, {
+            "type": "user",
+            "session_id": nested_session,
+            "parent_tool_use_id": nested_tool_use_id,
+            "subagent_type": nested_type,
+            "task_description": nested_description,
+            "message": {
+                "role": "user",
+                "content": [{"type": "text", "text": nested_prompt}],
+            },
+        }, {
+            "type": "assistant",
+            "session_id": nested_session,
+            "parent_tool_use_id": nested_tool_use_id,
+            "request_id": "public-nested-read-request",
+            "message": {
+                "id": "public-nested-read-message",
+                "model": subagent_model_live_probe.EXPECTED_MODEL,
+                "usage": dict(nested_tool_usage),
+                "content": [{
+                    "type": "tool_use",
+                    "id": nested_child_tool_id,
+                    "name": "Read",
+                    "input": {"file_path": "/public/nested/input"},
+                }],
+            },
+        }, {
+            "type": "user",
+            "session_id": nested_session,
+            "parent_tool_use_id": nested_tool_use_id,
+            "subagent_type": nested_type,
+            "task_description": nested_description,
+            "tool_use_result": {"kind": "public-nested-read-result"},
+            "message": {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": nested_child_tool_id,
+                    "content": [{"type": "text", "text": "nested read"}],
+                }],
+            },
+        }, {
+            "type": "assistant",
+            "session_id": nested_session,
+            "parent_tool_use_id": nested_tool_use_id,
+            "request_id": "public-nested-final-request",
+            "message": {
+                "id": "public-nested-final-message",
+                "model": subagent_model_live_probe.EXPECTED_MODEL,
+                "usage": dict(nested_final_usage),
+                "content": [{"type": "text", "text": nested_marker}],
+            },
+        }, {
+            "type": "system",
+            "subtype": "task_updated",
+            "session_id": nested_session,
+            "task_id": nested_task_id,
+            "patch": {"status": "completed", "end_time": 2},
+        }, {
+            "type": "system",
+            "subtype": "task_notification",
+            "session_id": nested_session,
+            "task_id": nested_task_id,
+            "tool_use_id": nested_tool_use_id,
+            "status": "completed",
+            "summary": nested_marker,
+            "output_file": "/public/synthetic/nested-output.txt",
+            "usage": {
+                "total_tokens": nested_summary["totalTokens"],
+                "tool_uses": 1,
+                "duration_ms": 1,
+            },
+        }, {
+            "type": "user",
+            "session_id": nested_session,
+            "parent_tool_use_id": agent_tool_id,
+            "subagent_type": (
+                subagent_model_live_probe.EXPECTED_SUBAGENT_TYPE),
+            "task_description": (
+                subagent_model_live_probe.EXPECTED_SUBAGENT_DESCRIPTION),
+            "message": {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": nested_tool_use_id,
+                    "content": [
+                        {"type": "text", "text": nested_marker},
+                        {"type": "text", "text": (
+                            subagent_model_live_probe
+                            ._agent_completion_metadata(
+                                nested_task_id,
+                                nested_summary["totalTokens"], 1, 1))},
+                    ],
+                }],
+            },
+            "tool_use_result": nested_summary,
+        }]
+        outer_response_index = next(
+            index for index, event in enumerate(nested_agent_stream)
+            if event.get("request_id") == "public-child-response-request")
+        nested_agent_stream[outer_response_index:outer_response_index] = (
+            nested_events)
+        outer_summary_event = next(
+            event for event in nested_agent_stream
+            if isinstance(event.get("tool_use_result"), dict)
+            and event["tool_use_result"].get("agentId")
+            == child_summary["agentId"])
+        outer_summary = outer_summary_event["tool_use_result"]
+        outer_summary["totalToolUseCount"] = 2
+        outer_summary["toolStats"]["readCount"] = 2
+        outer_notification = next(
+            event for event in nested_agent_stream
+            if event.get("subtype") == "task_notification"
+            and event.get("tool_use_id") == agent_tool_id)
+        outer_notification["usage"]["tool_uses"] = 2
+        outer_summary_event["message"]["content"][0]["content"][-1][
+            "text"] = subagent_model_live_probe._agent_completion_metadata(
+                outer_summary["agentId"], outer_summary["totalTokens"], 2,
+                outer_summary["totalDurationMs"])
+        nested_registered_usage = nested_agent_stream[-1]["modelUsage"][
+            subagent_model_live_probe.EXPECTED_MODEL]
+        for usage in (
+                nested_launch_usage, nested_tool_usage, nested_final_usage):
+            nested_registered_usage["inputTokens"] += sum((
+                usage["input_tokens"],
+                usage["cache_creation_input_tokens"],
+                usage["cache_read_input_tokens"],
+            ))
+            nested_registered_usage["outputTokens"] += usage[
+                "output_tokens"]
+
+        malformed_tool_stats = json.loads(json.dumps(valid_tool_child))
+        malformed_summary = next(
+            event["tool_use_result"] for event in malformed_tool_stats
+            if isinstance(event.get("tool_use_result"), dict)
+            and isinstance(event["tool_use_result"].get("agentId"), str))
+        malformed_summary["toolStats"]["readCount"] = "1"
+        runner_agent_mutations[
+            "malformed Agent toolStats"] = malformed_tool_stats
+
+        unknown_tool_stats = json.loads(json.dumps(valid_tool_child))
+        unknown_summary = next(
+            event["tool_use_result"] for event in unknown_tool_stats
+            if isinstance(event.get("tool_use_result"), dict)
+            and isinstance(event["tool_use_result"].get("agentId"), str))
+        unknown_summary["toolStats"]["unknownCount"] = 1
+        runner_agent_mutations[
+            "unknown Agent toolStats key"] = unknown_tool_stats
+
+        missing_tool_stats = json.loads(json.dumps(valid_tool_child))
+        missing_stats_summary = next(
+            event["tool_use_result"] for event in missing_tool_stats
+            if isinstance(event.get("tool_use_result"), dict)
+            and isinstance(event["tool_use_result"].get("agentId"), str))
+        del missing_stats_summary["toolStats"]
+        runner_agent_mutations[
+            "missing categorized Agent toolStats"] = missing_tool_stats
+
+        miscategorized_tool_stats = json.loads(json.dumps(valid_tool_child))
+        miscategorized_summary = next(
+            event["tool_use_result"] for event in miscategorized_tool_stats
+            if isinstance(event.get("tool_use_result"), dict)
+            and isinstance(event["tool_use_result"].get("agentId"), str))
+        miscategorized_summary["toolStats"]["readCount"] = 0
+        miscategorized_summary["toolStats"]["searchCount"] = 1
+        runner_agent_mutations[
+            "miscategorized Agent toolStats"] = miscategorized_tool_stats
+
+        for claimed_tools, label in (
+                (0, "Agent tool count under-reports sidechain"),
+                (2, "Agent tool count over-reports sidechain")):
+            count_drift = json.loads(json.dumps(valid_tool_child))
+            drift_summary_event = next(
+                event for event in count_drift
+                if isinstance(event.get("tool_use_result"), dict)
+                and isinstance(
+                    event["tool_use_result"].get("agentId"), str))
+            drift_summary = drift_summary_event["tool_use_result"]
+            drift_summary["totalToolUseCount"] = claimed_tools
+            if claimed_tools == 0:
+                del drift_summary["toolStats"]
+            drift_notification = next(
+                event for event in count_drift
+                if event.get("subtype") == "task_notification")
+            drift_notification["usage"]["tool_uses"] = claimed_tools
+            drift_summary_event["message"]["content"][0]["content"][-1][
+                "text"] = subagent_model_live_probe._agent_completion_metadata(
+                    drift_summary["agentId"], drift_summary["totalTokens"],
+                    claimed_tools, drift_summary["totalDurationMs"])
+            runner_agent_mutations[label] = count_drift
+
+        foreign_child_tool_result = json.loads(json.dumps(valid_tool_child))
+        foreign_result_event = next(
+            event for event in foreign_child_tool_result
+            if event.get("parent_tool_use_id") == agent_tool_id
+            and isinstance(event.get("message"), dict)
+            and any(isinstance(block, dict)
+                    and block.get("type") == "tool_result"
+                    for block in event["message"].get("content", [])))
+        foreign_result_event["message"]["content"][0]["tool_use_id"] = (
+            "foreign-child-tool")
+        runner_agent_mutations[
+            "foreign child tool result"] = foreign_child_tool_result
+
+        drifted_tool_result_markers = json.loads(json.dumps(
+            valid_tool_child))
+        marker_result_event = next(
+            event for event in drifted_tool_result_markers
+            if event.get("parent_tool_use_id") == agent_tool_id
+            and event.get("tool_use_result")
+            == {"kind": "public-read-result"})
+        marker_result_event["task_description"] = "foreign description"
+        runner_agent_mutations[
+            "drifted child tool-result markers"] = (
+                drifted_tool_result_markers)
+
+        missing_tool_result_markers = json.loads(json.dumps(
+            valid_tool_child))
+        unmarked_result_event = next(
+            event for event in missing_tool_result_markers
+            if event.get("tool_use_result")
+            == {"kind": "public-read-result"})
+        del unmarked_result_event["subagent_type"]
+        del unmarked_result_event["task_description"]
+        runner_agent_mutations[
+            "missing child tool-result markers"] = (
+                missing_tool_result_markers)
+
+        wrong_continuation_target = json.loads(json.dumps(
+            valid_agent_continuation))
+        wrong_send_block = next(
+            block
+            for event in wrong_continuation_target
+            if event.get("type") == "assistant"
+            for block in event.get("message", {}).get("content", [])
+            if block.get("name") == "SendMessage")
+        wrong_send_block["input"]["to"] = "foreign-agent"
+        runner_agent_mutations[
+            "SendMessage continuation target drift"] = (
+                wrong_continuation_target)
+
+        async_continuation_result = json.loads(json.dumps(
+            valid_agent_continuation))
+        async_result_event = next(
+            event for event in async_continuation_result
+            if isinstance(event.get("tool_use_result"), dict)
+            and event["tool_use_result"].get("success") is True)
+        async_result_event["tool_use_result"]["resumedAgentId"] = (
+            child_summary["agentId"])
+        async_result_event["message"]["content"][0]["content"][0][
+            "text"] = json.dumps(
+                async_result_event["tool_use_result"],
+                sort_keys=True, separators=(",", ":"))
+        runner_agent_mutations[
+            "unregistered asynchronous Agent continuation"] = (
+                async_continuation_result)
+
+        ambiguous_continuation_branch = json.loads(json.dumps(
+            valid_agent_continuation))
+        ambiguous_result_event = next(
+            event for event in ambiguous_continuation_branch
+            if isinstance(event.get("tool_use_result"), dict)
+            and event["tool_use_result"].get("success") is True)
+        ambiguous_result_event["tool_use_result"]["message"] = (
+            "Agent resumed without a registered branch marker.")
+        ambiguous_result_event["message"]["content"][0]["content"][0][
+            "text"] = json.dumps(
+                ambiguous_result_event["tool_use_result"],
+                sort_keys=True, separators=(",", ":"))
+        runner_agent_mutations[
+            "ambiguous Agent continuation branch"] = (
+                ambiguous_continuation_branch)
+
+        regressed_continuation_tools = json.loads(json.dumps(
+            valid_agent_continuation))
+        regressed_notification = next(
+            event for event in regressed_continuation_tools
+            if event.get("subtype") == "task_notification"
+            and event.get("tool_use_id") == continuation_tool_id)
+        regressed_notification["usage"]["tool_uses"] = 0
+        runner_agent_mutations[
+            "Agent continuation cumulative tool regression"] = (
+                regressed_continuation_tools)
+
+        early_continuation_result = json.loads(json.dumps(
+            valid_agent_continuation))
+        resume_result_index = next(
+            index for index, event in enumerate(early_continuation_result)
+            if isinstance(event.get("tool_use_result"), dict)
+            and event["tool_use_result"].get("success") is True)
+        resume_result_event = early_continuation_result.pop(
+            resume_result_index)
+        resume_update_index = next(
+            index for index, event in enumerate(early_continuation_result)
+            if event.get("subtype") == "task_updated"
+            and event.get("task_id") == child_summary["agentId"]
+            and event.get("patch", {}).get("end_time") == 2)
+        early_continuation_result.insert(
+            resume_update_index, resume_result_event)
+        runner_agent_mutations[
+            "Agent continuation result precedes completion"] = (
+                early_continuation_result)
+
+        malformed_continuation_pin = json.loads(json.dumps(
+            valid_agent_continuation))
+        pin_result_event = next(
+            event for event in malformed_continuation_pin
+            if isinstance(event.get("tool_use_result"), dict)
+            and event["tool_use_result"].get("success") is True)
+        pin_result_event["tool_use_result"]["pin"] = {
+            "id": child_summary["agentId"],
+            "name": "public-child",
+            "ref": "NOT-HEX",
+        }
+        pin_result_event["message"]["content"][0]["content"][0]["text"] = (
+            json.dumps(pin_result_event["tool_use_result"], sort_keys=True,
+                       separators=(",", ":")))
+        runner_agent_mutations[
+            "malformed Agent continuation pin"] = malformed_continuation_pin
+
+        late_child_tool_result = json.loads(json.dumps(valid_tool_child))
+        result_index = next(
+            index for index, event in enumerate(late_child_tool_result)
+            if event.get("parent_tool_use_id") == agent_tool_id
+            and isinstance(event.get("message"), dict)
+            and any(isinstance(block, dict)
+                    and block.get("type") == "tool_result"
+                    for block in event["message"].get("content", [])))
+        result_event = late_child_tool_result.pop(result_index)
+        completion_index = next(
+            index for index, event in enumerate(late_child_tool_result)
+            if isinstance(event.get("tool_use_result"), dict)
+            and isinstance(event["tool_use_result"].get("agentId"), str))
+        late_child_tool_result.insert(completion_index + 1, result_event)
+        runner_agent_mutations[
+            "child tool result after completion"] = late_child_tool_result
+
+        early_child_assistant = json.loads(json.dumps(valid_tool_child))
+        early_index = next(
+            index for index, event in enumerate(early_child_assistant)
+            if event.get("request_id") == "public-child-read-request")
+        early_event = early_child_assistant.pop(early_index)
+        early_child_assistant.insert(2, early_event)
+        runner_agent_mutations["sidechain assistant before launch"] = (
+            early_child_assistant)
+
+        late_child_assistant = json.loads(json.dumps(valid_tool_child))
+        late_index = next(
+            index for index, event in enumerate(late_child_assistant)
+            if event.get("request_id") == "public-child-read-request")
+        late_event = late_child_assistant.pop(late_index)
+        completion_index = next(
+            index for index, event in enumerate(late_child_assistant)
+            if isinstance(event.get("tool_use_result"), dict)
+            and isinstance(event["tool_use_result"].get("agentId"), str))
+        late_child_assistant.insert(completion_index + 1, late_event)
+        runner_agent_mutations["sidechain assistant after completion"] = (
+            late_child_assistant)
+
+        valid_nonagent_lifecycle = json.loads(json.dumps(
+            subagent_probe_events))
+        background_tool_id = "public-background-workflow-tool"
+        background_task_id = "public-background-workflow-task"
+        valid_nonagent_lifecycle[2]["message"]["content"].append({
+            "type": "tool_use",
+            "id": background_tool_id,
+            "name": "Bash",
+            "input": {
+                "command": "public-synthetic-command",
+                "run_in_background": True,
+            },
+        })
+        valid_nonagent_lifecycle[3:3] = [{
+            "type": "system",
+            "subtype": "task_started",
+            "session_id": valid_nonagent_lifecycle[0]["session_id"],
+            "task_id": background_task_id,
+            "tool_use_id": background_tool_id,
+            "task_type": "local_workflow",
+        }, {
+            "type": "system",
+            "subtype": "task_updated",
+            "session_id": valid_nonagent_lifecycle[0]["session_id"],
+            "task_id": background_task_id,
+            "patch": {"status": "completed"},
+        }, {
+            "type": "system",
+            "subtype": "task_notification",
+            "session_id": valid_nonagent_lifecycle[0]["session_id"],
+            "task_id": background_task_id,
+            "tool_use_id": background_tool_id,
+            "status": "completed",
+        }]
+        crossed_nonagent_lifecycle = json.loads(json.dumps(
+            valid_nonagent_lifecycle))
+        background_notification = next(
+            event for event in crossed_nonagent_lifecycle
+            if event.get("subtype") == "task_notification"
+            and event.get("tool_use_id") == background_tool_id)
+        background_notification["task_id"] = "foreign-background-task"
+        runner_agent_mutations[
+            "cross-linked non-Agent task lifecycle"] = (
+                crossed_nonagent_lifecycle)
+
+        valid_agent_options = json.loads(json.dumps(
+            subagent_probe_events))
+        optional_agent_input = valid_agent_options[2]["message"]["content"][
+            0]["input"]
+        optional_agent_input.update({
+            "model": "sonnet",
+            "name": "public-child-name",
+            "team_name": "public-team-name",
+            "mode": "default",
+            "isolation": "worktree",
+        })
+        optional_summary = next(
+            event["tool_use_result"] for event in valid_agent_options
+            if isinstance(event.get("tool_use_result"), dict)
+            and isinstance(event["tool_use_result"].get("agentId"), str))
+        optional_summary["worktreePath"] = "/public/synthetic/worktree"
+        optional_summary["worktreeBranch"] = "public-synthetic-branch"
+        optional_summary_event = next(
+            event for event in valid_agent_options
+            if event.get("tool_use_result") is optional_summary)
+        optional_summary_event["message"]["content"][0]["content"][-1][
+            "text"] = (
+                f"agentId: {optional_summary['agentId']} (use SendMessage "
+                f"with to: '{optional_summary['agentId']}', summary: "
+                "'<5-10 word recap>' to continue this agent)\n"
+                f"worktreePath: {optional_summary['worktreePath']}\n"
+                f"worktreeBranch: {optional_summary['worktreeBranch']}\n"
+                f"<usage>subagent_tokens: {optional_summary['totalTokens']}\n"
+                f"tool_uses: {optional_summary['totalToolUseCount']}\n"
+                f"duration_ms: {optional_summary['totalDurationMs']}</usage>")
+        valid_worktree_no_branch = json.loads(json.dumps(
+            valid_agent_options))
+        no_branch_event = next(
+            event for event in valid_worktree_no_branch
+            if isinstance(event.get("tool_use_result"), dict)
+            and isinstance(event["tool_use_result"].get("agentId"), str))
+        no_branch_summary = no_branch_event["tool_use_result"]
+        del no_branch_summary["worktreeBranch"]
+        no_branch_event["message"]["content"][0]["content"][-1]["text"] = (
+            f"agentId: {no_branch_summary['agentId']} (use SendMessage with "
+            f"to: '{no_branch_summary['agentId']}', summary: '<5-10 word "
+            "recap>' to continue this agent)\n"
+            f"worktreePath: {no_branch_summary['worktreePath']}\n"
+            f"<usage>subagent_tokens: {no_branch_summary['totalTokens']}\n"
+            f"tool_uses: {no_branch_summary['totalToolUseCount']}\n"
+            f"duration_ms: {no_branch_summary['totalDurationMs']}</usage>")
+        incomplete_worktree_completion = json.loads(json.dumps(
+            valid_agent_options))
+        incomplete_worktree_summary = next(
+            event["tool_use_result"]
+            for event in incomplete_worktree_completion
+            if isinstance(event.get("tool_use_result"), dict)
+            and isinstance(event["tool_use_result"].get("agentId"), str))
+        del incomplete_worktree_summary["worktreePath"]
+        runner_agent_mutations[
+            "incomplete Agent worktree completion"] = (
+                incomplete_worktree_completion)
+
+        valid_default_agent = json.loads(json.dumps(
+            subagent_probe_events))
+        del valid_default_agent[2]["message"]["content"][0]["input"][
+            "subagent_type"]
+        valid_default_agent[3]["subagent_type"] = "general-purpose"
+        valid_default_agent[4]["subagent_type"] = "general-purpose"
+        default_summary = next(
+            event["tool_use_result"] for event in valid_default_agent
+            if isinstance(event.get("tool_use_result"), dict)
+            and isinstance(event["tool_use_result"].get("agentId"), str))
+        default_summary["agentType"] = "general-purpose"
+
+        valid_normalized_agent = json.loads(json.dumps(
+            subagent_probe_events))
+        normalized_input = valid_normalized_agent[2]["message"]["content"][
+            0]["input"]
+        normalized_input["description"] = (
+            "  Public   model\nprobe child  ")
+        normalized_input["subagent_type"] = "model-probe-child"
+
+        valid_builtin_agent = json.loads(json.dumps(
+            subagent_probe_events))
+        valid_builtin_agent[2]["message"]["content"][0]["input"][
+            "subagent_type"] = "Explore"
+        valid_builtin_agent[3]["subagent_type"] = "Explore"
+        valid_builtin_agent[4]["subagent_type"] = "Explore"
+        builtin_summary_event = next(
+            event for event in valid_builtin_agent
+            if isinstance(event.get("tool_use_result"), dict)
+            and isinstance(event["tool_use_result"].get("agentId"), str))
+        builtin_summary_event["tool_use_result"]["agentType"] = "Explore"
+        builtin_summary_event["message"]["content"][0]["content"] = [{
+            "type": "text",
+            "text": subagent_model_live_probe.CHILD_MARKER,
+        }]
+
+        valid_empty_agent = json.loads(json.dumps(
+            subagent_probe_events))
+        empty_summary_event = next(
+            event for event in valid_empty_agent
+            if isinstance(event.get("tool_use_result"), dict)
+            and isinstance(event["tool_use_result"].get("agentId"), str))
+        empty_summary = empty_summary_event["tool_use_result"]
+        empty_summary["content"] = []
+        empty_summary_event["message"]["content"][0]["content"] = [{
+            "type": "text",
+            "text": "(Subagent completed but returned no output.)",
+        }, {
+            "type": "text",
+            "text": subagent_model_live_probe._agent_completion_metadata(
+                empty_summary["agentId"], empty_summary["totalTokens"],
+                empty_summary["totalToolUseCount"],
+                empty_summary["totalDurationMs"]),
+        }]
+
+        partial_mixed_sessions = [
+            json.loads(json.dumps(subagent_probe_events[2])),
+            json.loads(json.dumps(subagent_probe_events[8])),
+        ]
+        partial_mixed_sessions[1]["session_id"] = "foreign-session"
+        mixed_partial_rejected = False
+        try:
+            runner.parse_nodes_tolerant(
+                "\n".join(json.dumps(event, sort_keys=True)
+                          for event in partial_mixed_sessions) + "\n",
+                registered_model=subagent_model_live_probe.EXPECTED_MODEL,
+                protocol_version=runner.PILOT_V2_PROTOCOL_VERSION,
+            )
+        except runner.InfraFailure:
+            mixed_partial_rejected = True
+
+        def runner_accepts_partial_agent_stream(events):
+            raw = "\n".join(
+                json.dumps(event, sort_keys=True) for event in events) + "\n"
+            try:
+                nodes = runner.parse_nodes_tolerant(
+                    raw,
+                    registered_model=(
+                        subagent_model_live_probe.EXPECTED_MODEL),
+                    protocol_version=runner.PILOT_V2_PROTOCOL_VERSION,
+                )
+                runner.validate_models(
+                    nodes, subagent_model_live_probe.EXPECTED_MODEL)
+                runner.account(nodes)
+            except runner.InfraFailure:
+                return False
+            return True
+
+        self_parent_partial = json.loads(json.dumps(
+            subagent_probe_events[:3]))
+        for event in self_parent_partial[1:]:
+            event["parent_tool_use_id"] = agent_tool_id
+
+        no_prefix_partial = json.loads(json.dumps(
+            subagent_probe_events[:3]))
+        no_prefix_partial.append(json.loads(json.dumps(child_assistant)))
+
+        residual_accounting_ok = False
+        nested_accounting_ok = False
+        categorized_stats_ok = False
+        try:
+            residual_raw = "\n".join(
+                json.dumps(event, sort_keys=True)
+                for event in valid_tool_child) + "\n"
+            _session, residual_nodes, _result = runner.parse_transcript(
+                residual_raw,
+                registered_model=subagent_model_live_probe.EXPECTED_MODEL,
+                protocol_version=runner.PILOT_V2_PROTOCOL_VERSION,
+            )
+            residual_accounting = runner.account(residual_nodes)
+            child_ledger = residual_accounting["subagents"]
+            residual_nodes_only = [
+                node for node in residual_nodes
+                if node.get("accounting_source")
+                == "terminal_registered_model_residual"]
+            residual_accounting_ok = (
+                child_ledger["input_tokens"] == 14
+                and child_ledger["output_tokens"] == 6
+                and child_ledger["tool_calls"] == 1
+                and residual_accounting["subagent_children"] == 1
+                and len(residual_nodes_only) == 1
+                and residual_nodes_only[0]["completion_summary_floor"]
+                == {"input_tokens": 9, "output_tokens": 4})
+
+            continuation_raw = "\n".join(
+                json.dumps(event, sort_keys=True)
+                for event in valid_agent_continuation) + "\n"
+            _session, continuation_nodes, _result = runner.parse_transcript(
+                continuation_raw,
+                registered_model=subagent_model_live_probe.EXPECTED_MODEL,
+                protocol_version=runner.PILOT_V2_PROTOCOL_VERSION,
+            )
+            continuation_accounting = runner.account(continuation_nodes)
+            continuation_aggregate_nodes = [
+                node for node in continuation_nodes
+                if node.get("accounting_source")
+                == "terminal_registered_model_residual"]
+            continuation_accounting_ok = (
+                continuation_accounting["subagents"] == {
+                    "input_tokens": 18,
+                    "output_tokens": 7,
+                    "tool_calls": 2,
+                }
+                and continuation_accounting["subagent_children"] == 1
+                and continuation_accounting["subagent_launches"] == 1
+                and continuation_accounting["subagents_spawned"] == 1
+                and len(continuation_aggregate_nodes) == 1
+                and continuation_aggregate_nodes[0][
+                    "continuation_rounds"] == 1)
+
+            two_continuation_raw = "\n".join(
+                json.dumps(event, sort_keys=True)
+                for event in valid_two_agent_continuations) + "\n"
+            _session, two_continuation_nodes, _result = (
+                runner.parse_transcript(
+                    two_continuation_raw,
+                    registered_model=(
+                        subagent_model_live_probe.EXPECTED_MODEL),
+                    protocol_version=runner.PILOT_V2_PROTOCOL_VERSION,
+                ))
+            two_continuation_accounting = runner.account(
+                two_continuation_nodes)
+            two_continuation_aggregate = next(
+                node for node in two_continuation_nodes
+                if node.get("accounting_source")
+                == "terminal_registered_model_residual")
+            two_continuation_accounting_ok = (
+                two_continuation_accounting["subagents"] == {
+                    "input_tokens": 22,
+                    "output_tokens": 8,
+                    "tool_calls": 3,
+                }
+                and two_continuation_accounting["subagent_children"] == 1
+                and two_continuation_accounting["subagent_launches"] == 1
+                and two_continuation_accounting["subagents_spawned"] == 1
+                and two_continuation_aggregate[
+                    "continuation_rounds"] == 2)
+
+            three_continuation_raw = "\n".join(
+                json.dumps(event, sort_keys=True)
+                for event in valid_three_agent_continuations) + "\n"
+            _session, three_continuation_nodes, _result = (
+                runner.parse_transcript(
+                    three_continuation_raw,
+                    registered_model=(
+                        subagent_model_live_probe.EXPECTED_MODEL),
+                    protocol_version=runner.PILOT_V2_PROTOCOL_VERSION,
+                ))
+            three_continuation_accounting = runner.account(
+                three_continuation_nodes)
+            three_continuation_aggregate = next(
+                node for node in three_continuation_nodes
+                if node.get("accounting_source")
+                == "terminal_registered_model_residual")
+            three_continuation_accounting_ok = (
+                three_continuation_accounting["subagents"] == {
+                    "input_tokens": 26,
+                    "output_tokens": 9,
+                    "tool_calls": 4,
+                }
+                and three_continuation_accounting[
+                    "subagent_children"] == 1
+                and three_continuation_accounting[
+                    "subagent_launches"] == 1
+                and three_continuation_accounting[
+                    "subagents_spawned"] == 1
+                and three_continuation_aggregate[
+                    "continuation_rounds"] == 3)
+
+            nested_raw = "\n".join(
+                json.dumps(event, sort_keys=True)
+                for event in nested_agent_stream) + "\n"
+            _session, nested_nodes, _result = runner.parse_transcript(
+                nested_raw,
+                registered_model=subagent_model_live_probe.EXPECTED_MODEL,
+                protocol_version=runner.PILOT_V2_PROTOCOL_VERSION,
+            )
+            nested_accounting = runner.account(nested_nodes)
+            nested_accounting_ok = (
+                nested_accounting["subagents"] == {
+                    "input_tokens": 22,
+                    "output_tokens": 10,
+                    "tool_calls": 3,
+                }
+                and nested_accounting["subagent_children"] == 2
+                and nested_accounting["subagent_launches"] == 2
+                and nested_accounting["subagents_spawned"] == 2)
+
+            categorized_stats_ok = (
+                runner._expected_agent_tool_stats([{
+                    "id": "edit",
+                    "name": "Edit",
+                    "input": {
+                        "old_string": "old",
+                        "new_string": "new\nlines",
+                    },
+                }, {
+                    "id": "write",
+                    "name": "Write",
+                    "input": {"content": "one\ntwo"},
+                }, {
+                    "id": "artifact",
+                    "name": "Artifact",
+                    "input": {"action": "create"},
+                }, {
+                    "id": "glob",
+                    "name": "Glob",
+                    "input": {"pattern": "**/*"},
+                }, {
+                    "id": "bash",
+                    "name": "Bash",
+                    "input": {"command": "true"},
+                }, {
+                    "id": "send",
+                    "name": "SendMessage",
+                    "input": {"to": "public"},
+                }], []) == {
+                    "readCount": 0,
+                    "searchCount": 1,
+                    "bashCount": 1,
+                    "editFileCount": 2,
+                    "linesAdded": 4,
+                    "linesRemoved": 1,
+                    "otherToolCount": 1,
+                    "frameCount": 1,
+                })
+        except (KeyError, TypeError, runner.InfraFailure):
+            residual_accounting_ok = False
+            continuation_accounting_ok = False
+            two_continuation_accounting_ok = False
+            three_continuation_accounting_ok = False
+            nested_accounting_ok = False
+            categorized_stats_ok = False
+
+        ok &= check(
+            "Agent reconciler rejects ambiguous lineage and accepts child tools",
+            all(not runner_accepts_agent_stream(events)
+                for events in runner_agent_mutations.values())
+            and runner_accepts_agent_stream(valid_tool_child)
+            and runner_accepts_agent_stream(
+                valid_tool_result_without_payload)
+            and runner_accepts_agent_stream(valid_nonagent_lifecycle)
+            and runner_accepts_agent_stream(valid_agent_options)
+            and runner_accepts_agent_stream(valid_worktree_no_branch)
+            and runner_accepts_agent_stream(valid_default_agent)
+            and runner_accepts_agent_stream(valid_normalized_agent)
+            and runner_accepts_agent_stream(valid_builtin_agent)
+            and runner_accepts_agent_stream(valid_empty_agent)
+            and residual_accounting_ok
+            and continuation_accounting_ok
+            and two_continuation_accounting_ok
+            and three_continuation_accounting_ok
+            and nested_accounting_ok
+            and categorized_stats_ok
+            and mixed_partial_rejected
+            and not runner_accepts_partial_agent_stream(
+                continuation_without_terminal)
+            and not runner_accepts_partial_agent_stream(self_parent_partial)
+            and not runner_accepts_partial_agent_stream(no_prefix_partial),
+            notes,
+        )
 
         subagent_output = (
             probe_round / subagent_model_live_probe.OUTPUT_NAMESPACE)
@@ -1822,9 +3583,24 @@ def _run_preflight(registration_isolation_ok):
             subagent_observation["reported_models"] == {
                 "parent": [subagent_model_live_probe.EXPECTED_MODEL],
                 "child": [subagent_model_live_probe.EXPECTED_MODEL],
+                "auxiliary": ["claude-haiku-4-5-20251001"],
             }
+            and subagent_observation["accounting"]["auxiliary"] == {
+                "input_tokens": 6,
+                "output_tokens": 4,
+                "tool_calls": 0,
+            }
+            and subagent_observation["accounting"]["tree"] == {
+                "input_tokens": 38,
+                "output_tokens": 38,
+                "tool_calls": 1,
+            }
+            and redacted_probe_accepted
+            and progress_probe_accepted
+            and api_retry_probe_accepted
+            and nullable_usage_accepted
             and all(subagent_parser_rejections.values())
-            and len(subagent_parser_rejections) == 7
+            and len(subagent_parser_rejections) == 27
             and subagent_receipt == subagent_reverified == subagent_replay
             and len(subagent_launches) == 1
             and subagent_capture["prompt"]
@@ -1834,8 +3610,15 @@ def _run_preflight(registration_isolation_ok):
                 for part in subagent_capture["command"])
             and subagent_capture["env"][ambient_name]
             == subagent_model_live_probe.EXPECTED_MODEL
+            and subagent_capture["env"][
+                runner.PILOT_V2_BACKGROUND_TASKS_ENV] == "1"
             and subagent_receipt["observation"]["fixture_declared_model"]
             == subagent_model_live_probe.FIXTURE_DECLARED_MODEL
+            and subagent_receipt["observation"][
+                "background_tasks_override"] == {
+                    "name": runner.PILOT_V2_BACKGROUND_TASKS_ENV,
+                    "value": "1",
+                }
             and incomplete_subagent_blocked
             and subagent_drift_blocked_before_launch
             and subagent_pending_gate
@@ -2191,10 +3974,13 @@ def _run_preflight(registration_isolation_ok):
         auth_canary_before = os.environ.get(auth_canary_name)
         subagent_model_env = runner.PILOT_V2_SUBAGENT_MODEL_ENV
         subagent_model_before = os.environ.get(subagent_model_env)
+        background_tasks_env = runner.PILOT_V2_BACKGROUND_TASKS_ENV
+        background_tasks_before = os.environ.get(background_tasks_env)
         try:
             os.environ[environment_canary_name] = SECRET
             os.environ[auth_canary_name] = "synthetic-auth-canary"
             os.environ[subagent_model_env] = "claude-sonnet-5"
+            os.environ[background_tasks_env] = "host-must-not-win"
             v2_environment = runner.backend_env(
                 ws, runner.PILOT_V2_PROTOCOL_VERSION,
                 subagent_model="claude-opus-5")
@@ -2211,6 +3997,10 @@ def _run_preflight(registration_isolation_ok):
                 os.environ.pop(subagent_model_env, None)
             else:
                 os.environ[subagent_model_env] = subagent_model_before
+            if background_tasks_before is None:
+                os.environ.pop(background_tasks_env, None)
+            else:
+                os.environ[background_tasks_env] = background_tasks_before
         invalid_subagent_model_pins_rejected = True
         for invalid_pin in (None, "", " claude-opus-5", "claude-opus-5\x00"):
             try:
@@ -2233,6 +4023,8 @@ def _run_preflight(registration_isolation_ok):
             and v2_environment.get("TMPDIR") == "/tmp"
             and subagent_model_env not in runner.PILOT_V2_ENV_ALLOWLIST
             and v2_environment.get(subagent_model_env) == "claude-opus-5"
+            and background_tasks_env not in runner.PILOT_V2_ENV_ALLOWLIST
+            and v2_environment.get(background_tasks_env) == "1"
             and invalid_subagent_model_pins_rejected,
             notes)
 
@@ -2540,12 +4332,28 @@ def _run_preflight(registration_isolation_ok):
         (_sid, _nodes, _response, _structured,
          judge_assistant_defects) = runner._parse_judge_stream_tolerant(
              judge_bad_assistant_stream)
+        judge_delegation_stream = "\n".join((
+            json.dumps({
+                "type": "node", "model": "opus", "effort": "high",
+                "tool_calls": 1, "subagent_launches": 1,
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            }),
+            json.dumps({
+                "type": "result", "subtype": "success",
+                "session_id": "judge-delegation", "result": "{}",
+            }),
+        ))
+        (_sid, _nodes, _response, _structured,
+         judge_delegation_defects) = runner._parse_judge_stream_tolerant(
+             judge_delegation_stream)
         ok &= check(
-            "judge accounting/envelope defects consume an invalid attempt",
+            "judge accounting/envelope/delegation defects invalidate attempts",
             any("invalid accounting" in defect
                 for defect in judge_accounting_defects)
             and any("assistant event message" in defect
-                    for defect in judge_assistant_defects),
+                    for defect in judge_assistant_defects)
+            and any("forbidden subagent delegation" in defect
+                    for defect in judge_delegation_defects),
             notes)
 
         record, _, _, _ = run_case(ws, "real-stream")
@@ -5229,6 +7037,14 @@ def _run_preflight(registration_isolation_ok):
             len(stops) == 1
             and "Shall I proceed" in stops[0].get("response", "")
             and stops[0].get("classification") == "question",
+            notes)
+
+        record, _, _, _ = run_case(ws, "resume-session-drift")
+        ok &= check(
+            "driver continuation remains bound to the resumed session",
+            record["status"] == "infra_failure"
+            and record["interventions"] == 1
+            and "changed session identity" in record.get("failure", ""),
             notes)
 
         gt_only = ws / "task-gt-only.md"
@@ -8653,6 +10469,12 @@ def _run_preflight(registration_isolation_ok):
         )
         serialized_aggregate = json.dumps(
             aggregate, sort_keys=True, allow_nan=False)
+        ok &= check(
+            "aggregate binds the registered Agent stream accounting policy",
+            aggregate.get("policy_ids", {}).get("agent_stream_accounting")
+            == runner.PILOT_V2_AGENT_STREAM_ACCOUNTING_POLICY["id"]
+            == pilot_registration.AGENT_STREAM_ACCOUNTING_POLICY["id"],
+            notes)
         ok &= check(
             "protocol-v2 golden aggregation covers standard 42/84 population",
             aggregate_fixture["run_count"] == 42

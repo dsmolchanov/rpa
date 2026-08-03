@@ -60,7 +60,7 @@ FAILURE_KINDS = {
     "subagent_policy",
     "workflow_failure",
 }
-ACCOUNTING_BUCKETS = ("main", "subagents", "tree")
+ACCOUNTING_BUCKETS = ("main", "subagents", "auxiliary", "tree")
 ACCOUNTING_FIELDS = ("input_tokens", "output_tokens", "tool_calls")
 
 
@@ -355,6 +355,12 @@ def _accounting_metrics(accounting):
                      == parsed["total_tokens"],
                      f"accounting {bucket} total_tokens mismatch")
         metrics[bucket] = parsed
+    for field in ACCOUNTING_FIELDS:
+        _require(
+            metrics["tree"][field]
+            == (metrics["main"][field] + metrics["subagents"][field]
+                + metrics["auxiliary"][field]),
+            f"accounting tree {field} does not include every bucket")
     return metrics
 
 
@@ -1934,6 +1940,8 @@ def aggregate(config_path, manifest_path, scorer_manifest_path,
             "aggregation": AGGREGATION_POLICY["id"],
             "telemetry": TELEMETRY_POLICY_ID,
             "environment": runner.PILOT_V2_ENVIRONMENT_POLICY_ID,
+            "agent_stream_accounting":
+                runner.PILOT_V2_AGENT_STREAM_ACCOUNTING_POLICY["id"],
             "critical_error": AGGREGATION_POLICY["critical"],
             "judge_response_schema": SCHEMA_VERSION,
             "judge_output": JUDGE_OUTPUT_POLICY["id"],

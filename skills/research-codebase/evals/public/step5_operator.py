@@ -138,6 +138,10 @@ REGISTERED_PROTOCOL_VERSION = pilot_registration.PROTOCOL_VERSION
 REGISTERED_MAX_JUDGE_ATTEMPTS = pilot_registration.MAX_JUDGE_ATTEMPTS
 REGISTERED_ENVIRONMENT_POLICY_ID = pilot_registration.ENVIRONMENT_POLICY_ID
 REGISTERED_SUBAGENT_MODEL_POLICY = pilot_registration.SUBAGENT_MODEL_POLICY
+REGISTERED_BACKGROUND_TASKS_POLICY = (
+    pilot_registration.BACKGROUND_TASKS_POLICY)
+REGISTERED_AGENT_STREAM_ACCOUNTING_POLICY = (
+    pilot_registration.AGENT_STREAM_ACCOUNTING_POLICY)
 REGISTERED_OPERATOR_IMAGE_SHA256 = pilot_registration.OPERATOR_IMAGE_SHA256
 REGISTERED_ARTIFACT_PARSER = pilot_registration.ARTIFACT_PARSER
 REGISTERED_ARTIFACT_PARSER_VERSION = pilot_registration.ARTIFACT_PARSER_VERSION
@@ -386,6 +390,10 @@ def all_docs_population(results, runs_out):
                         REGISTERED_ARTIFACT_PARSER_VERSION,
                     "subagent_model_policy":
                         REGISTERED_SUBAGENT_MODEL_POLICY,
+                    "background_tasks_policy":
+                        REGISTERED_BACKGROUND_TASKS_POLICY,
+                    "agent_stream_accounting_policy":
+                        REGISTERED_AGENT_STREAM_ACCOUNTING_POLICY,
                     "judge_output_policy":
                         REGISTERED_JUDGE_OUTPUT_POLICY,
                     "structured_output_schema_sha256":
@@ -835,6 +843,12 @@ def validate_config(config, *, allow_pending_probe=False,
          REGISTERED_MAX_JUDGE_ATTEMPTS, "judge attempt bound"),
         (runner.PILOT_V2_ENVIRONMENT_POLICY_ID,
          REGISTERED_ENVIRONMENT_POLICY_ID, "environment policy"),
+        (runner.PILOT_V2_AGENT_STREAM_ACCOUNTING_POLICY,
+         REGISTERED_AGENT_STREAM_ACCOUNTING_POLICY,
+         "agent-stream accounting policy"),
+        (runner.PILOT_V2_BACKGROUND_TASKS_POLICY,
+         REGISTERED_BACKGROUND_TASKS_POLICY,
+         "background-task policy"),
         (runner.PILOT_V2_JUDGE_RETRY_POLICY,
          REGISTERED_JUDGE_RETRY_POLICY, "judge retry policy"),
         (runner.PILOT_V2_JUDGE_OUTPUT_POLICY,

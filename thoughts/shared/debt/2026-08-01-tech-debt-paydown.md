@@ -81,12 +81,27 @@ auto_fixable_count: 7
   harness-constructed, non-ambient standard-v2 pin; version the environment
   policy and bind the exact name/source through runtime, config, probe, seal,
   run, judge, and aggregate identities.
-- [ ] Version and run both public live proofs before sealing: retain the
+- [x] Force the pinned CLI's background-task switch to `1` after environment
+  sanitization and reconcile completed-agent `SendMessage` continuations by
+  round/tool identity, same persisted model identity, branch-bound warm
+  cumulative versus cold-reset tool evidence, positive duration, and the
+  terminal registered-model ledger.
+- [x] Preserve round 10 after its one-shot subagent proof rejected the pinned
+  CLI's `Agent` event grammar; publish only the sanitized terminal digest,
+  treat its successful judge proof as historical, and create no holdout or
+  schedule in that namespace.
+- [ ] Version and run both round-11 public live proofs before sealing: retain the
   scorer/verifier calls and add one forced model-bearing child from a public
   conflicting `model: sonnet` fixture; require exact parent/child model
   parity, positive accounting, immutable raw evidence, digest-verified
   receipts, and no-model replay.
-- [ ] Register the fresh round-10 proofs, author and register six genuinely
+- [x] Reconcile split assistant events and the pinned CLI's correlated
+  `Agent` completion exactly once; bind explicit auxiliary and Agent-residual
+  policies so pre-registered control-plane tokens enter tree cost, complete
+  child cost comes from terminal registered-model usage minus root, typed
+  tool statistics and lifecycle counts reconcile, and any other residual
+  model fails closed.
+- [ ] Register the fresh round-11 proofs, author and register six genuinely
   new tasks in one atomic seal, pass the all-arm real-backend preflight, then
   run the complete 42-slot schedule, drift gate, scorer, verifier, and
   aggregate.

@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """One-shot public live probe for the pinned subagent model override.
 
-Run this before authoring the round-10 holdout.  It launches exactly one
+Run this before authoring the round-11 holdout.  It launches exactly one
 Claude session using only a tiny public plugin fixture, requires that session
-to invoke the fixture's custom subagent exactly once, and accepts the result
-only when both the parent and child stream nodes report ``claude-opus-5``
-while ``CLAUDE_CODE_SUBAGENT_MODEL`` is set to that same registered value.
+to invoke the fixture's custom subagent exactly once through the pinned
+``Agent`` stream lifecycle, and accepts the result only when both the parent
+and the correlated completion summary report ``claude-opus-5`` while
+``CLAUDE_CODE_SUBAGENT_MODEL`` is set to that same registered value.
 
 The prompt travels on stdin.  The raw stream and receipt live in the sole
 namespace derived from the prospective seal path; creating that namespace is
@@ -33,14 +34,14 @@ import runner  # noqa: E402
 import step5_operator as operator_contract  # noqa: E402
 
 
-ROUND_NAMESPACE = "holdout-v2-round10"
+ROUND_NAMESPACE = "holdout-v2-round11"
 PACKAGE_NAMESPACE = "package"
 OUTPUT_NAMESPACE = "subagent-model-live-probe"
 RECEIPT_NAME = "subagent-model-live-probe-receipt.json"
 RAW_NAME = "subagent-model-live-probe.jsonl"
 
-PROBE_VERSION = "public-subagent-model-precedence-v1"
-VALIDATION_POLICY = "exact-custom-task-lineage-and-model-v1"
+PROBE_VERSION = "public-subagent-model-precedence-v4"
+VALIDATION_POLICY = "exact-custom-agent-lifecycle-and-model-v4"
 EXPECTED_MODEL = "claude-opus-5"
 EXPECTED_EFFORT = "high"
 SUBAGENT_MODEL_ENV = "CLAUDE_CODE_SUBAGENT_MODEL"
@@ -54,6 +55,11 @@ FIXTURE_SHA256 = (
     "635ad14033244b176dc794b8140dfcc3c6b603201c5f7054b36f7a139de60786"
 )
 EXPECTED_SUBAGENT_TYPE = "rpa-subagent-model-probe:model-probe-child"
+EXPECTED_SUBAGENT_DESCRIPTION = "Public model probe child"
+EXPECTED_AUXILIARY_MODELS = frozenset(
+    pilot_registration.AGENT_STREAM_ACCOUNTING_POLICY["auxiliary_models"])
+EXPECTED_CANONICAL_MODELS = dict(
+    pilot_registration.AGENT_STREAM_ACCOUNTING_POLICY["canonical_models"])
 
 CHILD_MARKER = "PUBLIC-SUBAGENT-MODEL-PROBE-CHILD-OK"
 PARENT_MARKER = "PUBLIC-SUBAGENT-MODEL-PROBE-PARENT-OK"
@@ -63,14 +69,15 @@ CHILD_TASK_PROMPT = (
 )
 PUBLIC_PROMPT = (
     "This is a public synthetic runtime probe, not an evaluation. No holdout "
-    "material exists in this session. Use the Task tool exactly once with "
-    f"subagent_type `{EXPECTED_SUBAGENT_TYPE}` and prompt exactly: "
+    "material exists in this session. Use the Agent tool exactly once with "
+    f"description `{EXPECTED_SUBAGENT_DESCRIPTION}`, subagent_type "
+    f"`{EXPECTED_SUBAGENT_TYPE}`, and prompt exactly: "
     f"{CHILD_TASK_PROMPT}\n"
     f"After that child returns, respond exactly {PARENT_MARKER} and nothing "
     "else. Do not invoke any other tool."
 )
 
-# The parent needs Task and nothing else.  The raw-stream validator separately
+# The parent needs Agent and nothing else.  The raw-stream validator separately
 # rejects every tool_use other than the one exact custom-agent launch, so this
 # remains fail-closed if a CLI adds a tool not covered by this public deny list.
 PROBE_SETTINGS = {
@@ -132,7 +139,7 @@ def _ordinary_directory(path, *, mode=None):
 
 
 def canonical_output_dir(config):
-    """Derive the sole probe namespace from the round-10 seal path."""
+    """Derive the sole probe namespace from the round-11 seal path."""
     raw = config.get("seal_manifest")
     if not isinstance(raw, str) or not raw.strip():
         raise ProbeError("subagent-model probe requires seal_manifest")
@@ -143,11 +150,11 @@ def canonical_output_dir(config):
             or supplied_package.name != PACKAGE_NAMESPACE
             or supplied_round.name != ROUND_NAMESPACE):
         raise ProbeError(
-            "seal_manifest is outside the canonical round-10 namespace")
+            "seal_manifest is outside the canonical round-11 namespace")
     if (not _ordinary_directory(supplied_round)
             or not _ordinary_directory(supplied_package)):
         raise ProbeError(
-            "canonical round-10 package directories are missing or unsafe")
+            "canonical round-11 package directories are missing or unsafe")
     manifest = supplied_manifest.resolve()
     package = manifest.parent
     round_root = package.parent
@@ -214,8 +221,14 @@ def _execution_identity(config):
     if (pilot_registration.MODEL != EXPECTED_MODEL
             or pilot_registration.EFFORT != EXPECTED_EFFORT
             or pilot_registration.SUBAGENT_MODEL_ENV != SUBAGENT_MODEL_ENV
+            or pilot_registration.BACKGROUND_TASKS_ENV
+            != runner.PILOT_V2_BACKGROUND_TASKS_ENV
+            or pilot_registration.BACKGROUND_TASKS_VALUE
+            != runner.PILOT_V2_BACKGROUND_TASKS_VALUE
             or pilot_registration.SUBAGENT_MODEL_LIVE_PROBE_VERSION
-            != PROBE_VERSION):
+            != PROBE_VERSION
+            or frozenset(pilot_registration.AGENT_STREAM_ACCOUNTING_POLICY.get(
+                "auxiliary_models", ())) != EXPECTED_AUXILIARY_MODELS):
         raise ProbeError("public model/effort registration differs from probe")
     backend_cmd = config.get("backend_cmd")
     if not isinstance(backend_cmd, list) or not backend_cmd:
@@ -259,7 +272,14 @@ def _execution_identity(config):
         },
         "subagent_model_policy": dict(
             pilot_registration.SUBAGENT_MODEL_POLICY),
+        "background_tasks_policy": dict(
+            pilot_registration.BACKGROUND_TASKS_POLICY),
+        "agent_stream_accounting_policy": dict(
+            pilot_registration.AGENT_STREAM_ACCOUNTING_POLICY),
         "expected_subagent_type": EXPECTED_SUBAGENT_TYPE,
+        "expected_subagent_description": EXPECTED_SUBAGENT_DESCRIPTION,
+        "expected_auxiliary_models": sorted(EXPECTED_AUXILIARY_MODELS),
+        "expected_canonical_models": dict(EXPECTED_CANONICAL_MODELS),
         "fixture_declared_model": FIXTURE_DECLARED_MODEL,
         "fixture_sha256": fixture_sha256,
         "prompt_sha256": _sha256_bytes(PUBLIC_PROMPT.encode("utf-8")),
@@ -306,37 +326,260 @@ def _strict_events(raw_text):
     return events
 
 
+def _nonnegative_int(value, label):
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ProbeError(f"subagent-model probe {label} is invalid")
+    return value
+
+
+def _usage_categories(usage, label):
+    if not isinstance(usage, dict):
+        raise ProbeError(f"subagent-model probe {label} is invalid")
+    categories = {}
+    for key in (
+            "input_tokens", "cache_creation_input_tokens",
+            "cache_read_input_tokens", "output_tokens"):
+        value = usage.get(key)
+        if key in {
+                "cache_creation_input_tokens", "cache_read_input_tokens"} \
+                and value is None:
+            value = 0
+        categories[key] = _nonnegative_int(value, f"{label} {key}")
+    return categories
+
+
+def _model_usage_categories(usage, label):
+    if not isinstance(usage, dict):
+        raise ProbeError(f"subagent-model probe {label} is invalid")
+    return {
+        target: _nonnegative_int(usage.get(source), f"{label} {source}")
+        for target, source in (
+            ("input_tokens", "inputTokens"),
+            ("cache_creation_input_tokens", "cacheCreationInputTokens"),
+            ("cache_read_input_tokens", "cacheReadInputTokens"),
+            ("output_tokens", "outputTokens"),
+        )
+    }
+
+
+def _one_text_message(message, expected, label):
+    if not isinstance(message, dict) or message.get("role") != "user":
+        raise ProbeError(f"subagent-model probe {label} message is invalid")
+    if message.get("content") != [{"type": "text", "text": expected}]:
+        raise ProbeError(f"subagent-model probe {label} prompt is invalid")
+
+
+def _agent_completion_metadata(agent_id, total_tokens, tool_uses, duration_ms):
+    """Exact public CLI wrapper text correlated with the structured result."""
+    return (
+        f"agentId: {agent_id} (use SendMessage with to: '{agent_id}', "
+        "summary: '<5-10 word recap>' to continue this agent)\n"
+        f"<usage>subagent_tokens: {total_tokens}\n"
+        f"tool_uses: {tool_uses}\n"
+        f"duration_ms: {duration_ms}</usage>"
+    )
+
+
 def _validated_observation(raw_text, config):
     events = _strict_events(raw_text)
     session_id = None
     init_models = []
-    nodes = []
-    task_launches = []
-    child_ids = set()
-    child_texts = []
+    agent_launches = []
+    agent_launch_message_ids = []
+    task_started = []
+    child_starts = []
+    task_updated = []
+    task_notifications = []
+    task_progress = []
+    agent_progress = []
+    api_retries = []
+    tool_results = []
     parent_texts = []
     result_events = []
-    unexpected_tools = []
+    lifecycle_positions = {}
 
-    for event in events:
-        if "session_id" in event:
-            candidate = event["session_id"]
-            if not isinstance(candidate, str) or not candidate.strip():
-                raise ProbeError("subagent-model probe has invalid session identity")
-            if session_id is None:
-                session_id = candidate
-            elif candidate != session_id:
-                raise ProbeError("subagent-model probe mixes session identities")
+    for position, event in enumerate(events):
+        candidate = event.get("session_id")
+        if not isinstance(candidate, str) or not candidate.strip():
+            raise ProbeError("subagent-model probe has invalid session identity")
+        if session_id is None:
+            session_id = candidate
+        elif candidate != session_id:
+            raise ProbeError("subagent-model probe mixes session identities")
 
         if event.get("type") == "system" and event.get("subtype") == "init":
             model = event.get("model")
             if not isinstance(model, str) or not model:
                 raise ProbeError("subagent-model probe init lacks a model")
             init_models.append(model)
+            lifecycle_positions["init"] = position
+            continue
+        if event.get("type") == "system":
+            subtype = event.get("subtype")
+            if subtype == "thinking_tokens":
+                _nonnegative_int(
+                    event.get("estimated_tokens"), "thinking token estimate")
+                _nonnegative_int(
+                    event.get("estimated_tokens_delta"),
+                    "thinking token delta")
+            elif subtype == "task_started":
+                task_started.append(event)
+                lifecycle_positions["task_started"] = position
+            elif subtype == "task_updated":
+                task_updated.append(event)
+                lifecycle_positions["task_updated"] = position
+            elif subtype == "task_notification":
+                task_notifications.append(event)
+                lifecycle_positions["task_notification"] = position
+            elif subtype == "task_progress":
+                required = {
+                    "type", "subtype", "task_id", "description", "usage",
+                    "uuid", "session_id",
+                }
+                optional = {
+                    "tool_use_id", "subagent_type", "last_tool_name",
+                    "summary",
+                }
+                usage = event.get("usage")
+                if (not required.issubset(event)
+                        or not set(event).issubset(required | optional)
+                        or not isinstance(event.get("task_id"), str)
+                        or not event["task_id"]
+                        or not isinstance(event.get("description"), str)
+                        or not event["description"]
+                        or not isinstance(event.get("uuid"), str)
+                        or not event["uuid"]
+                        or not isinstance(usage, dict)
+                        or set(usage)
+                        != {"total_tokens", "tool_uses", "duration_ms"}):
+                    raise ProbeError(
+                        "subagent-model probe task progress is invalid")
+                for key in ("total_tokens", "tool_uses", "duration_ms"):
+                    _nonnegative_int(usage.get(key), f"task progress {key}")
+                if (usage["tool_uses"] != 0
+                        or ("tool_use_id" in event
+                            and (not isinstance(event["tool_use_id"], str)
+                                 or not event["tool_use_id"]))
+                        or ("subagent_type" in event
+                            and (not isinstance(event["subagent_type"], str)
+                                 or not event["subagent_type"]))
+                        or any(key in event
+                               and not isinstance(event[key], str)
+                               for key in ("last_tool_name", "summary"))):
+                    raise ProbeError(
+                        "subagent-model probe task progress is invalid")
+                task_progress.append((position, event))
+            elif subtype == "api_retry":
+                required = {
+                    "type", "subtype", "attempt", "max_retries",
+                    "retry_delay_ms", "error_status", "error",
+                    "session_id", "uuid",
+                }
+                error_status = event.get("error_status")
+                if (set(event) != required
+                        or _nonnegative_int(
+                            event.get("attempt"),
+                            "API retry attempt") <= 0
+                        or _nonnegative_int(
+                            event.get("max_retries"),
+                            "API retry maximum") <= 0
+                        or event["attempt"] > event["max_retries"]
+                        or _nonnegative_int(
+                            event.get("retry_delay_ms"),
+                            "API retry delay") < 0
+                        or (error_status is not None
+                            and (isinstance(error_status, bool)
+                                 or not isinstance(error_status, int)))
+                        or not isinstance(event.get("error"), str)
+                        or not event["error"]
+                        or not isinstance(event.get("uuid"), str)
+                        or not event["uuid"]):
+                    raise ProbeError(
+                        "subagent-model probe API retry is invalid")
+                api_retries.append((position, event))
+            else:
+                raise ProbeError(
+                    "subagent-model probe emitted an unregistered system event")
+            continue
+        if event.get("type") == "rate_limit_event":
+            if not isinstance(event.get("rate_limit_info"), dict):
+                raise ProbeError(
+                    "subagent-model probe rate-limit event is invalid")
+            continue
+        if event.get("type") == "tool_progress":
+            required = {
+                "type", "tool_use_id", "tool_name", "parent_tool_use_id",
+                "elapsed_time_seconds", "uuid", "session_id",
+            }
+            optional = {
+                "task_id", "heartbeat", "subagent_type", "subagent_retry",
+            }
+            if (not required.issubset(event)
+                    or not set(event).issubset(required | optional)
+                    or event.get("tool_name") != "Agent"
+                    or not isinstance(event.get("tool_use_id"), str)
+                    or not event["tool_use_id"]
+                    or event.get("parent_tool_use_id") is not None
+                    or _nonnegative_int(
+                        event.get("elapsed_time_seconds"),
+                        "Agent progress elapsed time") != 0
+                    or not isinstance(event.get("uuid"), str)
+                    or not event["uuid"]
+                    or event.get("subagent_type")
+                    != EXPECTED_SUBAGENT_TYPE
+                    or "task_id" in event or "heartbeat" in event):
+                raise ProbeError(
+                    "subagent-model probe Agent progress is invalid")
+            retry = event.get("subagent_retry")
+            if retry is not None:
+                retry_keys = {
+                    "agent_id", "attempt", "max_retries", "retry_delay_ms",
+                    "error_status", "error_category",
+                }
+                error_status = retry.get("error_status") \
+                    if isinstance(retry, dict) else False
+                if (not isinstance(retry, dict)
+                        or set(retry) != retry_keys
+                        or not isinstance(retry.get("agent_id"), str)
+                        or not retry["agent_id"]
+                        or _nonnegative_int(
+                            retry.get("attempt"), "Agent retry attempt") <= 0
+                        or _nonnegative_int(
+                            retry.get("max_retries"),
+                            "Agent retry maximum") <= 0
+                        or retry["attempt"] > retry["max_retries"]
+                        or _nonnegative_int(
+                            retry.get("retry_delay_ms"),
+                            "Agent retry delay") < 0
+                        or (error_status is not None
+                            and (isinstance(error_status, bool)
+                                 or not isinstance(error_status, int)))
+                        or not isinstance(
+                            retry.get("error_category"), str)
+                        or not retry["error_category"]):
+                    raise ProbeError(
+                        "subagent-model probe Agent retry is invalid")
+            agent_progress.append((position, event))
+            continue
         if event.get("type") == "result":
             result_events.append(event)
-        if event.get("type") != "assistant":
+            lifecycle_positions["result"] = position
             continue
+        if event.get("type") == "user":
+            if "tool_use_result" in event:
+                tool_results.append(event)
+                lifecycle_positions["tool_result"] = position
+            elif ("subagent_type" in event
+                  or "task_description" in event):
+                child_starts.append(event)
+                lifecycle_positions["child_start"] = position
+            else:
+                raise ProbeError(
+                    "subagent-model probe emitted an unregistered user event")
+            continue
+        if event.get("type") != "assistant":
+            raise ProbeError(
+                "subagent-model probe emitted an unregistered stream event")
 
         message = event.get("message")
         if not isinstance(message, dict):
@@ -345,42 +588,52 @@ def _validated_observation(raw_text, config):
         if (not isinstance(content, list)
                 or any(not isinstance(block, dict) for block in content)):
             raise ProbeError("subagent-model probe assistant content is invalid")
-        parent_id = event.get("parent_tool_use_id")
-        if parent_id is not None and (
-                not isinstance(parent_id, str) or not parent_id):
-            raise ProbeError("subagent-model probe child identity is invalid")
-
-        # Client-generated synthetic notices are not model evidence, but a
-        # synthetic notice must not be allowed to smuggle launch evidence.
-        synthetic = message.get("model") == "<synthetic>"
+        if event.get("parent_tool_use_id") is not None:
+            raise ProbeError(
+                "subagent-model probe mixed Agent-summary and child-sidechain "
+                "schemas")
+        if message.get("model") != EXPECTED_MODEL:
+            raise ProbeError(
+                "subagent-model probe parent model differs from registration")
+        if (not isinstance(message.get("id"), str)
+                or not message["id"]
+                or not isinstance(event.get("request_id"), str)
+                or not event["request_id"]):
+            raise ProbeError(
+                "subagent-model probe assistant identity is invalid")
+        _usage_categories(message.get("usage"), "assistant usage")
         for block in content:
             if block.get("type") == "tool_use":
-                if (not synthetic and parent_id is None
-                        and block.get("name") == "Task"):
-                    task_launches.append(block)
-                else:
-                    unexpected_tools.append(block.get("name"))
-            elif not synthetic and block.get("type") == "text":
+                if block.get("name") != "Agent":
+                    raise ProbeError(
+                        "subagent-model probe used an unregistered tool")
+                agent_launches.append(block)
+                agent_launch_message_ids.append(message["id"])
+                lifecycle_positions["agent_launch"] = position
+            elif block.get("type") == "text":
                 text = block.get("text")
                 if not isinstance(text, str):
                     raise ProbeError("subagent-model probe text is invalid")
                 if text:
-                    if parent_id is None:
-                        parent_texts.append(text)
-                    else:
-                        child_texts.append(text)
-        if synthetic:
-            continue
-        try:
-            node = runner._node_from_event(event)
-        except runner.InfraFailure as exc:
-            raise ProbeError("subagent-model probe accounting event is invalid") \
-                from exc
-        if node is None:
-            raise ProbeError("subagent-model probe lost a model-bearing node")
-        nodes.append(node)
-        if parent_id is not None:
-            child_ids.add(parent_id)
+                    parent_texts.append(text)
+                    lifecycle_positions["parent_marker"] = position
+            elif block.get("type") == "thinking":
+                if (set(block) != {"type", "thinking", "signature"}
+                        or not isinstance(block.get("thinking"), str)
+                        or not isinstance(block.get("signature"), str)
+                        or not block["signature"]):
+                    raise ProbeError(
+                        "subagent-model probe thinking block is invalid")
+            elif block.get("type") == "redacted_thinking":
+                if (set(block) != {"type", "data"}
+                        or not isinstance(block.get("data"), str)
+                        or not block["data"]):
+                    raise ProbeError(
+                        "subagent-model probe redacted thinking block is "
+                        "invalid")
+            else:
+                raise ProbeError(
+                    "subagent-model probe assistant content is unregistered")
 
     if session_id is None:
         raise ProbeError("subagent-model probe stream has no session identity")
@@ -397,29 +650,229 @@ def _validated_observation(raw_text, config):
     result = terminal.get("result")
     if result != PARENT_MARKER or parent_texts != [PARENT_MARKER]:
         raise ProbeError("subagent-model probe parent marker is invalid")
-    if unexpected_tools:
-        raise ProbeError("subagent-model probe used an unregistered tool")
-    if len(task_launches) != 1:
-        raise ProbeError("subagent-model probe requires exactly one Task launch")
+    if len(agent_launches) != 1:
+        raise ProbeError("subagent-model probe requires exactly one Agent launch")
 
-    task_launch = task_launches[0]
-    task_id = task_launch.get("id")
-    task_input = task_launch.get("input")
-    if (not isinstance(task_id, str) or not task_id
-            or not isinstance(task_input, dict)
-            or task_input.get("subagent_type") != EXPECTED_SUBAGENT_TYPE):
+    agent_launch = agent_launches[0]
+    tool_use_id = agent_launch.get("id")
+    agent_input = agent_launch.get("input")
+    if (set(agent_launch) != {"type", "id", "name", "input", "caller"}
+            or agent_launch.get("caller") != {"type": "direct"}
+            or not isinstance(tool_use_id, str) or not tool_use_id
+            or not isinstance(agent_input, dict)
+            or set(agent_input) != {
+                "description", "prompt",
+                "subagent_type"}
+            or agent_input.get("description")
+            != EXPECTED_SUBAGENT_DESCRIPTION
+            or agent_input.get("subagent_type") != EXPECTED_SUBAGENT_TYPE):
         raise ProbeError("subagent-model probe launched the wrong custom agent")
-    child_prompt = task_input.get("prompt")
+    child_prompt = agent_input.get("prompt")
     if child_prompt != CHILD_TASK_PROMPT:
-        raise ProbeError("subagent-model probe Task prompt is invalid")
-    if child_ids != {task_id}:
-        raise ProbeError("subagent-model probe parent/child lineage is invalid")
-    if child_texts != [CHILD_MARKER]:
-        raise ProbeError("subagent-model probe child marker is invalid")
+        raise ProbeError("subagent-model probe Agent prompt is invalid")
 
-    main_nodes = [node for node in nodes if not node["subagent"]]
-    child_nodes = [node for node in nodes if node["subagent"]]
-    if not main_nodes or not child_nodes:
+    if (len(task_started) != 1 or len(child_starts) != 1
+            or len(task_updated) != 1 or len(task_notifications) != 1
+            or len(tool_results) != 1):
+        raise ProbeError(
+            "subagent-model probe requires one complete Agent lifecycle")
+    started = task_started[0]
+    task_id = started.get("task_id")
+    if (not isinstance(task_id, str) or not task_id
+            or started.get("tool_use_id") != tool_use_id
+            or started.get("task_type") != "local_agent"
+            or started.get("subagent_type") != EXPECTED_SUBAGENT_TYPE
+            or started.get("description") != EXPECTED_SUBAGENT_DESCRIPTION
+            or started.get("prompt") != CHILD_TASK_PROMPT):
+        raise ProbeError("subagent-model probe task_started lineage is invalid")
+
+    child_start = child_starts[0]
+    if (child_start.get("parent_tool_use_id") != tool_use_id
+            or child_start.get("subagent_type") != EXPECTED_SUBAGENT_TYPE
+            or child_start.get("task_description")
+            != EXPECTED_SUBAGENT_DESCRIPTION):
+        raise ProbeError("subagent-model probe child-start lineage is invalid")
+    _one_text_message(
+        child_start.get("message"), CHILD_TASK_PROMPT, "child-start")
+
+    updated = task_updated[0]
+    patch = updated.get("patch")
+    if (updated.get("task_id") != task_id
+            or not isinstance(patch, dict)
+            or set(patch) != {"status", "end_time"}
+            or patch.get("status") != "completed"):
+        raise ProbeError("subagent-model probe task_updated event is invalid")
+    _nonnegative_int(patch.get("end_time"), "task end time")
+
+    notification = task_notifications[0]
+    notification_usage = notification.get("usage")
+    if (notification.get("task_id") != task_id
+            or notification.get("tool_use_id") != tool_use_id
+            or notification.get("status") != "completed"
+            or notification.get("summary") != CHILD_MARKER
+            or not isinstance(notification.get("output_file"), str)
+            or not notification["output_file"]
+            or not isinstance(notification_usage, dict)
+            or set(notification_usage)
+            != {"total_tokens", "tool_uses", "duration_ms"}):
+        raise ProbeError(
+            "subagent-model probe task_notification event is invalid")
+    for key in ("total_tokens", "tool_uses", "duration_ms"):
+        _nonnegative_int(notification_usage.get(key), f"notification {key}")
+    if notification_usage["tool_uses"] != 0:
+        raise ProbeError("subagent-model probe child used an unexpected tool")
+
+    if agent_progress:
+        progress_ids = {
+            progress["tool_use_id"] for _position, progress in agent_progress}
+        if (len(progress_ids) != 1
+                or next(iter(progress_ids))
+                != f"agent_{agent_launch_message_ids[0]}"
+                or agent_progress[-1][1].get("subagent_retry") is not None
+                or any(progress.get("subagent_retry") is None
+                       for _position, progress in agent_progress[:-1])):
+            raise ProbeError(
+                "subagent-model probe Agent retry sequence is invalid")
+        retry_attempts = []
+        for progress_position, progress in agent_progress:
+            retry = progress.get("subagent_retry")
+            if (retry is not None
+                    and retry.get("agent_id") != task_id
+                    or not (lifecycle_positions["child_start"]
+                            < progress_position
+                            < lifecycle_positions["task_updated"])):
+                raise ProbeError(
+                    "subagent-model probe Agent progress lineage is invalid")
+            if retry is not None:
+                retry_attempts.append(retry["attempt"])
+        if (not retry_attempts
+                or retry_attempts != sorted(set(retry_attempts))):
+            raise ProbeError(
+                "subagent-model probe Agent retry attempts are invalid")
+
+    for progress_position, progress in task_progress:
+        if (progress.get("task_id") != task_id
+                or progress.get("tool_use_id", tool_use_id) != tool_use_id
+                or progress.get("subagent_type", EXPECTED_SUBAGENT_TYPE)
+                != EXPECTED_SUBAGENT_TYPE
+                or not (lifecycle_positions["child_start"]
+                        < progress_position
+                        < lifecycle_positions["task_updated"])):
+            raise ProbeError(
+                "subagent-model probe task progress lineage is invalid")
+
+    tool_result_event = tool_results[0]
+    if tool_result_event.get("parent_tool_use_id") is not None:
+        raise ProbeError("subagent-model probe root tool-result lineage is invalid")
+    tool_result_message = tool_result_event.get("message")
+    if (not isinstance(tool_result_message, dict)
+            or tool_result_message.get("role") != "user"
+            or not isinstance(tool_result_message.get("content"), list)
+            or len(tool_result_message["content"]) != 1):
+        raise ProbeError("subagent-model probe root tool-result is invalid")
+    result_block = tool_result_message["content"][0]
+    if not isinstance(result_block, dict):
+        raise ProbeError("subagent-model probe root tool-result is invalid")
+    wrapper_content = result_block.get("content")
+    if (result_block.get("type") != "tool_result"
+            or result_block.get("tool_use_id") != tool_use_id
+            or not isinstance(wrapper_content, list)
+            or not wrapper_content
+            or wrapper_content[0]
+            != {"type": "text", "text": CHILD_MARKER}
+            or any(not isinstance(item, dict)
+                   or item.get("type") != "text"
+                   or not isinstance(item.get("text"), str)
+                   for item in wrapper_content)):
+        raise ProbeError("subagent-model probe root tool-result is invalid")
+
+    summary = tool_result_event.get("tool_use_result")
+    if (not isinstance(summary, dict)
+            or summary.get("status") != "completed"
+            or summary.get("prompt") != CHILD_TASK_PROMPT
+            or summary.get("agentId") != task_id
+            or summary.get("agentType") != EXPECTED_SUBAGENT_TYPE
+            or summary.get("content")
+            != [{"type": "text", "text": CHILD_MARKER}]
+            or summary.get("resolvedModel") != EXPECTED_MODEL):
+        raise ProbeError(
+            "subagent-model probe Agent completion summary is invalid")
+    _nonnegative_int(summary.get("totalDurationMs"), "child duration")
+    if _nonnegative_int(
+            summary.get("totalToolUseCount"), "child tool count") != 0:
+        raise ProbeError("subagent-model probe child used an unexpected tool")
+    child_usage = _usage_categories(summary.get("usage"), "child usage")
+    if (_nonnegative_int(summary.get("totalTokens"), "child totalTokens")
+            != sum(child_usage.values())):
+        raise ProbeError(
+            "subagent-model probe child totalTokens differs from usage")
+    models_used = summary.get("modelsUsed")
+    if models_used is not None and (
+            not isinstance(models_used, list) or not models_used
+            or any(model != EXPECTED_MODEL for model in models_used)):
+        raise ProbeError(
+            "subagent-model probe child modelsUsed differs from registration")
+    expected_wrapper = [
+        {"type": "text", "text": CHILD_MARKER},
+        {
+            "type": "text",
+            "text": _agent_completion_metadata(
+                summary["agentId"], summary["totalTokens"],
+                summary["totalToolUseCount"], summary["totalDurationMs"]),
+        },
+    ]
+    if wrapper_content != expected_wrapper:
+        raise ProbeError(
+            "subagent-model probe wrapper metadata differs from completion")
+
+    expected_order = [
+        "init", "agent_launch", "task_started", "child_start",
+        "task_updated", "task_notification", "tool_result",
+        "parent_marker", "result",
+    ]
+    if (set(lifecycle_positions) != set(expected_order)
+            or [lifecycle_positions[key] for key in expected_order]
+            != sorted(lifecycle_positions.values())):
+        raise ProbeError("subagent-model probe Agent lifecycle is out of order")
+    if any(not (lifecycle_positions["init"] < position
+               < lifecycle_positions["result"])
+           for position, _event in api_retries):
+        raise ProbeError(
+            "subagent-model probe API retry is outside the live lifecycle")
+
+    model_usage = terminal.get("modelUsage")
+    if not isinstance(model_usage, dict) or EXPECTED_MODEL not in model_usage:
+        raise ProbeError("subagent-model probe terminal modelUsage is invalid")
+    unexpected_models = (
+        set(model_usage) - {EXPECTED_MODEL} - EXPECTED_AUXILIARY_MODELS)
+    if unexpected_models:
+        raise ProbeError(
+            "subagent-model probe terminal modelUsage has an unregistered model")
+    for model, usage in model_usage.items():
+        categories = _model_usage_categories(
+            usage, f"terminal modelUsage {model}")
+        if (usage.get("canonicalModel") != EXPECTED_CANONICAL_MODELS[model]
+                or sum(categories.values()) <= 0):
+            raise ProbeError(
+                "subagent-model probe terminal modelUsage entry is invalid")
+
+    try:
+        parsed_session, nodes, parsed_result = runner.parse_transcript(
+            raw_text,
+            registered_model=EXPECTED_MODEL,
+            protocol_version=runner.PILOT_V2_PROTOCOL_VERSION,
+        )
+    except (TypeError, runner.InfraFailure) as exc:
+        raise ProbeError("subagent-model probe accounting event is invalid") \
+            from exc
+    if parsed_session != session_id or parsed_result != PARENT_MARKER:
+        raise ProbeError("subagent-model probe reconciled result is invalid")
+    main_nodes = [
+        node for node in nodes
+        if not node.get("subagent") and not node.get("auxiliary")]
+    child_nodes = [node for node in nodes if node.get("subagent")]
+    auxiliary_nodes = [node for node in nodes if node.get("auxiliary")]
+    if not main_nodes or len(child_nodes) != 1:
         raise ProbeError("subagent-model probe lacks parent or child evidence")
     try:
         runner.validate_models(nodes, EXPECTED_MODEL)
@@ -442,28 +895,38 @@ def _validated_observation(raw_text, config):
         "backend_version_observed": config.get("backend_version"),
         "validation_policy": VALIDATION_POLICY,
         "expected_subagent_type": EXPECTED_SUBAGENT_TYPE,
+        "expected_subagent_description": EXPECTED_SUBAGENT_DESCRIPTION,
         "fixture_declared_model": FIXTURE_DECLARED_MODEL,
         "environment_override": {
             "name": SUBAGENT_MODEL_ENV,
             "value": EXPECTED_MODEL,
         },
+        "background_tasks_override": {
+            "name": runner.PILOT_V2_BACKGROUND_TASKS_ENV,
+            "value": runner.PILOT_V2_BACKGROUND_TASKS_VALUE,
+        },
         "reported_models": {
             "parent": sorted({node["model"] for node in main_nodes}),
             "child": sorted({node["model"] for node in child_nodes}),
+            "auxiliary": sorted({
+                node["model"] for node in auxiliary_nodes}),
         },
         "node_counts": {
             "parent": len(main_nodes),
             "child": len(child_nodes),
+            "auxiliary": len(auxiliary_nodes),
         },
         "lineage": {
-            "task_launches": accounting["subagent_launches"],
+            "agent_launches": accounting["subagent_launches"],
             "child_identities": accounting["subagent_children"],
-            "task_tool_use_id_sha256": _sha256_bytes(task_id.encode("utf-8")),
+            "agent_tool_use_id_sha256": _sha256_bytes(
+                tool_use_id.encode("utf-8")),
+            "task_id_sha256": _sha256_bytes(task_id.encode("utf-8")),
         },
         "effort_capture": effort_capture,
         "accounting": accounting,
         "prompt_sha256": _sha256_bytes(PUBLIC_PROMPT.encode("utf-8")),
-        "task_prompt_sha256": _sha256_bytes(child_prompt.encode("utf-8")),
+        "agent_prompt_sha256": _sha256_bytes(child_prompt.encode("utf-8")),
         "child_response_sha256": _sha256_bytes(CHILD_MARKER.encode("utf-8")),
         "parent_response_sha256": _sha256_bytes(PARENT_MARKER.encode("utf-8")),
     }
@@ -657,7 +1120,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--config", required=True,
-        help="filled runner config for holdout-v2-round10")
+        help="filled runner config for holdout-v2-round11")
     parser.add_argument(
         "--verify", action="store_true",
         help="only revalidate the immutable existing receipt")

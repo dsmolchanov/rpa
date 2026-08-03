@@ -28,7 +28,7 @@ import step5_operator as operator_contract  # noqa: E402
 
 
 ROLES = ("scorer", "verifier")
-ROUND_NAMESPACE = "holdout-v2-round10"
+ROUND_NAMESPACE = "holdout-v2-round11"
 PACKAGE_NAMESPACE = "package"
 OUTPUT_NAMESPACE = "judge-live-probe"
 RECEIPT_NAME = "judge-structured-output-live-probe.json"
@@ -263,7 +263,9 @@ def _public_prompt(role):
 def _validated_observation(role, raw_text, config):
     (session_id, nodes, response, structured_output,
      defects) = runner._parse_judge_stream_tolerant(
-         raw_text, require_structured_output=True)
+         raw_text, require_structured_output=True,
+         registered_model=config["judge_model"],
+         protocol_version=runner.PILOT_V2_PROTOCOL_VERSION)
     if not defects:
         try:
             runner.validate_models(nodes, config["judge_model"])
@@ -441,7 +443,7 @@ def receipt_sha256(config):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True,
-                        help="filled runner config for holdout-v2-round10")
+                        help="filled runner config for holdout-v2-round11")
     parser.add_argument("--verify", action="store_true",
                         help="only revalidate an existing receipt")
     args = parser.parse_args()

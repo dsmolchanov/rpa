@@ -64,7 +64,7 @@ OPERATOR_IMAGE_SHA256 = (
 ARTIFACT_PARSER = "pyyaml"
 ARTIFACT_PARSER_VERSION = "6.0.2"
 ENVIRONMENT_POLICY_ID = (
-    "claude-cli-minimal-env-v3-subagent-model-pin-pyyaml-6.0.2"
+    "claude-cli-minimal-env-v4-sync-agents-pyyaml-6.0.2"
 )
 SUBAGENT_MODEL_ENV = "CLAUDE_CODE_SUBAGENT_MODEL"
 SUBAGENT_MODEL_POLICY_ID = "registered-session-model-v1"
@@ -73,13 +73,47 @@ SUBAGENT_MODEL_POLICY = {
     "environment_variable": SUBAGENT_MODEL_ENV,
     "source": "registered-session-model",
 }
-SUBAGENT_MODEL_LIVE_PROBE_VERSION = "public-subagent-model-precedence-v1"
+BACKGROUND_TASKS_ENV = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"
+BACKGROUND_TASKS_VALUE = "1"
+BACKGROUND_TASKS_POLICY = {
+    "id": "registered-synchronous-agent-lifecycle-v1",
+    "environment_variable": BACKGROUND_TASKS_ENV,
+    "value": BACKGROUND_TASKS_VALUE,
+    "source": "harness-injected",
+}
+SUBAGENT_MODEL_LIVE_PROBE_VERSION = "public-subagent-model-precedence-v4"
 PENDING_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256 = "0" * 64
 PENDING_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256 = "0" * 64
 REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256 = (
     PENDING_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256)
 REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256 = (
     PENDING_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256)
+
+AGENT_STREAM_ACCOUNTING_POLICY = {
+    "id": "claude-cli-agent-stream-accounting-v4",
+    "assistant_identity": [
+        "session_id", "parent_tool_use_id", "message.id", "request_id"],
+    "delegation_tools": ["Task", "Agent"],
+    "root_usage_source": "terminal-result-usage-authoritative",
+    "assistant_usage_role": "partial-stream-fallback-only",
+    "agent_completion_usage_role": "last-child-turn-evidence-only",
+    "complete_agent_usage_source": (
+        "terminal-registered-model-minus-root-residual"),
+    "tool_using_agent_without_terminal": "fail-closed",
+    "agent_tool_stats": "typed-recursive-sidechain-exact-cli-2.1.220",
+    "agent_continuation": (
+        "same-agent-sendmessage-sync-branch-tools-v4"),
+    "continuation_model_evidence": (
+        "persisted-agent-model-plus-registered-terminal-ledger"),
+    "non_agent_task_lifecycle": "correlated-observed-tool-v1",
+    "registered_model_reconciliation": "exact-terminal-model-usage",
+    "auxiliary_models": ["claude-haiku-4-5-20251001"],
+    "canonical_models": {
+        "claude-opus-5": "claude-opus-5",
+        "claude-haiku-4-5-20251001": "claude-haiku-4-5",
+    },
+    "tree_includes_auxiliary": True,
+}
 
 SANDBOX_TAIL = (
     "--confine-to", "{workdir}", "--profile", "{profile}", "--",
@@ -182,7 +216,7 @@ def seal_registration_pending():
 def standard_v2_runtime_binding():
     """Return the canonical path-free registration embedded in every seal."""
     return {
-        "registration_version": "standard-v2-runtime-v2",
+        "registration_version": "standard-v2-runtime-v4",
         "frozen_candidate_sha": FROZEN_CANDIDATE_SHA,
         "protocol_version": PROTOCOL_VERSION,
         "nonstandard_config": NONSTANDARD_CONFIG,
@@ -214,6 +248,9 @@ def standard_v2_runtime_binding():
         "artifact_parser_version": ARTIFACT_PARSER_VERSION,
         "environment_policy_id": ENVIRONMENT_POLICY_ID,
         "subagent_model_policy": dict(SUBAGENT_MODEL_POLICY),
+        "background_tasks_policy": dict(BACKGROUND_TASKS_POLICY),
+        "agent_stream_accounting_policy": dict(
+            AGENT_STREAM_ACCOUNTING_POLICY),
         "subagent_model_live_probe": subagent_model_live_probe_binding(),
         "drift_fetch_cmd": list(DRIFT_FETCH_CMD),
         "sandbox": {

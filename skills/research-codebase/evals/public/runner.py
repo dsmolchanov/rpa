@@ -197,6 +197,12 @@ PROGRESS_HEARTBEAT_STAGES = frozenset({
 PILOT_V2_ENVIRONMENT_POLICY_ID = pilot_registration.ENVIRONMENT_POLICY_ID
 PILOT_V2_SUBAGENT_MODEL_ENV = pilot_registration.SUBAGENT_MODEL_ENV
 PILOT_V2_SUBAGENT_MODEL_POLICY = pilot_registration.SUBAGENT_MODEL_POLICY
+PILOT_V2_BACKGROUND_TASKS_ENV = pilot_registration.BACKGROUND_TASKS_ENV
+PILOT_V2_BACKGROUND_TASKS_VALUE = pilot_registration.BACKGROUND_TASKS_VALUE
+PILOT_V2_BACKGROUND_TASKS_POLICY = (
+    pilot_registration.BACKGROUND_TASKS_POLICY)
+PILOT_V2_AGENT_STREAM_ACCOUNTING_POLICY = (
+    pilot_registration.AGENT_STREAM_ACCOUNTING_POLICY)
 PILOT_V2_ENV_ALLOWLIST = frozenset({
     "ALL_PROXY",
     "ANTHROPIC_API_KEY",
@@ -424,7 +430,8 @@ def progress_heartbeat(stage, *, completed=None, total=None, call=None,
 JUDGE_SETTINGS = {
     "permissions": {
         "deny": ["Read", "Glob", "Grep", "Bash", "Write", "Edit",
-                 "NotebookEdit", "WebFetch", "WebSearch", "Task"]
+                 "NotebookEdit", "WebFetch", "WebSearch", "Task",
+                 "Agent"]
     }
 }
 
@@ -439,7 +446,7 @@ JUDGE_SETTINGS = {
 VERIFIER_SETTINGS = {
     "permissions": {
         "deny": ["Bash", "Write", "Edit", "NotebookEdit",
-                 "WebFetch", "WebSearch", "Task"]
+                 "WebFetch", "WebSearch", "Task", "Agent"]
     }
 }
 
@@ -941,6 +948,10 @@ def protocol_v2_runtime_pins(config):
         "artifact_parser": config.get("artifact_parser"),
         "artifact_parser_version": config.get("artifact_parser_version"),
         "subagent_model_policy": dict(PILOT_V2_SUBAGENT_MODEL_POLICY),
+        "background_tasks_policy": dict(
+            PILOT_V2_BACKGROUND_TASKS_POLICY),
+        "agent_stream_accounting_policy": dict(
+            PILOT_V2_AGENT_STREAM_ACCOUNTING_POLICY),
         "judge_output_policy": PILOT_V2_JUDGE_OUTPUT_POLICY,
         "structured_output_schema_sha256": {
             role: judge_contract.structured_output_schema_sha256(role)
@@ -1348,6 +1359,8 @@ def backend_env(profile, protocol_version=1, *, subagent_model=None):
         env["TMPDIR"] = "/tmp"
         env["RPA_ENVIRONMENT_POLICY"] = PILOT_V2_ENVIRONMENT_POLICY_ID
         env[PILOT_V2_SUBAGENT_MODEL_ENV] = subagent_model
+        env[PILOT_V2_BACKGROUND_TASKS_ENV] = (
+            PILOT_V2_BACKGROUND_TASKS_VALUE)
     else:
         env = dict(os.environ)
     env["CLAUDE_CONFIG_DIR"] = str(profile)
@@ -2115,6 +2128,13 @@ def _required_usage_int(usage, key, label):
     return _nonnegative_event_int(usage[key], f"{label} {key}")
 
 
+def _nullable_cache_usage_int(usage, key, label):
+    value = usage.get(key, 0)
+    if value is None:
+        return 0
+    return _nonnegative_event_int(value, f"{label} {key}")
+
+
 def _node_from_event(event):
     """Derive one accounting node from a stream event, or None.
 
@@ -2156,6 +2176,8 @@ def _node_from_event(event):
             "subagent_launches": _nonnegative_event_int(
                 event.get("subagent_launches", 0),
                 "node subagent_launches"),
+            "auxiliary": False,
+            "accounting_source": "synthetic_node",
         }
     if event.get("type") == "assistant":
         message = event.get("message")
@@ -2181,17 +2203,36 @@ def _node_from_event(event):
                 or any(not isinstance(block, dict) for block in content)):
             raise InfraFailure(
                 "assistant node content must be an array of objects")
-        tool_calls = sum(
-            1 for block in content
+        tool_blocks = [
+            block for block in content
             if isinstance(block, dict) and block.get("type") == "tool_use"
-        )
-        # A subagent LAUNCH is evidenced by the Task tool_use itself: a
+        ]
+        tool_calls = len(tool_blocks)
+        content_positions = event.get("_content_block_positions")
+        if (isinstance(content_positions, list)
+                and len(content_positions) == len(content)):
+            tool_evidence = [
+                {
+                    "id": block.get("id"),
+                    "name": block.get("name"),
+                    "input": block.get("input"),
+                    "position": content_positions[index],
+                }
+                for index, block in enumerate(content)
+                if isinstance(block, dict)
+                and block.get("type") == "tool_use"
+            ]
+        else:
+            tool_evidence = []
+        # A subagent LAUNCH is evidenced by the delegation tool_use itself: a
         # child that dies before emitting any assistant event must still
         # count as delegation (the no-subagent policy hinges on this).
+        delegation_tools = frozenset(
+            PILOT_V2_AGENT_STREAM_ACCOUNTING_POLICY["delegation_tools"])
         subagent_launches = sum(
             1 for block in content
             if isinstance(block, dict) and block.get("type") == "tool_use"
-            and block.get("name") == "Task"
+            and block.get("name") in delegation_tools
         )
         # The real CLI reports cached prompt tokens SEPARATELY from
         # `input_tokens`; all input categories must count toward tree-wide
@@ -2200,12 +2241,10 @@ def _node_from_event(event):
         input_total = sum((
             _required_usage_int(
                 usage, "input_tokens", "assistant usage"),
-            _nonnegative_event_int(
-                usage.get("cache_creation_input_tokens", 0),
-                "assistant cache_creation_input_tokens"),
-            _nonnegative_event_int(
-                usage.get("cache_read_input_tokens", 0),
-                "assistant cache_read_input_tokens"),
+            _nullable_cache_usage_int(
+                usage, "cache_creation_input_tokens", "assistant usage"),
+            _nullable_cache_usage_int(
+                usage, "cache_read_input_tokens", "assistant usage"),
         ))
         parent_id = event.get("parent_tool_use_id")
         if parent_id is not None and (
@@ -2229,16 +2268,1557 @@ def _node_from_event(event):
             # from several subagents, or "subagents spawned" is unmeasurable.
             "subagent_id": parent_id,
             "subagent_launches": subagent_launches,
+            "auxiliary": False,
+            "accounting_source": "assistant",
+            "session_id": event.get("session_id"),
+            "message_id": message.get("id"),
+            "request_id": event.get("request_id"),
+            "stream_position": event.get("_stream_position"),
+            "stream_positions": event.get("_stream_positions"),
+            "tool_uses": tool_evidence,
         }
     return None
 
 
-def parse_transcript(stdout):
+def _snake_usage_totals(usage, label):
+    if not isinstance(usage, dict):
+        raise InfraFailure(f"{label} must be an object")
+    input_tokens = sum((
+        _required_usage_int(usage, "input_tokens", label),
+        _nullable_cache_usage_int(
+            usage, "cache_creation_input_tokens", label),
+        _nullable_cache_usage_int(
+            usage, "cache_read_input_tokens", label),
+    ))
+    output_tokens = _required_usage_int(usage, "output_tokens", label)
+    return input_tokens, output_tokens
+
+
+def _camel_usage_totals(usage, label):
+    if not isinstance(usage, dict):
+        raise InfraFailure(f"{label} must be an object")
+    input_tokens = sum((
+        _required_usage_int(usage, "inputTokens", label),
+        _nonnegative_event_int(
+            usage.get("cacheCreationInputTokens", 0),
+            f"{label} cacheCreationInputTokens"),
+        _nonnegative_event_int(
+            usage.get("cacheReadInputTokens", 0),
+            f"{label} cacheReadInputTokens"),
+    ))
+    output_tokens = _required_usage_int(usage, "outputTokens", label)
+    return input_tokens, output_tokens
+
+
+def _group_assistant_events(events, protocol_version):
+    """Merge split Claude assistant chunks without duplicating usage.
+
+    Claude 2.1.220 can emit thinking and tool-use blocks as separate stream
+    events carrying the same API message identity and repeated usage.  One
+    identity is therefore one accounting node.  Conflicting or duplicated
+    chunks are rejected rather than guessed at.
+    """
+    grouped = []
+    by_identity = {}
+    identity_lineage = {}
+    message_requests = {}
+    request_messages = {}
+    for index, event in enumerate(events):
+        if event.get("type") != "assistant":
+            continue
+        message = event.get("message")
+        if not isinstance(message, dict):
+            raise InfraFailure("assistant event message must be an object")
+        if message.get("model") == "<synthetic>":
+            content = message.get("content")
+            if (isinstance(content, list)
+                    and any(isinstance(block, dict)
+                            and block.get("type") == "tool_use"
+                            for block in content)):
+                raise InfraFailure(
+                    "synthetic assistant notice cannot carry tool evidence")
+            continue
+        content = message.get("content")
+        if (not isinstance(content, list)
+                or any(not isinstance(block, dict) for block in content)):
+            raise InfraFailure(
+                "assistant node content must be an array of objects")
+        session_id = event.get("session_id")
+        parent_id = event.get("parent_tool_use_id")
+        message_id = message.get("id")
+        request_id = event.get("request_id")
+        if protocol_version == PILOT_V2_PROTOCOL_VERSION:
+            for value, label in (
+                    (session_id, "session_id"),
+                    (message_id, "message.id"),
+                    (request_id, "request_id")):
+                if not isinstance(value, str) or not value:
+                    raise InfraFailure(
+                        f"protocol-v2 assistant event lacks stable {label}")
+        has_identity = message_id is not None or request_id is not None
+        if has_identity and (
+                not isinstance(message_id, str) or not message_id
+                or not isinstance(request_id, str) or not request_id):
+            raise InfraFailure(
+                "assistant message identity is partial or malformed")
+        if not has_identity:
+            identity = ("event", index)
+        else:
+            identity = (message_id, request_id)
+            prior_request = message_requests.setdefault(message_id, request_id)
+            prior_message = request_messages.setdefault(request_id, message_id)
+            if prior_request != request_id or prior_message != message_id:
+                raise InfraFailure(
+                    "assistant message/request identity is not one-to-one")
+            lineage = (session_id, parent_id)
+            prior_lineage = identity_lineage.setdefault(identity, lineage)
+            if prior_lineage != lineage:
+                raise InfraFailure(
+                    "assistant message identity has conflicting lineage")
+        if identity not in by_identity:
+            merged_event = dict(event)
+            merged_event["_stream_position"] = index
+            merged_event["_stream_positions"] = [index]
+            merged_event["_content_block_positions"] = [index] * len(content)
+            merged_message = dict(message)
+            merged_message["content"] = list(content)
+            merged_event["message"] = merged_message
+            group = {
+                "event": merged_event,
+                "blocks": {
+                    json.dumps(block, sort_keys=True, separators=(",", ":"))
+                    for block in content
+                },
+            }
+            if len(group["blocks"]) != len(content):
+                raise InfraFailure(
+                    "assistant message contains duplicate content blocks")
+            by_identity[identity] = group
+            grouped.append(merged_event)
+            continue
+        group = by_identity[identity]
+        merged_event = group["event"]
+        merged_message = merged_event["message"]
+        if (message.get("model") != merged_message.get("model")
+                or message.get("usage") != merged_message.get("usage")
+                or event.get("effort") != merged_event.get("effort")):
+            raise InfraFailure(
+                "split assistant chunks disagree on model, usage, or effort")
+        merged_event["_stream_positions"].append(index)
+        for block in content:
+            encoded = json.dumps(
+                block, sort_keys=True, separators=(",", ":"))
+            if encoded in group["blocks"]:
+                raise InfraFailure(
+                    "split assistant chunks repeat a content block")
+            group["blocks"].add(encoded)
+            merged_message["content"].append(block)
+            merged_event["_content_block_positions"].append(index)
+    return grouped
+
+
+def _delegation_launches(assistant_events):
+    delegation_tools = frozenset(
+        PILOT_V2_AGENT_STREAM_ACCOUNTING_POLICY["delegation_tools"])
+    launches = {}
+    launch_kinds = set()
+    seen_tool_ids = set()
+    for event in assistant_events:
+        blocks = event["message"]["content"]
+        positions = event.get("_content_block_positions")
+        if (not isinstance(positions, list)
+                or len(positions) != len(blocks)):
+            raise InfraFailure(
+                "assistant content lacks stable stream positions")
+        for block, position in zip(blocks, positions):
+            if block.get("type") != "tool_use":
+                continue
+            tool_use_id = block.get("id")
+            if not isinstance(tool_use_id, str) or not tool_use_id:
+                raise InfraFailure(
+                    "tool_use lacks a stable nonempty id")
+            if (not isinstance(block.get("name"), str)
+                    or not block["name"]
+                    or not isinstance(block.get("input"), dict)):
+                raise InfraFailure(
+                    "tool_use lacks a stable name or object input")
+            if tool_use_id in seen_tool_ids:
+                raise InfraFailure("duplicate tool_use id")
+            seen_tool_ids.add(tool_use_id)
+            if block.get("name") not in delegation_tools:
+                continue
+            kind = block["name"]
+            launch_kinds.add(kind)
+            if isinstance(position, bool) or not isinstance(position, int):
+                raise InfraFailure(
+                    "delegation launch lacks a stable stream position")
+            launch = {
+                "kind": kind,
+                "block": block,
+                "position": position,
+                "parent_tool_use_id": event.get("parent_tool_use_id"),
+                "message_positions": list(
+                    event.get("_stream_positions") or []),
+            }
+            if kind == "Agent":
+                agent_input = block.get("input")
+                required = {
+                    "description", "prompt",
+                }
+                optional = {
+                    "subagent_type", "model", "name", "team_name", "mode",
+                    "isolation",
+                }
+                if (not isinstance(agent_input, dict)
+                        or not required.issubset(agent_input)
+                        or not set(agent_input).issubset(required | optional)):
+                    raise InfraFailure(
+                        "Agent launch input has an unexpected shape")
+                for key in ("description", "prompt"):
+                    if (not isinstance(agent_input.get(key), str)
+                            or not agent_input[key]):
+                        raise InfraFailure(
+                            f"Agent launch {key} must be nonempty text")
+                if "run_in_background" in agent_input:
+                    raise InfraFailure(
+                        "synchronous Agent schema contains a background flag")
+                for key in ("model", "name", "team_name", "mode"):
+                    if key in agent_input and (
+                            not isinstance(agent_input[key], str)
+                            or not agent_input[key]):
+                        raise InfraFailure(
+                            f"Agent launch {key} must be nonempty text")
+                if ("subagent_type" in agent_input
+                        and (not isinstance(agent_input["subagent_type"], str)
+                             or not agent_input["subagent_type"])):
+                    raise InfraFailure(
+                        "Agent launch subagent_type must be nonempty text")
+                if ("isolation" in agent_input
+                        and agent_input["isolation"] != "worktree"):
+                    raise InfraFailure(
+                        "Agent launch isolation is not registered")
+                normalized_description = " ".join(
+                    agent_input["description"].split())
+                if not normalized_description:
+                    raise InfraFailure(
+                        "Agent launch description normalizes to empty text")
+                launch["normalized_description"] = normalized_description
+                launch["input"] = agent_input
+            launches[tool_use_id] = launch
+    if len(launch_kinds) > 1:
+        raise InfraFailure(
+            "mixed Task and Agent delegation evidence is ambiguous")
+    return launches
+
+
+def _agent_type_matches(declared, observed):
+    if not isinstance(observed, str) or not observed:
+        return False
+    if declared is None:
+        return observed == "general-purpose"
+    return observed == declared or observed.endswith(f":{declared}")
+
+
+def _validated_agent_tool_stats(tool_stats):
+    if tool_stats is None:
+        return None
+    required_stats = {
+        "readCount", "searchCount", "bashCount", "editFileCount",
+        "linesAdded", "linesRemoved", "otherToolCount",
+    }
+    allowed_stats = required_stats | {"frameCount"}
+    if (not isinstance(tool_stats, dict)
+            or not required_stats.issubset(tool_stats)
+            or not set(tool_stats).issubset(allowed_stats)):
+        raise InfraFailure("Agent toolStats has an unexpected shape")
+    for key, value in tool_stats.items():
+        _nonnegative_event_int(value, f"Agent toolStats {key}")
+    categorized_calls = sum(
+        tool_stats[key] for key in (
+            "readCount", "searchCount", "bashCount", "editFileCount",
+            "otherToolCount", "frameCount")
+        if key in tool_stats)
+    if categorized_calls <= 0:
+        raise InfraFailure("Agent toolStats has no categorized tool use")
+    return dict(tool_stats)
+
+
+def _tool_input_line_count(value):
+    return value.count("\n") + 1 if isinstance(value, str) and value else 0
+
+
+def _expected_agent_tool_stats(tool_evidence, result_envelopes):
+    """Reproduce Claude CLI 2.1.220's recursive ``U2_`` tool stats."""
+    stats = {
+        "readCount": 0,
+        "searchCount": 0,
+        "bashCount": 0,
+        "editFileCount": 0,
+        "linesAdded": 0,
+        "linesRemoved": 0,
+        "otherToolCount": 0,
+    }
+    frame_count = 0
+    nested_stats = {}
+    for result_event, result_blocks in result_envelopes:
+        for block in result_blocks:
+            result_id = block.get("tool_use_id")
+            summary = result_event.get("tool_use_result")
+            if isinstance(summary, dict):
+                nested_stats[result_id] = _validated_agent_tool_stats(
+                    summary.get("toolStats"))
+
+    for evidence in tool_evidence:
+        name = evidence["name"]
+        tool_input = evidence.get("input")
+        if name == "Read":
+            stats["readCount"] += 1
+        elif name in {"Grep", "Glob"}:
+            stats["searchCount"] += 1
+        elif name == "Bash":
+            stats["bashCount"] += 1
+        elif name in {"Agent", "Task"}:
+            inherited = nested_stats.get(evidence["id"])
+            if inherited:
+                for key in stats:
+                    stats[key] += inherited[key]
+                frame_count += inherited.get("frameCount", 0)
+        elif name in {"Edit", "Write", "NotebookEdit"}:
+            stats["editFileCount"] += 1
+            if name == "Edit":
+                edits = tool_input.get("edits")
+                if isinstance(edits, list):
+                    for edit in edits:
+                        if isinstance(edit, dict):
+                            stats["linesAdded"] += _tool_input_line_count(
+                                edit.get("new_string"))
+                            stats["linesRemoved"] += _tool_input_line_count(
+                                edit.get("old_string"))
+                else:
+                    stats["linesAdded"] += _tool_input_line_count(
+                        tool_input.get("new_string"))
+                    stats["linesRemoved"] += _tool_input_line_count(
+                        tool_input.get("old_string"))
+            elif name == "Write":
+                stats["linesAdded"] += _tool_input_line_count(
+                    tool_input.get("content"))
+            else:
+                stats["linesAdded"] += _tool_input_line_count(
+                    tool_input.get("new_source"))
+        elif name == "Artifact" and tool_input.get("action") != "list":
+            frame_count += 1
+        else:
+            stats["otherToolCount"] += 1
+    if not sum((
+            stats["readCount"], stats["searchCount"], stats["bashCount"],
+            stats["editFileCount"], stats["otherToolCount"], frame_count)):
+        return None
+    if frame_count:
+        stats["frameCount"] = frame_count
+    return stats
+
+
+def _agent_completion_node(summary, tool_use_id):
+    required = {
+        "agentId", "agentType", "resolvedModel", "status", "content",
+        "prompt", "totalDurationMs", "totalTokens", "totalToolUseCount",
+        "usage",
+    }
+    allowed = required | {
+        "toolStats", "worktreePath", "worktreeBranch"}
+    if (not isinstance(summary, dict)
+            or not required.issubset(summary)
+            or not set(summary).issubset(allowed)):
+        raise InfraFailure(
+            "Agent tool_use_result has an unexpected completion shape")
+    for key in ("agentId", "agentType", "resolvedModel", "prompt"):
+        if not isinstance(summary.get(key), str) or not summary[key]:
+            raise InfraFailure(
+                f"Agent completion {key} must be nonempty text")
+    for key in ("worktreePath", "worktreeBranch"):
+        if key in summary and (
+                not isinstance(summary[key], str) or not summary[key]):
+            raise InfraFailure(
+                f"Agent completion {key} must be nonempty text")
+    if summary.get("status") != "completed":
+        raise InfraFailure("Agent completion status is not completed")
+    total_duration_ms = _nonnegative_event_int(
+        summary.get("totalDurationMs"), "Agent totalDurationMs")
+    tool_calls = _nonnegative_event_int(
+        summary.get("totalToolUseCount"), "Agent totalToolUseCount")
+    total_tokens = _nonnegative_event_int(
+        summary.get("totalTokens"), "Agent totalTokens")
+    input_tokens, output_tokens = _snake_usage_totals(
+        summary.get("usage"), "Agent completion usage")
+    if input_tokens + output_tokens <= 0:
+        raise InfraFailure("Agent completion usage has no model tokens")
+    if total_tokens != input_tokens + output_tokens:
+        raise InfraFailure(
+            "Agent totalTokens differs from its authoritative usage")
+    tool_stats = _validated_agent_tool_stats(summary.get("toolStats"))
+    return {
+        "model": summary["resolvedModel"],
+        "effort": None,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "tool_calls": tool_calls,
+        "subagent": True,
+        "subagent_id": tool_use_id,
+        "reported_subagent_id": summary["agentId"],
+        "subagent_launches": 0,
+        "auxiliary": False,
+        "accounting_source": "agent_tool_result",
+        "tool_stats": tool_stats,
+        "tool_call_epoch_total": tool_calls,
+        "total_duration_ms": total_duration_ms,
+        "continuation_rounds": 0,
+    }
+
+
+def _agent_summary_nodes(events, launches, assistant_nodes,
+                         require_complete):
+    agent_launches = {
+        key: value for key, value in launches.items()
+        if value["kind"] == "Agent"
+    }
+    starts = {}
+    resume_starts = {}
+    updates = {}
+    notifications = {}
+    resume_notifications = {}
+    nonagent_starts = {}
+    nonagent_notifications = {}
+    child_starts = {}
+    completions = {}
+    resume_results = {}
+    sidechain_tool_results = {}
+    event_positions = {id(event): position
+                       for position, event in enumerate(events)}
+    all_tool_uses = {
+        evidence.get("id"): evidence
+        for node in assistant_nodes
+        for evidence in node.get("tool_uses", [])
+    }
+    tool_use_owners = {
+        evidence.get("id"): node
+        for node in assistant_nodes
+        for evidence in node.get("tool_uses", [])
+    }
+    delegation_tools = frozenset(
+        PILOT_V2_AGENT_STREAM_ACCOUNTING_POLICY["delegation_tools"])
+    for event in events:
+        subtype = event.get("subtype")
+        if (subtype in {
+                "task_started", "task_updated", "task_notification"}
+                and event.get("type") != "system"):
+            raise InfraFailure(
+                f"Agent lifecycle {subtype} is not a system event")
+        if subtype == "task_started":
+            tool_use_id = event.get("tool_use_id")
+            task_id = event.get("task_id")
+            task_type = event.get("task_type")
+            if (not isinstance(task_id, str) or not task_id
+                    or not isinstance(tool_use_id, str) or not tool_use_id
+                    or not isinstance(task_type, str) or not task_type):
+                raise InfraFailure(
+                    "task_started lacks stable task/tool/type identity")
+            if tool_use_id in agent_launches:
+                if task_type != "local_agent":
+                    raise InfraFailure(
+                        "Agent task_started has an unexpected task type")
+                starts.setdefault(tool_use_id, []).append(event)
+            elif (tool_use_id in all_tool_uses
+                  and all_tool_uses[tool_use_id].get("name")
+                  == "SendMessage"
+                  and task_type == "local_agent"):
+                resume_starts.setdefault(tool_use_id, []).append(event)
+            elif ("agent" in task_type.lower()
+                    or tool_use_id not in all_tool_uses
+                    or all_tool_uses[tool_use_id].get("name")
+                    in delegation_tools):
+                raise InfraFailure(
+                    "agent-shaped or orphan task_started lacks an Agent launch")
+            else:
+                nonagent_starts.setdefault(task_id, []).append(event)
+        elif subtype == "task_updated":
+            task_id = event.get("task_id")
+            if not isinstance(task_id, str) or not task_id:
+                raise InfraFailure("task_updated has no stable task identity")
+            updates.setdefault(task_id, []).append(event)
+        elif subtype == "task_notification":
+            tool_use_id = event.get("tool_use_id")
+            if tool_use_id in agent_launches:
+                notifications.setdefault(tool_use_id, []).append(event)
+            elif tool_use_id in resume_starts:
+                resume_notifications.setdefault(tool_use_id, []).append(
+                    event)
+            else:
+                nonagent_notifications.setdefault(tool_use_id, []).append(
+                    event)
+        if event.get("type") != "user":
+            continue
+        parent_id = event.get("parent_tool_use_id")
+        has_child_markers = (
+            "subagent_type" in event or "task_description" in event)
+        if has_child_markers and (
+                not isinstance(event.get("subagent_type"), str)
+                or not event["subagent_type"]
+                or not isinstance(event.get("task_description"), str)
+                or not event["task_description"]):
+            raise InfraFailure(
+                "Agent sidechain markers are partial or malformed")
+        message = event.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        tool_results = [
+            block for block in content or []
+            if isinstance(block, dict) and block.get("type") == "tool_result"
+        ] if isinstance(content, list) else []
+        child_start_shaped = (
+            parent_id in agent_launches
+            and has_child_markers
+            and isinstance(message, dict)
+            and message.get("role") == "user"
+            and isinstance(content, list)
+            and len(content) == 1
+            and isinstance(content[0], dict)
+            and content[0].get("type") == "text"
+        )
+        if child_start_shaped:
+            child_starts.setdefault(parent_id, []).append(event)
+            continue
+        if has_child_markers and parent_id not in agent_launches:
+            raise InfraFailure(
+                "Agent child-start has no matching Agent launch")
+        if parent_id in agent_launches and tool_results:
+            if (not isinstance(message, dict)
+                    or message.get("role") != "user"
+                    or not isinstance(content, list)
+                    or len(tool_results) != len(content)
+                    or not has_child_markers):
+                raise InfraFailure(
+                    "Agent sidechain tool-result envelope is malformed")
+            sidechain_tool_results.setdefault(parent_id, []).append(
+                (event, tool_results))
+        elif has_child_markers:
+            raise InfraFailure(
+                "Agent sidechain marker event has no tool result")
+        summary = event.get("tool_use_result")
+        looks_like_agent = (
+            isinstance(summary, dict)
+            and any(key in summary for key in (
+                "agentId", "agentType", "resolvedModel", "totalTokens")))
+        if looks_like_agent and (
+                not isinstance(message, dict)
+                or message.get("role") != "user"
+                or not isinstance(content, list)
+                or len(content) != 1
+                or not isinstance(content[0], dict)
+                or content[0].get("type") != "tool_result"):
+            raise InfraFailure(
+                "Agent completion message envelope is malformed")
+        agent_tool_results = [
+            block for block in tool_results
+            if block.get("tool_use_id") in agent_launches
+        ]
+        resume_tool_results = [
+            block for block in tool_results
+            if block.get("tool_use_id") in resume_starts
+        ]
+        if resume_tool_results:
+            if (looks_like_agent
+                    or len(resume_tool_results) != 1
+                    or len(tool_results) != 1
+                    or not isinstance(message, dict)
+                    or message.get("role") != "user"
+                    or not isinstance(content, list)
+                    or len(content) != 1):
+                raise InfraFailure(
+                    "SendMessage continuation result is ambiguous")
+            resume_tool_id = resume_tool_results[0].get("tool_use_id")
+            owner = tool_use_owners.get(resume_tool_id)
+            if (owner is None
+                    or owner.get("subagent")
+                    or event.get("parent_tool_use_id") is not None
+                    or resume_tool_results[0].get("is_error")
+                    not in (None, False)):
+                raise InfraFailure(
+                    "SendMessage continuation has unsupported lineage")
+            resume_results.setdefault(resume_tool_id, []).append(
+                (event, summary, resume_tool_results[0]))
+            continue
+        if not looks_like_agent and not agent_tool_results:
+            continue
+        if not looks_like_agent:
+            raise InfraFailure(
+                "Agent tool_result lacks a structured completion summary")
+        if len(agent_tool_results) != 1 or len(tool_results) != 1:
+            raise InfraFailure(
+                "Agent completion must carry exactly one tool_result")
+        tool_use_id = agent_tool_results[0].get("tool_use_id")
+        if (event.get("parent_tool_use_id")
+                != agent_launches[tool_use_id]["parent_tool_use_id"]):
+            raise InfraFailure(
+                "Agent completion returned to the wrong parent lineage")
+        if agent_tool_results[0].get("is_error") not in (None, False):
+            raise InfraFailure("Agent completion tool_result is an error")
+        completions.setdefault(tool_use_id, []).append(
+            (event, summary, agent_tool_results[0]))
+
+    agent_start_records = [
+        event
+        for lifecycle_starts in (starts, resume_starts)
+        for values in lifecycle_starts.values()
+        for event in values
+    ]
+    agent_started_task_ids = {
+        event.get("task_id") for event in agent_start_records}
+    nonagent_started_task_ids = set(nonagent_starts)
+    if agent_started_task_ids & nonagent_started_task_ids:
+        raise InfraFailure(
+            "task identity is shared by Agent and non-Agent lifecycles")
+    started_task_ids = agent_started_task_ids | nonagent_started_task_ids
+    orphan_updates = sorted(set(updates) - started_task_ids)
+    if orphan_updates:
+        raise InfraFailure(
+            "task_updated has no matching task_started")
+    agent_updates = {}
+    for task_id in agent_started_task_ids:
+        task_starts = sorted(
+            (event for event in agent_start_records
+             if event.get("task_id") == task_id),
+            key=lambda event: event_positions[id(event)],
+        )
+        for update in updates.get(task_id, []):
+            prior_starts = [
+                event for event in task_starts
+                if event_positions[id(event)] < event_positions[id(update)]
+            ]
+            if not prior_starts:
+                raise InfraFailure(
+                    "Agent task_updated precedes its task_started")
+            started = prior_starts[-1]
+            agent_updates.setdefault(
+                started["tool_use_id"], []).append(update)
+    nonagent_tool_ids = set()
+    for task_id, values in nonagent_starts.items():
+        if len(values) != 1:
+            raise InfraFailure(
+                "non-Agent task lifecycle repeats task_started")
+        started = values[0]
+        tool_use_id = started["tool_use_id"]
+        if tool_use_id in nonagent_tool_ids:
+            raise InfraFailure(
+                "non-Agent task lifecycle reuses a tool identity")
+        nonagent_tool_ids.add(tool_use_id)
+        task_updates = updates.get(task_id, [])
+        task_notifications = nonagent_notifications.get(tool_use_id, [])
+        if len(task_updates) > 1 or len(task_notifications) > 1:
+            raise InfraFailure(
+                "non-Agent task lifecycle has duplicate terminal evidence")
+        ordered = [started]
+        if task_updates:
+            ordered.append(task_updates[0])
+        if task_notifications:
+            notification = task_notifications[0]
+            if notification.get("task_id") != task_id:
+                raise InfraFailure(
+                    "non-Agent task notification crosses task lineage")
+            ordered.append(notification)
+        positions = [event_positions[id(event)] for event in ordered]
+        if positions != sorted(positions) or len(set(positions)) != len(positions):
+            raise InfraFailure(
+                "non-Agent task lifecycle events are out of order")
+    if set(nonagent_notifications) - nonagent_tool_ids:
+        raise InfraFailure(
+            "task_notification has no matching task_started")
+    if not agent_launches:
+        if resume_starts:
+            raise InfraFailure(
+                "SendMessage continuation has no completed Agent origin")
+        return []
+
+    added = []
+    completed_agents = {}
+    completed_agent_positions = {}
+    completed_agent_names = {}
+    completed_agent_types = {}
+    completed_agent_descriptions = {}
+    seen_task_ids = set()
+    for tool_use_id, launch in agent_launches.items():
+        agent_input = launch["input"]
+        declared_agent_type = agent_input.get("subagent_type")
+        normalized_description = launch["normalized_description"]
+        launch_starts = starts.get(tool_use_id, [])
+        launch_children = child_starts.get(tool_use_id, [])
+        launch_notifications = notifications.get(tool_use_id, [])
+        launch_completions = completions.get(tool_use_id, [])
+        for label, values in (
+                ("task_started", launch_starts),
+                ("child_start", launch_children),
+                ("task_notification", launch_notifications),
+                ("completion", launch_completions)):
+            if len(values) > 1:
+                raise InfraFailure(
+                    f"Agent has {len(values)} {label} events")
+
+        started = launch_starts[0] if launch_starts else None
+        child = launch_children[0] if launch_children else None
+        notification = (
+            launch_notifications[0] if launch_notifications else None)
+        completion_item = (
+            launch_completions[0] if launch_completions else None)
+        task_id = started.get("task_id") if started is not None else None
+        if started is not None:
+            started_agent_type = started.get("subagent_type")
+            if (not isinstance(task_id, str) or not task_id
+                    or not isinstance(started_agent_type, str)
+                    or not started_agent_type
+                    or not _agent_type_matches(
+                        declared_agent_type, started_agent_type)
+                    or started.get("description")
+                    != normalized_description
+                    or started.get("prompt") != agent_input["prompt"]):
+                raise InfraFailure("Agent task_started lineage is inconsistent")
+            if task_id in seen_task_ids:
+                raise InfraFailure(
+                    "multiple Agent launches claim the same task identity")
+            seen_task_ids.add(task_id)
+        task_updates = agent_updates.get(tool_use_id, [])
+        if len(task_updates) > 1:
+            raise InfraFailure(
+                f"Agent has {len(task_updates)} task_updated events")
+        task_update = task_updates[0] if task_updates else None
+
+        if child is not None:
+            child_message = child.get("message")
+            child_content = (child_message.get("content")
+                             if isinstance(child_message, dict) else None)
+            if (started is None
+                    or child.get("subagent_type")
+                    != started.get("subagent_type")
+                    or child.get("task_description")
+                    != normalized_description
+                    or not isinstance(child_message, dict)
+                    or child_message.get("role") != "user"
+                    or not isinstance(child_content, list)
+                    or len(child_content) != 1
+                    or not isinstance(child_content[0], dict)
+                    or child_content[0].get("type") != "text"
+                    or child_content[0].get("text")
+                    != agent_input["prompt"]):
+                raise InfraFailure("Agent child-start lineage is inconsistent")
+
+        if task_update is not None:
+            patch = task_update.get("patch")
+            if (child is None
+                    or not isinstance(patch, dict)
+                    or set(patch) != {"status", "end_time"}
+                    or patch.get("status") != "completed"
+                    or _nonnegative_event_int(
+                        patch.get("end_time"), "Agent task end_time") <= 0):
+                raise InfraFailure(
+                    "Agent task_updated completion is malformed")
+
+        if notification is not None:
+            notification_usage = notification.get("usage")
+            if (task_update is None
+                    or notification.get("task_id") != task_id
+                    or notification.get("status") != "completed"
+                    or not isinstance(notification_usage, dict)
+                    or set(notification_usage)
+                    != {"total_tokens", "tool_uses", "duration_ms"}):
+                raise InfraFailure(
+                    "Agent task_notification lineage is malformed")
+            for field in ("total_tokens", "tool_uses", "duration_ms"):
+                _nonnegative_event_int(
+                    notification_usage.get(field),
+                    f"Agent task_notification {field}")
+            if (notification_usage["total_tokens"] <= 0
+                    or notification_usage["duration_ms"] <= 0
+                    or not isinstance(notification.get("summary"), str)
+                    or not notification["summary"]
+                    or not isinstance(notification.get("output_file"), str)
+                    or not notification["output_file"]):
+                raise InfraFailure("Agent task_notification is malformed")
+
+        sidechain = [
+            candidate for candidate in assistant_nodes
+            if candidate.get("subagent")
+            and candidate.get("subagent_id") == tool_use_id
+        ]
+        result_envelopes = sidechain_tool_results.get(tool_use_id, [])
+        if ((sidechain or result_envelopes) and child is None
+                or task_update is not None and child is None
+                or notification is not None and task_update is None
+                or completion_item is not None and notification is None):
+            raise InfraFailure(
+                "Agent partial stream is not a valid lifecycle prefix")
+
+        launch_message_positions = launch.get("message_positions")
+        if (not isinstance(launch_message_positions, list)
+                or not launch_message_positions
+                or any(isinstance(position, bool)
+                       or not isinstance(position, int)
+                       for position in launch_message_positions)):
+            raise InfraFailure("Agent launch lacks stable message positions")
+        if (started is not None
+                and max(launch_message_positions)
+                >= event_positions[id(started)]):
+            raise InfraFailure(
+                "Agent launch message straddles its lifecycle")
+
+        lifecycle_events = [
+            item for item in (
+                started, child, task_update, notification,
+                completion_item[0] if completion_item is not None else None)
+            if item is not None
+        ]
+        lifecycle_positions = [launch["position"], *(
+            event_positions[id(event)] for event in lifecycle_events)]
+        if (lifecycle_positions != sorted(lifecycle_positions)
+                or len(set(lifecycle_positions))
+                != len(lifecycle_positions)):
+            raise InfraFailure("Agent lifecycle events are out of order")
+
+        sidechain_positions = []
+        for candidate in sidechain:
+            positions = candidate.get("stream_positions")
+            if (not isinstance(positions, list) or not positions
+                    or any(isinstance(position, bool)
+                           or not isinstance(position, int)
+                           for position in positions)):
+                raise InfraFailure(
+                    "Agent sidechain assistant has unstable positions")
+            sidechain_positions.extend(positions)
+        if sidechain_positions and (
+                child is None
+                or not all(event_positions[id(child)] < position
+                           for position in sidechain_positions)
+                or (task_update is not None
+                    and not all(position < event_positions[id(task_update)]
+                                for position in sidechain_positions))):
+            raise InfraFailure(
+                "Agent sidechain assistant is outside its lifecycle")
+
+        expected_tool_uses = {}
+        for candidate in sidechain:
+            for evidence in candidate.get("tool_uses", []):
+                evidence_id = evidence.get("id")
+                if evidence_id in expected_tool_uses:
+                    raise InfraFailure(
+                        "Agent sidechain repeats a tool-use identity")
+                expected_tool_uses[evidence_id] = evidence
+        observed_tool_results = {}
+        for result_event, result_blocks in result_envelopes:
+            result_position = event_positions[id(result_event)]
+            if (child is None
+                    or result_position <= event_positions[id(child)]
+                    or (task_update is not None
+                        and result_position
+                        >= event_positions[id(task_update)])):
+                raise InfraFailure(
+                    "Agent sidechain tool result is outside its lifecycle")
+            if (("subagent_type" in result_event
+                 or "task_description" in result_event)
+                    and (result_event.get("subagent_type")
+                         != started.get("subagent_type")
+                         or result_event.get("task_description")
+                         != normalized_description)):
+                raise InfraFailure(
+                    "Agent sidechain tool-result lineage is inconsistent")
+            for block in result_blocks:
+                result_id = block.get("tool_use_id")
+                evidence = expected_tool_uses.get(result_id)
+                if (not isinstance(result_id, str) or not result_id
+                        or evidence is None
+                        or result_id in observed_tool_results
+                        or evidence.get("position") >= result_position):
+                    raise InfraFailure(
+                        "Agent sidechain tool result is not uniquely "
+                        "correlated")
+                observed_tool_results[result_id] = result_event
+
+        complete = require_complete or bool(completions.get(tool_use_id))
+        if (complete
+                and set(observed_tool_results) != set(expected_tool_uses)):
+            raise InfraFailure(
+                "complete Agent sidechain has unmatched tool evidence")
+        if not complete:
+            continue
+        lifecycle = {
+            "task_started": starts.get(tool_use_id, []),
+            "child_start": child_starts.get(tool_use_id, []),
+            "task_notification": notifications.get(tool_use_id, []),
+            "completion": completions.get(tool_use_id, []),
+        }
+        for label, values in lifecycle.items():
+            if len(values) != 1:
+                raise InfraFailure(
+                    f"complete Agent has {len(values)} {label} events")
+        started = lifecycle["task_started"][0]
+        child = lifecycle["child_start"][0]
+        notification = lifecycle["task_notification"][0]
+        _completion_event, summary, tool_result = lifecycle["completion"][0]
+        task_id = started.get("task_id")
+        agent_input = launch["input"]
+        observed_agent_type = started.get("subagent_type")
+        if (not isinstance(task_id, str) or not task_id
+                or not isinstance(observed_agent_type, str)
+                or not observed_agent_type
+                or not _agent_type_matches(
+                    agent_input.get("subagent_type"), observed_agent_type)
+                or started.get("description")
+                != launch["normalized_description"]
+                or started.get("prompt") != agent_input["prompt"]
+                or child.get("subagent_type")
+                != observed_agent_type
+                or child.get("task_description")
+                != launch["normalized_description"]
+                or notification.get("task_id") != task_id
+                or notification.get("status") != "completed"
+                or summary.get("agentId") != task_id
+                or summary.get("agentType")
+                != observed_agent_type
+                or summary.get("prompt") != agent_input["prompt"]):
+            raise InfraFailure("Agent lifecycle lineage is inconsistent")
+        task_updates = agent_updates.get(tool_use_id, [])
+        if len(task_updates) != 1:
+            raise InfraFailure(
+                f"complete Agent has {len(task_updates)} task_updated events")
+        patch = task_updates[0].get("patch")
+        if (not isinstance(patch, dict)
+                or set(patch) != {"status", "end_time"}
+                or patch.get("status") != "completed"
+                or _nonnegative_event_int(
+                    patch.get("end_time"), "Agent task end_time") <= 0):
+            raise InfraFailure("Agent task_updated completion is malformed")
+        notification_usage = notification.get("usage")
+        if (not isinstance(notification_usage, dict)
+                or set(notification_usage)
+                != {"total_tokens", "tool_uses", "duration_ms"}):
+            raise InfraFailure("Agent task_notification usage is malformed")
+        for field in ("total_tokens", "tool_uses", "duration_ms"):
+            _nonnegative_event_int(
+                notification_usage.get(field),
+                f"Agent task_notification {field}")
+        if (notification_usage["total_tokens"] <= 0
+                or notification_usage["duration_ms"] <= 0
+                or not isinstance(notification.get("summary"), str)
+                or not notification["summary"]
+                or not isinstance(notification.get("output_file"), str)
+                or not notification["output_file"]):
+            raise InfraFailure("Agent task_notification is malformed")
+        child_message = child.get("message")
+        child_content = (child_message.get("content")
+                         if isinstance(child_message, dict) else None)
+        if (not isinstance(child_message, dict)
+                or child_message.get("role") != "user"
+                or not isinstance(child_content, list)
+                or len(child_content) != 1
+                or not isinstance(child_content[0], dict)
+                or child_content[0].get("type") != "text"
+                or child_content[0].get("text") != agent_input["prompt"]):
+            raise InfraFailure("Agent child-start message is malformed")
+        launch_message_positions = launch.get("message_positions")
+        if (not isinstance(launch_message_positions, list)
+                or not launch_message_positions
+                or any(isinstance(position, bool)
+                       or not isinstance(position, int)
+                       for position in launch_message_positions)
+                or max(launch_message_positions)
+                >= event_positions[id(started)]):
+            raise InfraFailure(
+                "Agent launch message straddles its lifecycle")
+        lifecycle_positions = [
+            launch["position"],
+            event_positions[id(started)],
+            event_positions[id(child)],
+            event_positions[id(task_updates[0])],
+            event_positions[id(notification)],
+            event_positions[id(_completion_event)],
+        ]
+        if lifecycle_positions != sorted(lifecycle_positions) \
+                or len(set(lifecycle_positions)) != len(lifecycle_positions):
+            raise InfraFailure("Agent lifecycle events are out of order")
+        node = _agent_completion_node(summary, tool_use_id)
+        completed_agents[task_id] = node
+        completed_agent_positions[task_id] = event_positions[
+            id(_completion_event)]
+        completed_agent_names[task_id] = agent_input.get("name")
+        completed_agent_types[task_id] = observed_agent_type
+        completed_agent_descriptions[task_id] = (
+            launch["normalized_description"])
+        worktree_fields = {
+            key for key in ("worktreePath", "worktreeBranch")
+            if key in summary}
+        if ("worktreeBranch" in worktree_fields
+                and "worktreePath" not in worktree_fields):
+            raise InfraFailure(
+                "Agent worktree completion fields are inconsistent")
+        if (notification_usage["tool_uses"] != node["tool_calls"]
+                or len(expected_tool_uses) != node["tool_calls"]):
+            raise InfraFailure(
+                "Agent tool-count evidence conflicts across its lifecycle")
+        expected_tool_stats = _expected_agent_tool_stats(
+            expected_tool_uses.values(), result_envelopes)
+        if node["tool_stats"] != expected_tool_stats:
+            raise InfraFailure(
+                "Agent toolStats conflict with its correlated sidechain")
+        summary_content = summary.get("content")
+        if (not isinstance(summary_content, list)
+                or any(not isinstance(block, dict)
+                       for block in summary_content)):
+            raise InfraFailure("Agent completion content is malformed")
+        rendered_content = (summary_content if summary_content else [{
+            "type": "text",
+            "text": "(Subagent completed but returned no output.)",
+        }])
+        worktree_text = ""
+        if summary.get("worktreePath"):
+            worktree_text = f"\nworktreePath: {summary['worktreePath']}"
+            if summary.get("worktreeBranch"):
+                worktree_text += (
+                    f"\nworktreeBranch: {summary['worktreeBranch']}")
+        metadata_text = (
+            f"agentId: {summary['agentId']} (use SendMessage with to: "
+            f"'{summary['agentId']}', summary: '<5-10 word recap>' to "
+            f"continue this agent){worktree_text}\n<usage>subagent_tokens: "
+            f"{summary['totalTokens']}\ntool_uses: "
+            f"{summary['totalToolUseCount']}\nduration_ms: "
+            f"{summary['totalDurationMs']}</usage>")
+        if (summary.get("agentType") in {"Explore", "Plan"}
+                and not worktree_text):
+            expected_tool_result_content = rendered_content
+        else:
+            expected_tool_result_content = [
+                *rendered_content,
+                {"type": "text", "text": metadata_text},
+            ]
+        if tool_result.get("content") != expected_tool_result_content:
+            raise InfraFailure(
+                "Agent tool_result wrapper conflicts with completion summary")
+        if sidechain:
+            sidechain_models = {
+                candidate["model"] for candidate in sidechain}
+            sidechain_efforts = {
+                candidate.get("effort") for candidate in sidechain}
+            if (sidechain_models != {node["model"]}
+                    or len(sidechain_efforts) != 1):
+                raise InfraFailure(
+                    "Agent sidechain and completion model evidence disagree")
+            # The completion summary proves the final child turn, model,
+            # identity, and total tool count. Complete-stream token cost is
+            # reconciled later from the terminal registered-model residual;
+            # assistant chunks remain lineage/tool evidence only.
+            node["effort"] = next(iter(sidechain_efforts))
+            node["subagent_launches"] = sum(
+                candidate.get("subagent_launches", 0)
+                for candidate in sidechain)
+            node["assistant_message_ids"] = [
+                candidate.get("message_id") for candidate in sidechain]
+            node["assistant_request_ids"] = [
+                candidate.get("request_id") for candidate in sidechain]
+            sidechain_object_ids = {id(candidate) for candidate in sidechain}
+            first_sidechain = min(
+                index for index, candidate in enumerate(assistant_nodes)
+                if id(candidate) in sidechain_object_ids)
+            assistant_nodes[:] = [
+                candidate for candidate in assistant_nodes
+                if id(candidate) not in sidechain_object_ids]
+            assistant_nodes.insert(first_sidechain, node)
+        else:
+            added.append(node)
+
+    if resume_starts:
+        terminal_present = any(
+            event.get("type") == "result" for event in events)
+        if not terminal_present:
+            raise InfraFailure(
+                "Agent continuation has no terminal model ledger")
+        ordered_resume_ids = sorted(
+            resume_starts,
+            key=lambda resume_id: all_tool_uses[resume_id]["position"],
+        )
+        for resume_tool_id in ordered_resume_ids:
+            resume_start_events = resume_starts.get(resume_tool_id, [])
+            resume_update_events = agent_updates.get(resume_tool_id, [])
+            resume_notification_events = resume_notifications.get(
+                resume_tool_id, [])
+            resume_result_events = resume_results.get(resume_tool_id, [])
+            for label, values in (
+                    ("task_started", resume_start_events),
+                    ("task_updated", resume_update_events),
+                    ("task_notification", resume_notification_events),
+                    ("tool_result", resume_result_events)):
+                if len(values) != 1:
+                    raise InfraFailure(
+                        "complete Agent continuation has "
+                        f"{len(values)} {label} events")
+
+            started = resume_start_events[0]
+            task_update = resume_update_events[0]
+            notification = resume_notification_events[0]
+            result_event, result_data, result_block = resume_result_events[0]
+            task_id = started.get("task_id")
+            evidence = all_tool_uses[resume_tool_id]
+            owner = tool_use_owners[resume_tool_id]
+            send_input = evidence.get("input")
+            if (owner.get("subagent")
+                    or not isinstance(send_input, dict)
+                    or set(send_input) != {"to", "summary", "message"}
+                    or not isinstance(send_input.get("to"), str)
+                    or not send_input["to"]
+                    or not isinstance(send_input.get("summary"), str)
+                    or not send_input["summary"].strip()
+                    or len(send_input["summary"]) > 200
+                    or not isinstance(send_input.get("message"), str)
+                    or not send_input["message"]):
+                raise InfraFailure(
+                    "Agent continuation SendMessage input is malformed")
+            origin = completed_agents.get(task_id)
+            if origin is None:
+                raise InfraFailure(
+                    "Agent continuation targets no completed Agent")
+            accepted_targets = {task_id}
+            original_name = completed_agent_names.get(task_id)
+            if isinstance(original_name, str) and original_name:
+                accepted_targets.add(original_name)
+            if send_input["to"] not in accepted_targets:
+                raise InfraFailure(
+                    "Agent continuation SendMessage target is ambiguous")
+            if (started.get("task_type") != "local_agent"
+                    or started.get("subagent_type")
+                    != completed_agent_types[task_id]
+                    or started.get("description")
+                    != completed_agent_descriptions[task_id]
+                    or started.get("prompt") != send_input["message"]):
+                raise InfraFailure(
+                    "Agent continuation task_started lineage is inconsistent")
+
+            patch = task_update.get("patch")
+            if (not isinstance(patch, dict)
+                    or set(patch) != {"status", "end_time"}
+                    or patch.get("status") != "completed"
+                    or _nonnegative_event_int(
+                        patch.get("end_time"),
+                        "Agent continuation end_time") <= 0):
+                raise InfraFailure(
+                    "Agent continuation task_updated is malformed")
+            notification_usage = notification.get("usage")
+            if (notification.get("task_id") != task_id
+                    or notification.get("status") != "completed"
+                    or not isinstance(notification_usage, dict)
+                    or set(notification_usage)
+                    != {"total_tokens", "tool_uses", "duration_ms"}):
+                raise InfraFailure(
+                    "Agent continuation task_notification is malformed")
+            for field in ("total_tokens", "tool_uses", "duration_ms"):
+                _nonnegative_event_int(
+                    notification_usage.get(field),
+                    f"Agent continuation notification {field}")
+            prior_tool_calls = origin["tool_calls"]
+            prior_epoch_tool_calls = origin["tool_call_epoch_total"]
+            if (notification_usage["total_tokens"] <= 0
+                    or notification_usage["duration_ms"] <= 0
+                    or not isinstance(notification.get("summary"), str)
+                    or not notification["summary"]
+                    or not isinstance(notification.get("output_file"), str)
+                    or not notification["output_file"]):
+                raise InfraFailure(
+                    "Agent continuation cumulative evidence is inconsistent")
+
+            allowed_result_keys = {"success", "message", "pin"}
+            if (not isinstance(result_data, dict)
+                    or not {"success", "message"}.issubset(result_data)
+                    or not set(result_data).issubset(allowed_result_keys)
+                    or result_data.get("success") is not True
+                    or not isinstance(result_data.get("message"), str)
+                    or not result_data["message"]
+                    or "resumedAgentId" in result_data):
+                raise InfraFailure(
+                    "Agent continuation SendMessage result is malformed")
+            pin = result_data.get("pin")
+            if pin is not None and (
+                    not isinstance(pin, dict)
+                    or set(pin) != {"id", "name", "ref"}
+                    or pin.get("id") != task_id
+                    or not isinstance(pin.get("name"), str)
+                    or not pin["name"]
+                    or len(pin["name"]) > 200
+                    or not isinstance(pin.get("ref"), str)
+                    or re.fullmatch(r"[0-9a-f]{6,12}", pin["ref"])
+                    is None):
+                raise InfraFailure(
+                    "Agent continuation SendMessage pin is malformed")
+            wrapper_content = result_block.get("content")
+            if (not isinstance(wrapper_content, list)
+                    or len(wrapper_content) != 1
+                    or not isinstance(wrapper_content[0], dict)
+                    or wrapper_content[0].get("type") != "text"
+                    or not isinstance(wrapper_content[0].get("text"), str)
+                    or result_block.get("is_error") not in (None, False)):
+                raise InfraFailure(
+                    "Agent continuation SendMessage wrapper is inconsistent")
+            try:
+                rendered_result = _json_without_duplicate_keys(
+                    wrapper_content[0]["text"].encode("utf-8"),
+                    "SendMessage continuation wrapper")
+            except InfraFailure as exc:
+                raise InfraFailure(
+                    "Agent continuation SendMessage wrapper is inconsistent"
+                ) from exc
+            if rendered_result != result_data:
+                raise InfraFailure(
+                    "Agent continuation SendMessage wrapper is inconsistent")
+            warm_resume = re.match(
+                r'^Agent ".+" was stopped \(.+\); resumed it with your '
+                r'message and ran to completion\. Result:\n\n',
+                result_data["message"],
+            ) is not None
+            cold_resume = re.match(
+                r'^Agent ".+" had no active task; resumed from transcript '
+                r'with your message and ran to completion\. Result:\n\n',
+                result_data["message"],
+            ) is not None
+            if warm_resume == cold_resume:
+                raise InfraFailure(
+                    "Agent continuation resume branch is ambiguous")
+            observed_tool_calls = notification_usage["tool_uses"]
+            if warm_resume:
+                if observed_tool_calls < prior_epoch_tool_calls:
+                    raise InfraFailure(
+                        "warm Agent continuation tool count regressed")
+                continuation_tool_delta = (
+                    observed_tool_calls - prior_epoch_tool_calls)
+            else:
+                # An evicted/cold resume reloads the transcript for prompting
+                # but seeds a fresh task-registry epoch. Its public count is
+                # therefore this epoch's delta, not the prior cumulative total.
+                continuation_tool_delta = observed_tool_calls
+            reconciled_tool_calls = (
+                prior_tool_calls + continuation_tool_delta)
+
+            lifecycle_positions = [
+                completed_agent_positions[task_id],
+                evidence["position"],
+                event_positions[id(started)],
+                event_positions[id(task_update)],
+                event_positions[id(notification)],
+                event_positions[id(result_event)],
+            ]
+            if (lifecycle_positions != sorted(lifecycle_positions)
+                    or len(set(lifecycle_positions))
+                    != len(lifecycle_positions)):
+                raise InfraFailure(
+                    "Agent continuation lifecycle is out of order")
+            if origin["continuation_rounds"] == 0:
+                origin["initial_tool_stats"] = origin["tool_stats"]
+                origin["continuation_tool_call_deltas"] = []
+            origin["continuation_tool_call_deltas"].append(
+                continuation_tool_delta)
+            origin["tool_calls"] = reconciled_tool_calls
+            origin["tool_call_epoch_total"] = observed_tool_calls
+            origin["total_duration_ms"] = notification_usage["duration_ms"]
+            origin["continuation_rounds"] += 1
+            # The public SendMessage result exposes only the cumulative count,
+            # not a typed continuation breakdown. Preserve the initial typed
+            # evidence separately instead of pretending it categorizes later
+            # rounds.
+            origin["tool_stats"] = None
+            completed_agent_positions[task_id] = event_positions[
+                id(result_event)]
+    return added
+
+
+def _terminal_accounting_nodes(events, nodes, registered_model,
+                               protocol_version, has_real_assistant,
+                               require_terminal):
+    if (protocol_version != PILOT_V2_PROTOCOL_VERSION
+            or not has_real_assistant):
+        return []
+    terminal = [event for event in events if event.get("type") == "result"]
+    if not terminal:
+        if require_terminal:
+            raise InfraFailure(
+                "protocol-v2 assistant stream has no terminal result")
+        if any(node.get("accounting_source") == "agent_tool_result"
+               and node.get("tool_calls", 0) > 0 for node in nodes):
+            raise InfraFailure(
+                "completed tool-using Agent has no terminal model ledger")
+        return []
+    if len(terminal) != 1:
+        raise InfraFailure(
+            "protocol-v2 assistant stream has multiple terminal results")
+    result = terminal[0]
+    if not events or events[-1] is not result:
+        raise InfraFailure(
+            "protocol-v2 terminal result is not the final stream event")
+    if (require_terminal and (
+            result.get("subtype") != "success"
+            or result.get("is_error") is not False)):
+        raise InfraFailure("protocol-v2 terminal result is not successful")
+    if registered_model is None:
+        observed = {node["model"] for node in nodes
+                    if not node.get("auxiliary")}
+        if len(observed) != 1:
+            raise InfraFailure(
+                "registered model is required for Agent stream accounting")
+        registered_model = next(iter(observed))
+    if not isinstance(registered_model, str) or not registered_model:
+        raise InfraFailure("registered model must be nonempty text")
+    root_usage = _snake_usage_totals(
+        result.get("usage"), "terminal result usage")
+    root_nodes = [node for node in nodes
+                  if not node.get("subagent")
+                  and not node.get("auxiliary")]
+    if not root_nodes:
+        raise InfraFailure(
+            "terminal result usage has no model-bearing root evidence")
+    root_models = {node["model"] for node in root_nodes}
+    root_efforts = {node.get("effort") for node in root_nodes}
+    if len(root_models) != 1 or len(root_efforts) != 1:
+        raise InfraFailure(
+            "root assistant messages disagree on model or effort")
+    if root_usage[0] + root_usage[1] <= 0:
+        raise InfraFailure("terminal result usage has no model tokens")
+    # Claude 2.1.220 assistant chunks carry typed per-message usage, but
+    # their output token figures are not additive to the terminal root
+    # total.  The terminal result is the authoritative root token ledger;
+    # deduplicated assistant messages remain authoritative for tool calls,
+    # delegation launches, model, effort, and stable identities.
+    authoritative_root = {
+        "model": next(iter(root_models)),
+        "effort": next(iter(root_efforts)),
+        "input_tokens": root_usage[0],
+        "output_tokens": root_usage[1],
+        "tool_calls": sum(node["tool_calls"] for node in root_nodes),
+        "subagent": False,
+        "subagent_id": None,
+        "subagent_launches": sum(
+            node.get("subagent_launches", 0) for node in root_nodes),
+        "auxiliary": False,
+        "accounting_source": "terminal_result_usage",
+        "session_id": result.get("session_id"),
+        "assistant_message_ids": [
+            node.get("message_id") for node in root_nodes],
+        "assistant_request_ids": [
+            node.get("request_id") for node in root_nodes],
+    }
+    root_object_ids = {id(node) for node in root_nodes}
+    first_root = min(
+        index for index, node in enumerate(nodes)
+        if id(node) in root_object_ids)
+    nodes[:] = [node for node in nodes if id(node) not in root_object_ids]
+    nodes.insert(first_root, authoritative_root)
+    model_usage = result.get("modelUsage")
+    if not isinstance(model_usage, dict) or not model_usage:
+        raise InfraFailure("terminal result modelUsage must be an object")
+    canonical_models = dict(
+        PILOT_V2_AGENT_STREAM_ACCOUNTING_POLICY["canonical_models"])
+    if registered_model not in canonical_models:
+        raise InfraFailure(
+            "registered model lacks a canonical modelUsage registration")
+    registered_usage = model_usage.get(registered_model)
+    if registered_usage is None:
+        raise InfraFailure(
+            "terminal modelUsage lacks the registered model")
+    registered_totals = _camel_usage_totals(
+        registered_usage, "registered terminal modelUsage")
+    agent_summaries = [
+        node for node in nodes
+        if node.get("accounting_source") == "agent_tool_result"]
+    if agent_summaries:
+        if {node.get("model") for node in agent_summaries} != {
+                registered_model}:
+            raise InfraFailure(
+                "completed Agent model differs from registration")
+        other_children = [
+            node for node in nodes
+            if node.get("subagent")
+            and node.get("accounting_source") != "agent_tool_result"]
+        if other_children:
+            raise InfraFailure(
+                "completed Agent and legacy sidechain accounting are mixed")
+        residual = (
+            registered_totals[0] - root_usage[0],
+            registered_totals[1] - root_usage[1],
+        )
+        if (any(value < 0 for value in residual)
+                or residual[0] + residual[1] <= 0):
+            raise InfraFailure(
+                "terminal registered-model usage has no Agent residual")
+        # Claude CLI 2.1.220's Agent completion `usage` is the LAST child
+        # assistant turn, not the full child history.  It proves positive
+        # per-child model execution, while the exact complete child charge
+        # is the registered-model terminal ledger minus the authoritative
+        # root ledger.  Every last-turn summary must fit inside that total.
+        summary_floor = (
+            sum(node["input_tokens"] for node in agent_summaries),
+            sum(node["output_tokens"] for node in agent_summaries),
+        )
+        if any(floor > total
+               for floor, total in zip(summary_floor, residual)):
+            raise InfraFailure(
+                "Agent completion summaries exceed the terminal residual")
+        agent_efforts = {node.get("effort") for node in agent_summaries}
+        if len(agent_efforts) != 1:
+            raise InfraFailure(
+                "completed Agent summaries disagree on effort evidence")
+        validated_ids = [
+            node.get("subagent_id") for node in agent_summaries]
+        reported_ids = [
+            node.get("reported_subagent_id") for node in agent_summaries]
+        if (any(not isinstance(value, str) or not value
+                for value in [*validated_ids, *reported_ids])
+                or len(set(validated_ids)) != len(validated_ids)
+                or len(set(reported_ids)) != len(reported_ids)):
+            raise InfraFailure(
+                "Agent completion identities are incomplete or duplicated")
+        observed_agent_launches = sum(
+            node.get("subagent_launches", 0) for node in nodes
+            if not node.get("auxiliary"))
+        if observed_agent_launches != len(validated_ids):
+            raise InfraFailure(
+                "Agent launches and completed identities do not reconcile")
+        aggregate_agent = {
+            "model": registered_model,
+            "effort": next(iter(agent_efforts)),
+            "input_tokens": residual[0],
+            "output_tokens": residual[1],
+            "tool_calls": sum(
+                node["tool_calls"] for node in agent_summaries),
+            "subagent": True,
+            "subagent_id": None,
+            "validated_subagent_ids": validated_ids,
+            "reported_subagent_ids": reported_ids,
+            "subagent_launches": sum(
+                node.get("subagent_launches", 0)
+                for node in agent_summaries),
+            "auxiliary": False,
+            "accounting_source": "terminal_registered_model_residual",
+            "completion_summary_floor": {
+                "input_tokens": summary_floor[0],
+                "output_tokens": summary_floor[1],
+            },
+            "continuation_rounds": sum(
+                node.get("continuation_rounds", 0)
+                for node in agent_summaries),
+            "continuation_model_evidence": (
+                PILOT_V2_AGENT_STREAM_ACCOUNTING_POLICY[
+                    "continuation_model_evidence"]),
+        }
+        summary_object_ids = {id(node) for node in agent_summaries}
+        first_summary = min(
+            index for index, node in enumerate(nodes)
+            if id(node) in summary_object_ids)
+        nodes[:] = [node for node in nodes
+                    if id(node) not in summary_object_ids]
+        nodes.insert(first_summary, aggregate_agent)
+    agent_nodes = [node for node in nodes if not node.get("auxiliary")]
+    observed_totals = (
+        sum(node["input_tokens"] for node in agent_nodes),
+        sum(node["output_tokens"] for node in agent_nodes),
+    )
+    if ({node["model"] for node in agent_nodes} != {registered_model}
+            or registered_totals != observed_totals):
+        raise InfraFailure(
+            "registered modelUsage differs from root plus child accounting")
+    allowed_auxiliary = tuple(
+        PILOT_V2_AGENT_STREAM_ACCOUNTING_POLICY["auxiliary_models"])
+    unexpected = sorted(
+        model for model in model_usage
+        if model != registered_model and model not in allowed_auxiliary)
+    if unexpected:
+        raise InfraFailure(
+            f"terminal modelUsage contains unexpected model(s) {unexpected}")
+    for model, usage in model_usage.items():
+        if (not isinstance(usage, dict)
+                or usage.get("canonicalModel") != canonical_models[model]):
+            raise InfraFailure(
+                f"terminal modelUsage canonical model drifted for {model}")
+    auxiliary = []
+    for model in allowed_auxiliary:
+        if model not in model_usage:
+            continue
+        input_tokens, output_tokens = _camel_usage_totals(
+            model_usage[model], f"auxiliary modelUsage {model}")
+        if input_tokens + output_tokens <= 0:
+            raise InfraFailure(
+                "auxiliary modelUsage must contain positive token usage")
+        auxiliary.append({
+            "model": model,
+            "effort": None,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "tool_calls": 0,
+            "subagent": False,
+            "subagent_id": None,
+            "subagent_launches": 0,
+            "auxiliary": True,
+            "accounting_source": "terminal_model_usage",
+        })
+    return auxiliary
+
+
+def _reconcile_stream_events(events, registered_model=None,
+                             protocol_version=1, require_terminal=False):
+    assistant_events = _group_assistant_events(events, protocol_version)
+    if (protocol_version == PILOT_V2_PROTOCOL_VERSION
+            and assistant_events):
+        expected_session = assistant_events[0].get("session_id")
+        for event in events:
+            candidate = event.get("session_id")
+            if (not isinstance(candidate, str) or not candidate
+                    or candidate != expected_session):
+                raise InfraFailure(
+                    "protocol-v2 real stream event lacks the bound session")
+    synthetic_events = [event for event in events
+                        if event.get("type") == "node"]
+    if assistant_events and synthetic_events:
+        raise InfraFailure(
+            "mixed synthetic-node and assistant accounting is ambiguous")
+    nodes = []
+    source_events = assistant_events if assistant_events else synthetic_events
+    for event in source_events:
+        node = _node_from_event(event)
+        if node is not None:
+            nodes.append(node)
+    launches = _delegation_launches(assistant_events)
+    launch_ids = set(launches)
+    for node in nodes:
+        parent_id = node.get("subagent_id") if node.get("subagent") else None
+        if (node.get("accounting_source") == "assistant"
+                and parent_id is not None):
+            if parent_id not in launch_ids:
+                raise InfraFailure(
+                    "subagent assistant has no matching delegation launch")
+            child_positions = node.get("stream_positions")
+            launch_positions = launches[parent_id].get("message_positions")
+            if (not isinstance(child_positions, list)
+                    or not child_positions
+                    or not isinstance(launch_positions, list)
+                    or not launch_positions
+                    or any(isinstance(position, bool)
+                           or not isinstance(position, int)
+                           for position in [
+                               *child_positions, *launch_positions])
+                    or max(launch_positions) >= min(child_positions)):
+                raise InfraFailure(
+                    "delegation launch does not precede its child assistant")
+    nodes.extend(_agent_summary_nodes(
+        events, launches, nodes, require_complete=require_terminal))
+    nodes.extend(_terminal_accounting_nodes(
+        events, nodes, registered_model, protocol_version,
+        bool(assistant_events), require_terminal))
+    return nodes
+
+
+def parse_transcript(stdout, registered_model=None, protocol_version=1):
     """Parse stream-json lines into accounting nodes plus the final response
     text. Understands both the synthetic mock schema and the real Claude
     headless stream (see `_node_from_event`); `session_id` comes from any
     event carrying one, response text from the `result` event."""
-    nodes, session_id, result_parts = [], None, []
+    events, session_id, result_parts = [], None, []
     for line_number, line in enumerate(stdout.splitlines(), 1):
         line = line.strip()
         if not line:
@@ -2264,17 +3844,19 @@ def parse_transcript(stdout):
                     f"session_id")
         if event.get("type") == "result" and event.get("result"):
             result_parts.append(str(event["result"]))
-        node = _node_from_event(event)
-        if node is not None:
-            nodes.append(node)
+        events.append(event)
     if session_id is None:
         raise InfraFailure("backend output contained no session_id")
+    nodes = _reconcile_stream_events(
+        events, registered_model=registered_model,
+        protocol_version=protocol_version, require_terminal=True)
     if not nodes:
         raise InfraFailure("backend output contained no accounting nodes")
     return session_id, nodes, "\n".join(result_parts)
 
 
-def parse_nodes_tolerant(stdout):
+def parse_nodes_tolerant(stdout, registered_model=None, protocol_version=1,
+                         expected_session=None):
     """Extract nodes from a partial timeout/abort transcript.
 
     A partial stream may legitimately omit its final result, but every byte
@@ -2282,7 +3864,8 @@ def parse_nodes_tolerant(stdout):
     events instead of accepting a convenient valid prefix and undercounting
     the already-observed workflow failure.
     """
-    nodes = []
+    events = []
+    session_id = None
     for line_number, line in enumerate((stdout or "").splitlines(), 1):
         line = line.strip()
         if not line:
@@ -2297,10 +3880,26 @@ def parse_nodes_tolerant(stdout):
         if not isinstance(event, dict):
             raise InfraFailure(
                 f"partial stream line {line_number} is not a JSON object")
-        node = _node_from_event(event)
-        if node is not None:
-            nodes.append(node)
-    return nodes
+        if "session_id" in event:
+            candidate = event["session_id"]
+            if not isinstance(candidate, str) or not candidate.strip():
+                raise InfraFailure(
+                    f"partial stream line {line_number} has a non-string "
+                    "or empty session_id")
+            if session_id is None:
+                session_id = candidate
+            elif candidate != session_id:
+                raise InfraFailure(
+                    f"partial stream line {line_number} conflicts with the "
+                    "first session_id")
+        events.append(event)
+    if (expected_session is not None
+            and session_id != expected_session):
+        raise InfraFailure(
+            "resumed partial stream changed session identity")
+    return _reconcile_stream_events(
+        events, registered_model=registered_model,
+        protocol_version=protocol_version, require_terminal=False)
 
 
 def parse_result_tolerant(stdout):
@@ -2330,12 +3929,20 @@ def parse_result_tolerant(stdout):
 
 def account(nodes):
     totals = {"main": {"input_tokens": 0, "output_tokens": 0, "tool_calls": 0},
-              "subagents": {"input_tokens": 0, "output_tokens": 0, "tool_calls": 0}}
+              "subagents": {"input_tokens": 0, "output_tokens": 0, "tool_calls": 0},
+              "auxiliary": {"input_tokens": 0, "output_tokens": 0,
+                            "tool_calls": 0}}
     for node in nodes:
         if not isinstance(node, dict):
             raise InfraFailure("accounting node must be an object")
         if not isinstance(node.get("subagent"), bool):
             raise InfraFailure("accounting node subagent flag must be boolean")
+        auxiliary = node.get("auxiliary", False)
+        if not isinstance(auxiliary, bool):
+            raise InfraFailure("accounting node auxiliary flag must be boolean")
+        if auxiliary and node["subagent"]:
+            raise InfraFailure(
+                "auxiliary accounting cannot also be a subagent node")
         for field in ("input_tokens", "output_tokens", "tool_calls"):
             _nonnegative_event_int(
                 node.get(field), f"accounting node {field}")
@@ -2346,18 +3953,44 @@ def account(nodes):
         _nonnegative_event_int(
             node.get("subagent_launches", 0),
             "accounting node subagent_launches")
-        bucket = totals["subagents"] if node["subagent"] else totals["main"]
+        if auxiliary and (
+                node["tool_calls"] != 0
+                or node.get("subagent_launches", 0) != 0
+                or node.get("subagent_id") is not None):
+            raise InfraFailure(
+                "auxiliary accounting may contain only model-token usage")
+        bucket = (totals["auxiliary"] if auxiliary else
+                  totals["subagents"] if node["subagent"] else
+                  totals["main"])
         bucket["input_tokens"] += node["input_tokens"]
         bucket["output_tokens"] += node["output_tokens"]
         bucket["tool_calls"] += node["tool_calls"]
     totals["tree"] = {
-        key: totals["main"][key] + totals["subagents"][key]
+        key: (totals["main"][key] + totals["subagents"][key]
+              + totals["auxiliary"][key])
         for key in totals["main"]
     }
     distinct = {n.get("subagent_id") for n in nodes
-                if n["subagent"] and n.get("subagent_id")}
+                if not n.get("auxiliary")
+                and n["subagent"] and n.get("subagent_id")}
+    for node in nodes:
+        validated_ids = node.get("validated_subagent_ids", [])
+        if (not isinstance(validated_ids, list)
+                or any(not isinstance(value, str) or not value
+                       for value in validated_ids)
+                or len(set(validated_ids)) != len(validated_ids)):
+            raise InfraFailure(
+                "validated subagent identities must be unique nonempty text")
+        if validated_ids and (
+                node.get("auxiliary") or not node.get("subagent")
+                or node.get("subagent_id") is not None):
+            raise InfraFailure(
+                "aggregate subagent identities have an invalid owner node")
+        distinct.update(validated_ids)
     anonymous = sum(1 for n in nodes
-                    if n["subagent"] and not n.get("subagent_id"))
+                    if not n.get("auxiliary")
+                    and n["subagent"] and not n.get("subagent_id")
+                    and not n.get("validated_subagent_ids"))
     # Two independent signals: child-output evidence AND launch (Task
     # tool_use) evidence — a child that died before emitting anything
     # still counts as a spawn.
@@ -2369,7 +4002,20 @@ def account(nodes):
 
 
 def validate_models(nodes, registered_model):
-    bad = sorted({n["model"] for n in nodes if n["model"] != registered_model})
+    allowed_auxiliary = frozenset(
+        PILOT_V2_AGENT_STREAM_ACCOUNTING_POLICY["auxiliary_models"])
+    bad_auxiliary = sorted({
+        n.get("model") for n in nodes
+        if n.get("auxiliary") and (
+            n.get("model") not in allowed_auxiliary
+            or n.get("accounting_source") != "terminal_model_usage")
+    }, key=str)
+    if bad_auxiliary:
+        raise InfraFailure(
+            f"unregistered auxiliary model evidence {bad_auxiliary}")
+    bad = sorted({n["model"] for n in nodes
+                  if not n.get("auxiliary")
+                  and n["model"] != registered_model})
     if bad:
         raise InfraFailure(
             f"effective model(s) {bad} differ from registered "
@@ -2386,12 +4032,17 @@ def validate_efforts(nodes, registered_effort):
     `require_effort_pin` before any session is spawned) and recorded as
     `command_pin` capture. A transcript where only SOME nodes report effort
     is broken capture and invalidates the run. Returns the capture mode."""
-    reported = [n for n in nodes if n.get("effort") not in (None, "")]
+    agent_nodes = [n for n in nodes if not n.get("auxiliary")]
+    if not agent_nodes:
+        raise InfraFailure("transcript contains no agent-tree nodes")
+    reported = [n for n in agent_nodes
+                if n.get("effort") not in (None, "")]
     if not reported:
         return "command_pin"
-    if len(reported) != len(nodes):
+    if len(reported) != len(agent_nodes):
         raise InfraFailure(
-            f"{len(nodes) - len(reported)} of {len(nodes)} node(s) missing "
+            f"{len(agent_nodes) - len(reported)} of {len(agent_nodes)} "
+            f"node(s) missing "
             f"effective effort while others report it — broken effort "
             f"capture; run invalidated"
         )
@@ -2884,7 +4535,10 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
                                      heartbeat_total=heartbeat_total)
             except WorkflowFailure as wf:
                 try:
-                    partial = parse_nodes_tolerant(wf.stdout)
+                    partial = parse_nodes_tolerant(
+                        wf.stdout, registered_model=arm["model"],
+                        protocol_version=config.get("protocol_version", 1),
+                        expected_session=resume)
                     if not partial:
                         raise InfraFailure(
                             "failed session emitted no accounting nodes")
@@ -2986,7 +4640,9 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
             response = parse_result_tolerant(exc.stdout)
             artifact = _discover_artifact()
         else:
-            session_id, nodes, response = parse_transcript(stdout)
+            session_id, nodes, response = parse_transcript(
+                stdout, registered_model=arm["model"],
+                protocol_version=config.get("protocol_version", 1))
             validate_models(nodes, arm["model"])
             effort_modes.add(validate_efforts(
                 nodes, arm.get("effort", "default")))
@@ -3000,13 +4656,21 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
             # verbatim and tagged, or stops are uncountable afterwards.
             record["interventions_log"].append(classify_stop(response))
             try:
-                stdout = _spawn(CONTINUATION_MESSAGE, resume=session_id)
+                expected_session = session_id
+                stdout = _spawn(
+                    CONTINUATION_MESSAGE, resume=expected_session)
             except WorkflowFailure as exc:
                 terminal_workflow_failure = exc
                 response = parse_result_tolerant(exc.stdout)
                 artifact = _discover_artifact()
             else:
-                session_id, nodes, response = parse_transcript(stdout)
+                continued_session, nodes, response = parse_transcript(
+                    stdout, registered_model=arm["model"],
+                    protocol_version=config.get("protocol_version", 1))
+                if continued_session != expected_session:
+                    raise InfraFailure(
+                        "resumed backend stream changed session identity")
+                session_id = continued_session
                 validate_models(nodes, arm["model"])
                 effort_modes.add(
                     validate_efforts(nodes, arm.get("effort", "default")))
@@ -5026,12 +6690,14 @@ def assert_blind_scorable(doc_path):
         doc_path, read_input_bytes(doc_path, "scoring document"))
 
 
-def _parse_judge_stream_tolerant(stdout, require_structured_output=False):
+def _parse_judge_stream_tolerant(
+        stdout, require_structured_output=False, registered_model=None,
+        protocol_version=1):
     """Recover auditable judge-attempt material even when the stream
     transport itself is invalid. Contract validation still fails closed;
     this helper never repairs response JSON."""
     session_id = None
-    nodes = []
+    events = []
     result_parts = []
     structured_outputs = []
     stream_defects = []
@@ -5083,14 +6749,18 @@ def _parse_judge_stream_tolerant(stdout, require_structured_output=False):
                     structured_outputs.append(structured)
             elif result_value is not None:
                 result_parts.append(str(result_value))
-        try:
-            node = _node_from_event(event)
-        except InfraFailure as exc:
-            stream_defects.append(
-                f"stream line {line_number} has invalid accounting: {exc}")
-            continue
-        if node is not None:
-            nodes.append(node)
+        events.append(event)
+    try:
+        nodes = _reconcile_stream_events(
+            events, registered_model=registered_model,
+            protocol_version=protocol_version, require_terminal=True)
+    except InfraFailure as exc:
+        nodes = []
+        stream_defects.append(f"stream has invalid accounting: {exc}")
+    if nodes and any(
+            node.get("subagent_launches", 0) > 0 for node in nodes):
+        stream_defects.append(
+            "judge stream contains forbidden subagent delegation")
     if session_id is None:
         stream_defects.append("backend output contained no session_id")
     if not nodes:
@@ -5237,7 +6907,9 @@ def _validate_v2_attempt_record(record, expected):
         raw_digest = hashlib.sha256(encoded_stream).hexdigest()
         session_id, nodes, response, structured_output, stream_defects = (
             _parse_judge_stream_tolerant(
-                raw_stream, require_structured_output=True))
+                raw_stream, require_structured_output=True,
+                registered_model=expected.get("judge_model"),
+                protocol_version=PILOT_V2_PROTOCOL_VERSION))
     if raw_digest != record.get("raw_stream_sha256"):
         raise InfraFailure("judge attempt raw stream digest mismatch")
     if record.get("raw_stream_bytes") != raw_stream_bytes:
@@ -6369,7 +8041,9 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
             else:
                 (session_id, nodes, response, structured_output,
                  stream_defects) = _parse_judge_stream_tolerant(
-                    stdout, require_structured_output=True)
+                    stdout, require_structured_output=True,
+                    registered_model=judge_model,
+                    protocol_version=PILOT_V2_PROTOCOL_VERSION)
             defects = launch_defects + stream_defects
             effort_capture = None
             if nodes:
@@ -7251,7 +8925,9 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
             durable_unlink(pending_path, missing_ok=True)
             raise
         try:
-            session_id, nodes, response = parse_transcript(stdout)
+            session_id, nodes, response = parse_transcript(
+                stdout, registered_model=judge_model,
+                protocol_version=config.get("protocol_version", 1))
             if not response.strip():
                 raise InfraFailure(
                     f"judge session {session_id} returned no response text")

@@ -778,11 +778,19 @@ ablation remain fixed unless this section expressly replaces a rule.
    been observed, incomplete/malformed accounting or runtime parity after a
    timeout/abort is a terminal operator block and is never infrastructure-
    retried.
-6. Agent-tree parity precedes outcome classification: every observed Task
-   launch must have model-bearing child accounting. In the no-subagent arm, a
-   launch without that child evidence terminally blocks (the policy event was
-   observed but cannot be costed or parity-validated). When a fully-accounted
-   no-subagent-policy violation and timeout/abort occur in the same run,
+6. Agent-tree parity precedes outcome classification: every observed `Task`
+   or `Agent` delegation launch must have correlated model-bearing child
+   evidence from its legacy sidechain or completion summary. For a complete
+   CLI 2.1.220 `Agent` tree, the completion summary proves child identity,
+   resolved model, last-turn usage, and tool totals but is not a cumulative
+   token ledger; aggregate child cost is therefore the exact terminal
+   registered-model usage minus authoritative root usage. A completed
+   tool-using Agent without that terminal ledger is unaccountable and fails
+   closed. In the no-subagent
+   arm, a launch without that child evidence terminally blocks (the policy
+   event was observed but cannot be costed or parity-validated). When a
+   fully-accounted no-subagent-policy violation and timeout/abort occur in the
+   same run,
    `subagent_policy` is the deterministic primary failure kind and the
    timeout/abort kind and detail are retained as secondary evidence. This
    preserves both observations while keeping the ablation gate internally
@@ -1227,6 +1235,63 @@ effective model `claude-opus-5`. Missing, drifted, incomplete, or tampered
 judge or subagent-model proof blocks sealing. Round 10 then requires six
 genuinely new tasks, a new atomic seal, all-arm real-backend preflight, and a
 completely new 42-slot schedule.
+
+Round 10 stopped at its second mandatory pre-seal proof, before any holdout
+material was authored. At frozen operator commit
+`d7a5e1408b9db64e6e7600a10206b66fac614477`, the public judge transport probe
+passed with receipt SHA-256
+`c551f9940f08ec878e6866dfd7c6e65760a6c9c1e1b3c12c5951fdbf48a85715` and
+execution SHA-256
+`bbadce3502a8b21ee0731697a8cbe99f42b519094143a8bfef4e8e2b50de2d43`.
+The separate one-shot subagent-model probe then made exactly one public
+synthetic backend call. Its evidence reported `claude-opus-5` for both the
+parent and the child's `resolvedModel`, confirming that the
+harness-constructed `CLAUDE_CODE_SUBAGENT_MODEL` pin took precedence over the
+fixture's conflicting `model: sonnet`. The prospectively registered v1
+validator nevertheless required a legacy `Task` launch plus a model-bearing
+child `assistant` event, while pinned Claude Code 2.1.220 emitted an `Agent`
+launch plus its correlated `tool_result` carrying `resolvedModel`. The
+validator therefore stopped without creating an accepted receipt. The
+sanitized terminal receipt SHA-256 is
+`04a61a24cc42bc6c0f0dec6efbf50e8c568fd024f36d6f1f48e8a7a56bf3b99a`.
+The observed stream cannot be accepted by changing its grammar post hoc; the
+complete round-10 namespace and the successful judge proof are historical
+evidence only. No holdout task or package was authored or sealed, and no
+schedule, evaluated run, holdout judge batch, drift gate, or aggregate was
+launched.
+
+Prospectively, round 11 uses fresh namespace `holdout-v2-round11`, with judge,
+subagent-model, and seal authorities reset to their exact all-zero sentinels.
+Before another model call, the public stream and accounting policy must be
+versioned for Claude Code 2.1.220's exact `Agent` lifecycle. Split chunks of
+one assistant message are reconciled by stable identity so their tools and
+lineage count once; terminal `result.usage` is the authoritative complete
+root charge, while assistant usage is only a partial-stream fallback. The
+correlated completed `Agent` result supplies child identity, resolved model,
+last-turn usage, and typed tool statistics. Pinned CLI 2.1.220 computes that
+usage from the child's final assistant turn rather than the whole child
+history, so complete aggregate child usage is registered-model terminal usage
+minus authoritative root usage; it is never allocated or double-counted per
+child. The v4 environment policy also overwrites
+`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` after sanitization for every arm and
+judge. This enforces the already registered synchronous-Agent boundary and
+makes a `SendMessage` continuation of a completed agent observable as one
+ordered lifecycle. Such a continuation retains the same persisted agent/model
+identity, uses a new SendMessage tool-use identity, and updates only the last
+tool-count epoch while requiring a positive duration; it is not another spawn.
+Exact result wording binds whether a warm registry count must remain cumulative
+or a cold/evicted registry count is a fresh delta added to the prior total. A
+continuation whose
+terminal model ledger is absent, partial, or shaped like the unregistered
+asynchronous path is unaccountable and fails closed. Any
+missing, duplicate, mixed, drifted, or ambiguously correlated evidence fails
+closed. Registered-model root and child usage remains subject to exact model
+parity. The pinned CLI's separately reported, pre-registered Haiku
+control-plane usage is recorded in an explicit `auxiliary` bucket and included
+in `tree` token cost, but does not create a child identity or bypass agent
+model parity; any unregistered residual model is infrastructure failure. Both
+public proofs must run afresh and be registered before six new tasks may be
+authored and atomically sealed.
 
 1. Implement strict role validation, bounded crash-safe judge attempts,
    all-document role coverage, immutable policy bindings, and deterministic
