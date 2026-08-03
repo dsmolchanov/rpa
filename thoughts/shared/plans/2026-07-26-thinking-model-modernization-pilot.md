@@ -1169,6 +1169,18 @@ replace the independent pre-score source-drift gate. Round 9 still requires a
 new public live probe, six genuinely new tasks, a new atomic seal, and a new
 complete schedule before either judge role can run.
 
+The canonical round-9 public live probe completed before any round-9 holdout
+authoring at frozen operator commit
+`31d62d537d2cdaa7bdb82c39b3e595061ddfa04e`. It made exactly one synthetic
+call per judge role in the pinned operator image, and a no-model replay
+revalidated both immutable streams. The registered receipt SHA-256 is
+`ef437f1ede9ebfa2ae1094780259d3947c9385bd70caf606b579c5449df582db`;
+the registered execution SHA-256 is
+`1f36a722dc7937b78e3724a096151b9c6f75391ce03eac7ee9f5a90dd6b78fd5`.
+The probe used only public synthetic material. Round-9 seal authority remains
+the exact all-zero sentinel until the clean one-shot stability gate and
+atomic package build succeed.
+
 1. Implement strict role validation, bounded crash-safe judge attempts,
    all-document role coverage, immutable policy bindings, and deterministic
    aggregation in `skills/research-codebase/evals/public/`.

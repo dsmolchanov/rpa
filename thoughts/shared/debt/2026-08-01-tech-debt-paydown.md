@@ -69,6 +69,9 @@ auto_fixable_count: 7
 - [ ] Add the mandatory three-fetch raw-byte equality check to the private
   round-9 one-shot sealer, then run a new probe, seal, schedule, scorer,
   verifier, and aggregate. Reuse nothing from an invalid round.
+- [x] Complete and no-model revalidate the fresh round-9 public live probe;
+  register only its receipt/execution digests while keeping seal authority at
+  the exact pending sentinel.
 - [x] Move legacy harness temp roots to a dated folder under the user's Trash
   after validating every exact target; keep the cleanup recoverable.
 

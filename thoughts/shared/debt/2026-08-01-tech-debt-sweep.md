@@ -294,3 +294,9 @@ three-fetch byte-equality check to the private atomic sealer before manifest
 creation or promotion. A public, runtime-bound source-stability proof remains
 post-pilot hardening; the immediate gate deliberately changes no sealed
 schema and never canonicalizes external bytes.
+
+The fresh round-9 public live probe has now passed in the pinned operator and
+revalidated without another model observation. Only its receipt/execution
+digests are registered; no holdout material existed and seal authority stays
+at the exact pending sentinel until the private three-fetch stability gate
+and one-shot atomic seal complete.
