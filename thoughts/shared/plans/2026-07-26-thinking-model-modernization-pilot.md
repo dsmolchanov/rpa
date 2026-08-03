@@ -1293,6 +1293,21 @@ model parity; any unregistered residual model is infrastructure failure. Both
 public proofs must run afresh and be registered before six new tasks may be
 authored and atomically sealed.
 
+At detached operator commit
+`407f602add4cc5c29281445dd0351d9e6581204d`, both round-11 public-only live
+proofs passed in the pinned operator image before any holdout material was
+authored. The judge transport proof registered receipt SHA-256
+`93f50b576ad0287d0d808fead53b29609539342d2b6d5e28de43df92fd7a5612`
+and execution SHA-256
+`d12675be2a4093194667ab27a4a4b30595e6d6dd3591b0b5e709df9bd0a23de1`.
+The separate parent/child model-parity proof registered receipt SHA-256
+`d066949bf0e2adaecc1b9e737515c835f3ca7eba3b4285e1772ded6496e08d65`
+and execution SHA-256
+`1fefea2f5883831a481ec30a0619003a6a36a3dd4769b6b984279854c1d0dda0`.
+Both receipts independently revalidated without another model call. The seal
+authority remains the exact all-zero sentinel until these four proof digests
+are committed and a fresh operator checkout revalidates them.
+
 1. Implement strict role validation, bounded crash-safe judge attempts,
    all-document role coverage, immutable policy bindings, and deterministic
    aggregation in `skills/research-codebase/evals/public/`.
