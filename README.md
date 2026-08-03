@@ -216,7 +216,10 @@ After installation, your `~/.claude/` directory should look like:
 │   ├── create-test-plan/
 │   │   ├── SKILL.md
 │   │   └── references/
-│   └── tdd/
+│   ├── tdd/
+│   │   ├── SKILL.md
+│   │   └── references/
+│   └── tech-debt-sweep/
 │       ├── SKILL.md
 │       └── references/
 ├── hooks/
