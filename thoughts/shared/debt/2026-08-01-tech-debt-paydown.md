@@ -41,8 +41,10 @@ auto_fixable_count: 7
   The synthetic side now also proves exact-pin rejection before launch,
   canonical one-shot probe state, pending/tampered receipt refusal, and
   seal/config proof binding. The prior probe is invalidated by the prospective
-  semantic-reminder/code change; a fresh round-7 live probe and post-seal
-  all-arm real-backend preflight remain.
+  semantic-reminder/code change. The fresh round-7 probe has now passed and
+  been revalidated without another model call; its receipt/execution digests
+  are registered while the seal and post-seal all-arm real-backend preflight
+  remain pending.
 - [ ] Create a fresh round-7 seal in an uncontaminated session and return only
   its SHA-256 and six task basenames.
 - [ ] Register that exact seal through the shared authority consumed by

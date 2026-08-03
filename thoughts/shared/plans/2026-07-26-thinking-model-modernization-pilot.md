@@ -1094,6 +1094,18 @@ sentinels. The replacement must use a new `holdout-v2-round7` one-shot probe,
 six genuinely new tasks, a new atomic seal, and a complete new 42-slot
 schedule before scorer, verifier, sanitized reporting, or aggregation.
 
+The canonical round-7 public live probe then completed before any round-7
+holdout authoring. It made exactly one synthetic scorer call and one synthetic
+verifier call in the pinned operator image at frozen public operator commit
+`9a12bc43bd9faf8c03e0549062f7e30bc127a836`, and a no-model replay revalidated
+the immutable streams and receipt. The registered receipt SHA-256 is
+`fe834f3f72dbc9d9772245aba1e3a0ced7a2568029e231a5c195793b545d81a6`; the
+registered execution SHA-256 is
+`ff6daec061bd2b15914610fbb5c99bbc4a75538a20856a9065a9937e2710ac38`.
+The probe used only public synthetic material. The seal registration remains
+the exact all-zero sentinel until a separate one-shot session atomically
+authors and promotes the genuinely new round-7 package.
+
 1. Implement strict role validation, bounded crash-safe judge attempts,
    all-document role coverage, immutable policy bindings, and deterministic
    aggregation in `skills/research-codebase/evals/public/`.

@@ -252,3 +252,10 @@ repair hint. Because these public bytes and policies changed, the old probe
 and seal are no longer authority and all three registrations are pending. The
 remaining operational work is a fresh round-7 probe, atomic seal, all-arm
 real-backend preflight, complete schedule, judging, and aggregation.
+
+The fresh round-7 public live probe has now closed the first item in that
+sequence: both roles passed once in the frozen pinned operator, the receipt
+revalidated without a second model observation, and only its public receipt
+and execution digests were registered. No round-7 holdout task or package
+existed during the probe. The seal registration remains pending; the next
+authorized mutation is the separate atomic one-shot seal.
