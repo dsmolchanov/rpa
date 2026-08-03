@@ -269,3 +269,8 @@ ownership debt rather than an eval outcome. The prospective round-8 launcher
 uses one named expected-version pin checked against the imported public
 registration, and its no-model self-test covers the exact binding. Public
 probe/seal authority is pending again until the fresh round-8 boundary.
+
+The round-8 dual-role public probe has now passed and revalidated without a
+second model observation. Its two public digests are registered; no holdout
+material existed and seal authority remains pending for the corrected
+one-shot launcher.

@@ -1124,6 +1124,16 @@ seal registrations are reset to their exact all-zero sentinels. The next
 attempt uses the fresh `holdout-v2-round8` namespace and requires a new
 one-shot public probe, a new atomic seal, and a complete new schedule.
 
+The canonical round-8 public live probe completed before any round-8 holdout
+authoring. It made exactly one public synthetic call per judge role in the
+pinned operator image and its immutable receipt revalidated without another
+model call. The registered receipt SHA-256 is
+`3119b47299f78eba6ca6c718a6f3f28e8b15370f7b1f68a1334ba3aab9331e1c`;
+the registered execution SHA-256 is
+`876781f01ca42115088190167b67ad6289f6d3e0463dc2e4ab03999bfbebe041`.
+No holdout material existed during the probe; seal authority remains the
+exact all-zero sentinel until the round-8 one-shot boundary succeeds.
+
 1. Implement strict role validation, bounded crash-safe judge attempts,
    all-document role coverage, immutable policy bindings, and deterministic
    aggregation in `skills/research-codebase/evals/public/`.

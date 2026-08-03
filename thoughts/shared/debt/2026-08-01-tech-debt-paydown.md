@@ -50,6 +50,9 @@ auto_fixable_count: 7
   rejected the registered v2 proof before Codex launch. Preserve the claimed
   namespace, reset public authority, and replace the hidden literal with one
   explicit self-tested launcher pin for round 8.
+- [x] Complete and no-model revalidate the fresh round-8 dual-role live probe;
+  register only its receipt/execution digests while keeping seal authority at
+  the exact pending sentinel.
 - [ ] Create a fresh round-7 seal in an uncontaminated session and return only
   its SHA-256 and six task basenames.
 - [ ] Register that exact seal through the shared authority consumed by
