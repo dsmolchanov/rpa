@@ -1,90 +1,42 @@
 ---
-description: Execute approved inception stages and write canonical AI-DLC artifacts
+description: Execute or resume approved AI-DLC inception stages and canonical artifacts
 argument-hint: "[description] [--type hotfix|feature|refactor|migration] [--depth minimal|standard|comprehensive]"
-allowed-tools: Read, Glob, Grep, LS, Task, Edit, Write, TodoWrite, Bash(mkdir:*), Bash(git rev-parse:*), Bash(git diff:*)
 ---
 
-# AI-DLC Inception
+# AI-DLC Inception — Claude adapter
 
-You execute the approved inception stages from the compatibility workflow.
+This command is the thin Claude compatibility wrapper for the inception kernel
+at `skills/aidlc-inception/SKILL.md`. Execute that kernel for `$ARGUMENTS`.
 
-## Required Inputs
+Durable state, the execution plan, pinned rules, and answered question files
+are authoritative. Arguments provide matching context only; they never silently
+override stage or depth decisions. Begin or resume immediately when durable
+inputs are ready. On a pending decision, write/use the canonical question file
+and stop there.
 
-- `aidlc-docs/aidlc-state.md`
-- `aidlc-docs/inception/plans/execution-plan.md`
-- any answered question files under `aidlc-docs/inception/questions/`
+Kernel (the two imports support plugin-root and Quick Install layouts):
 
-If required question files exist and any `[Answer]:` field is blank, stop and ask the user to answer them first.
+@${CLAUDE_PLUGIN_ROOT}/skills/aidlc-inception/SKILL.md
 
-## Stage Execution Rules
+@~/.claude/skills/aidlc-inception/SKILL.md
 
-Follow the execution plan exactly. Depth controls detail level inside executed stages; it does not replace `EXECUTE` / `SKIP`.
+Artifact contract:
 
-Possible stages:
+@${CLAUDE_PLUGIN_ROOT}/skills/aidlc-inception/references/artifact-contract.md
 
-- Workspace Detection
-- Reverse Engineering
-- Requirements Analysis
-- User Stories
-- Workflow Planning
-- Application Design
-- Units Planning / Units Generation
+@~/.claude/skills/aidlc-inception/references/artifact-contract.md
 
-## Recommended Agent Usage
+If no import resolves in a development checkout, read both files from the
+project's `skills/aidlc-inception/` directory before starting. Always load the
+project's `.aidlc-rule-details/` files named by the kernel; the bootstrap script
+installs those pinned compatibility rules into AI-DLC-enabled projects.
 
-- `codebase-locator` for reverse-engineering scope discovery
-- `codebase-analyzer` for brownfield implementation understanding
-- `thoughts-locator` and `thoughts-analyzer` for historical context
-- `uow-decomposer` only after requirements/workflow/design artifacts are approved
+Platform wiring:
 
-Use `Task` blocks when delegating:
-
-```yaml
-Task - Reverse Engineering:
-  subagent_type: codebase-analyzer
-  Prompt: |
-    Analyze the current workspace for the inception phase.
-    Focus on reverse engineering needs and brownfield constraints.
-    Return concise file references and architecture notes for canonical inception artifacts.
-
-Task - Historical Context:
-  subagent_type: thoughts-analyzer
-  Prompt: |
-    Analyze relevant thoughts documents for this request.
-    Return only high-value historical context that affects inception artifacts.
-
-Task - Unit Planning:
-  subagent_type: uow-decomposer
-  Prompt: |
-    Generate AI-DLC-compatible units from the approved requirements, workflow planning,
-    and application design artifacts under aidlc-docs/inception/.
-    Return unit summaries plus dependency and story-map content.
-```
-
-## Canonical Outputs
-
-Write artifacts under `aidlc-docs/inception/`:
-
-- `requirements/requirements.md`
-- `reverse-engineering/system-map.md`
-- `user-stories/user-stories.md`
-- `application-design/application-design.md`
-- `units/unit-of-work.md`
-- `units/unit-of-work-dependency.md`
-- `units/unit-of-work-story-map.md`
-
-Update `aidlc-docs/aidlc-state.md` as stages complete.
-
-## Review Gate
-
-If a generated artifact requires approval before continuing, emit a question/approval file in `aidlc-docs/inception/questions/` and stop.
-
-## Completion Rules
-
-- Finish only the stages marked `EXECUTE`
-- When unit artifacts are ready, direct the user to `/aidlc_bolt`
-
-## What Not To Do
-
-- Do not collapse inception into a single plugin-local plan file
-- Do not skip required stages because the depth is low
+- Model: inherit the active Claude session.
+- Brownfield analysis: use shared `codebase-locator`, `codebase-analyzer`,
+  `thoughts-locator`, and `thoughts-analyzer` adapters only for independent,
+  sizeable tracks.
+- Unit decomposition: use `uow-decomposer` only after the kernel's prerequisite
+  and approval gates pass. The orchestrator owns canonical artifact writes and
+  state transitions.

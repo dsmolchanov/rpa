@@ -219,7 +219,10 @@ After installation, your `~/.claude/` directory should look like:
 │   ├── tdd/
 │   │   ├── SKILL.md
 │   │   └── references/
-│   └── tech-debt-sweep/
+│   ├── tech-debt-sweep/
+│   │   ├── SKILL.md
+│   │   └── references/
+│   └── aidlc-inception/
 │       ├── SKILL.md
 │       └── references/
 ├── hooks/
