@@ -63,7 +63,23 @@ OPERATOR_IMAGE_SHA256 = (
 )
 ARTIFACT_PARSER = "pyyaml"
 ARTIFACT_PARSER_VERSION = "6.0.2"
-ENVIRONMENT_POLICY_ID = "claude-cli-minimal-env-v2-pyyaml-6.0.2"
+ENVIRONMENT_POLICY_ID = (
+    "claude-cli-minimal-env-v3-subagent-model-pin-pyyaml-6.0.2"
+)
+SUBAGENT_MODEL_ENV = "CLAUDE_CODE_SUBAGENT_MODEL"
+SUBAGENT_MODEL_POLICY_ID = "registered-session-model-v1"
+SUBAGENT_MODEL_POLICY = {
+    "id": SUBAGENT_MODEL_POLICY_ID,
+    "environment_variable": SUBAGENT_MODEL_ENV,
+    "source": "registered-session-model",
+}
+SUBAGENT_MODEL_LIVE_PROBE_VERSION = "public-subagent-model-precedence-v1"
+PENDING_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256 = "0" * 64
+PENDING_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256 = "0" * 64
+REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256 = (
+    PENDING_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256)
+REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256 = (
+    PENDING_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256)
 
 SANDBOX_TAIL = (
     "--confine-to", "{workdir}", "--profile", "{profile}", "--",
@@ -112,18 +128,14 @@ AGGREGATION_POLICY = {
     "critical": "candidate-absolute-zero-v1",
 }
 
-LIVE_PROBE_VERSION = "public-live-dual-output-v2"
+LIVE_PROBE_VERSION = "public-live-dual-output-v3"
 PENDING_LIVE_PROBE_RECEIPT_SHA256 = "0" * 64
 PENDING_LIVE_PROBE_EXECUTION_SHA256 = "0" * 64
-REGISTERED_LIVE_PROBE_RECEIPT_SHA256 = (
-    "ef437f1ede9ebfa2ae1094780259d3947c9385bd70caf606b579c5449df582db")
-REGISTERED_LIVE_PROBE_EXECUTION_SHA256 = (
-    "1f36a722dc7937b78e3724a096151b9c6f75391ce03eac7ee9f5a90dd6b78fd5")
+REGISTERED_LIVE_PROBE_RECEIPT_SHA256 = PENDING_LIVE_PROBE_RECEIPT_SHA256
+REGISTERED_LIVE_PROBE_EXECUTION_SHA256 = PENDING_LIVE_PROBE_EXECUTION_SHA256
 
 PENDING_SEAL_PACKAGE_SHA256 = "0" * 64
-REGISTERED_SEAL_PACKAGE_SHA256 = (
-    "5626d795f0e7a39457ce74ccabdc3e7a0e7372c9f2f64c2f651bf2a9626f1e67"
-)
+REGISTERED_SEAL_PACKAGE_SHA256 = PENDING_SEAL_PACKAGE_SHA256
 
 
 def live_probe_binding():
@@ -143,6 +155,26 @@ def live_probe_registration_pending():
     )
 
 
+def subagent_model_live_probe_binding():
+    return {
+        "probe_version": SUBAGENT_MODEL_LIVE_PROBE_VERSION,
+        "receipt_sha256":
+            REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256,
+        "execution_sha256":
+            REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256,
+    }
+
+
+def subagent_model_live_probe_registration_pending():
+    binding = subagent_model_live_probe_binding()
+    return (
+        binding["receipt_sha256"]
+        == PENDING_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256
+        or binding["execution_sha256"]
+        == PENDING_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256
+    )
+
+
 def seal_registration_pending():
     return REGISTERED_SEAL_PACKAGE_SHA256 == PENDING_SEAL_PACKAGE_SHA256
 
@@ -150,7 +182,7 @@ def seal_registration_pending():
 def standard_v2_runtime_binding():
     """Return the canonical path-free registration embedded in every seal."""
     return {
-        "registration_version": "standard-v2-runtime-v1",
+        "registration_version": "standard-v2-runtime-v2",
         "frozen_candidate_sha": FROZEN_CANDIDATE_SHA,
         "protocol_version": PROTOCOL_VERSION,
         "nonstandard_config": NONSTANDARD_CONFIG,
@@ -181,6 +213,8 @@ def standard_v2_runtime_binding():
         "artifact_parser": ARTIFACT_PARSER,
         "artifact_parser_version": ARTIFACT_PARSER_VERSION,
         "environment_policy_id": ENVIRONMENT_POLICY_ID,
+        "subagent_model_policy": dict(SUBAGENT_MODEL_POLICY),
+        "subagent_model_live_probe": subagent_model_live_probe_binding(),
         "drift_fetch_cmd": list(DRIFT_FETCH_CMD),
         "sandbox": {
             "python_basename": "python3[.N]",
@@ -357,6 +391,32 @@ def standard_v2_registration_problems(
         problems.append("live judge probe registration is pending")
     elif observed_probe != expected_probe:
         problems.append("live judge probe differs from the registration")
+
+    expected_subagent_probe = subagent_model_live_probe_binding()
+    observed_subagent_probe = {
+        "probe_version": SUBAGENT_MODEL_LIVE_PROBE_VERSION,
+        "receipt_sha256": config.get(
+            "subagent_model_live_probe_receipt_sha256"),
+        "execution_sha256": config.get(
+            "subagent_model_live_probe_execution_sha256"),
+    }
+    if (allow_pending_probe
+            and subagent_model_live_probe_registration_pending()):
+        pending_subagent_probe = {
+            "probe_version": SUBAGENT_MODEL_LIVE_PROBE_VERSION,
+            "receipt_sha256":
+                PENDING_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256,
+            "execution_sha256":
+                PENDING_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256,
+        }
+        if observed_subagent_probe != pending_subagent_probe:
+            problems.append(
+                "config subagent-model live-probe sentinels are not exact")
+    elif subagent_model_live_probe_registration_pending():
+        problems.append("subagent-model live probe registration is pending")
+    elif observed_subagent_probe != expected_subagent_probe:
+        problems.append(
+            "subagent-model live probe differs from the registration")
 
     observed_seal = config.get("seal_package_sha256")
     if allow_pending_seal and seal_registration_pending():

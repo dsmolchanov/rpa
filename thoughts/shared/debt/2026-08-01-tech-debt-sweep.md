@@ -305,3 +305,15 @@ reverified at registered SHA-256
 `5626d795f0e7a39457ce74ccabdc3e7a0e7372c9f2f64c2f651bf2a9626f1e67`.
 The remaining round-9 schedule, drift gate, judges, and aggregate are
 operational pilot work rather than harness debt.
+
+Round 9 exposed a distinction between detection and prevention in the
+effective-model parity control. Per-node transcript validation correctly
+detected `claude-sonnet-5` on a subagent and the bounded retry driver correctly
+stopped after three infrastructure attempts, but the pre-seal real-backend
+preflight had not forced a model-bearing child and therefore did not prove that
+the main-session pin propagated through the agent tree. The round is preserved
+as indeterminate after 28 final slots; no drift or judge phase began. The
+prospective paydown is a harness-constructed, runtime-bound
+`CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-5` plus a separately digest-registered
+public live probe that exercises a conflicting `model: sonnet` child before
+round-10 sealing.

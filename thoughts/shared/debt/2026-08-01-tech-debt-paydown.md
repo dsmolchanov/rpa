@@ -70,11 +70,26 @@ auto_fixable_count: 7
   round-9 one-shot sealer and complete a fresh probe plus atomic seal. All
   three observations matched the staged snapshot and the sealed package
   independently reverified. Reuse nothing from an invalid round.
-- [ ] Run the fresh round-9 real-backend preflight, complete schedule,
-  independent drift gate, scorer, verifier, and aggregate.
 - [x] Complete and no-model revalidate the fresh round-9 public live probe;
   register only its receipt/execution digests while keeping seal authority at
   the exact pending sentinel.
+- [x] Preserve round 9 unchanged after 28 terminal schedule outcomes and
+  terminal exhaustion of all three infrastructure attempts at the next slot;
+  publish only the sanitized counts and terminal-receipt digest, and launch no
+  drift, judge, or aggregate phase.
+- [x] Register `CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-5` as a
+  harness-constructed, non-ambient standard-v2 pin; version the environment
+  policy and bind the exact name/source through runtime, config, probe, seal,
+  run, judge, and aggregate identities.
+- [ ] Version and run both public live proofs before sealing: retain the
+  scorer/verifier calls and add one forced model-bearing child from a public
+  conflicting `model: sonnet` fixture; require exact parent/child model
+  parity, positive accounting, immutable raw evidence, digest-verified
+  receipts, and no-model replay.
+- [ ] Register the fresh round-10 proofs, author and register six genuinely
+  new tasks in one atomic seal, pass the all-arm real-backend preflight, then
+  run the complete 42-slot schedule, drift gate, scorer, verifier, and
+  aggregate.
 - [x] Move legacy harness temp roots to a dated folder under the user's Trash
   after validating every exact target; keep the cleanup recoverable.
 

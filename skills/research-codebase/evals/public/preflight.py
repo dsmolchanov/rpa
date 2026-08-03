@@ -29,6 +29,7 @@ import mock_claude  # noqa: E402
 import aggregate_results  # noqa: E402
 import seal_package  # noqa: E402
 import judge_live_probe  # noqa: E402
+import subagent_model_live_probe  # noqa: E402
 import pilot_registration  # noqa: E402
 
 EXPECTED_TREE = {"input_tokens": 140, "output_tokens": 70, "tool_calls": 12}
@@ -37,6 +38,8 @@ EXPECTED_SUB = {"input_tokens": 40, "output_tokens": 20, "tool_calls": 5}
 SECRET = "SECRET-GROUND-TRUTH-MARKER"
 SYNTHETIC_LIVE_PROBE_RECEIPT_SHA256 = "1" * 64
 SYNTHETIC_LIVE_PROBE_EXECUTION_SHA256 = "2" * 64
+SYNTHETIC_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256 = "3" * 64
+SYNTHETIC_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256 = "4" * 64
 SYNTHETIC_NONPENDING_SEAL_SHA256 = "7" * 64
 SEAL_SHA = None
 SEAL_PATH = None
@@ -49,6 +52,8 @@ def _registration_state():
             pilot_registration.REGISTERED_SEAL_PACKAGE_SHA256,
             pilot_registration.REGISTERED_LIVE_PROBE_RECEIPT_SHA256,
             pilot_registration.REGISTERED_LIVE_PROBE_EXECUTION_SHA256,
+            pilot_registration.REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256,
+            pilot_registration.REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256,
         ),
         # judge_live_probe imports step5_operator before run_preflight enters
         # its fixture context, so its compatibility aliases must be isolated
@@ -57,6 +62,8 @@ def _registration_state():
             operator_contract.REGISTERED_SEAL_PACKAGE_SHA256,
             operator_contract.REGISTERED_LIVE_PROBE_RECEIPT_SHA256,
             operator_contract.REGISTERED_LIVE_PROBE_EXECUTION_SHA256,
+            operator_contract.REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256,
+            operator_contract.REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256,
         ),
     }
 
@@ -65,12 +72,16 @@ def _restore_registration_state(state):
     operator_contract = judge_live_probe.operator_contract
     (pilot_registration.REGISTERED_SEAL_PACKAGE_SHA256,
      pilot_registration.REGISTERED_LIVE_PROBE_RECEIPT_SHA256,
-     pilot_registration.REGISTERED_LIVE_PROBE_EXECUTION_SHA256) = state[
-         "shared"]
+     pilot_registration.REGISTERED_LIVE_PROBE_EXECUTION_SHA256,
+     pilot_registration.REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256,
+     pilot_registration.REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256
+     ) = state["shared"]
     (operator_contract.REGISTERED_SEAL_PACKAGE_SHA256,
      operator_contract.REGISTERED_LIVE_PROBE_RECEIPT_SHA256,
-     operator_contract.REGISTERED_LIVE_PROBE_EXECUTION_SHA256) = state[
-         "probe_operator"]
+     operator_contract.REGISTERED_LIVE_PROBE_EXECUTION_SHA256,
+     operator_contract.REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256,
+     operator_contract.REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256
+     ) = state["probe_operator"]
 
 
 @contextlib.contextmanager
@@ -84,12 +95,20 @@ def isolated_synthetic_registration():
         SYNTHETIC_LIVE_PROBE_RECEIPT_SHA256)
     pilot_registration.REGISTERED_LIVE_PROBE_EXECUTION_SHA256 = (
         SYNTHETIC_LIVE_PROBE_EXECUTION_SHA256)
+    pilot_registration.REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256 = (
+        SYNTHETIC_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256)
+    pilot_registration.REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256 = (
+        SYNTHETIC_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256)
     operator_contract.REGISTERED_SEAL_PACKAGE_SHA256 = (
         pilot_registration.PENDING_SEAL_PACKAGE_SHA256)
     operator_contract.REGISTERED_LIVE_PROBE_RECEIPT_SHA256 = (
         SYNTHETIC_LIVE_PROBE_RECEIPT_SHA256)
     operator_contract.REGISTERED_LIVE_PROBE_EXECUTION_SHA256 = (
         SYNTHETIC_LIVE_PROBE_EXECUTION_SHA256)
+    operator_contract.REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256 = (
+        SYNTHETIC_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256)
+    operator_contract.REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256 = (
+        SYNTHETIC_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256)
     try:
         yield saved
     finally:
@@ -113,7 +132,9 @@ def _registration_isolation_self_test():
                 isolated["shared"] == (
                     pilot_registration.PENDING_SEAL_PACKAGE_SHA256,
                     SYNTHETIC_LIVE_PROBE_RECEIPT_SHA256,
-                    SYNTHETIC_LIVE_PROBE_EXECUTION_SHA256)
+                    SYNTHETIC_LIVE_PROBE_EXECUTION_SHA256,
+                    SYNTHETIC_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256,
+                    SYNTHETIC_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256)
                 and isolated["probe_operator"] == isolated["shared"])
         return entered_cleanly and _registration_state() == injected
     finally:
@@ -229,6 +250,72 @@ def run_case(workspace, mode, label=None, timeout=20, tamper=False,
 def check(name, condition, notes, detail=""):
     notes.append((name, "PASS" if condition else "FAIL", detail))
     return bool(condition)
+
+
+def synthetic_subagent_probe_events():
+    """One strict real-stream-shaped parent/Task/child probe transcript."""
+    session_id = "public-subagent-model-probe-session"
+    task_id = "public-subagent-model-probe-task"
+    usage = {"input_tokens": 10, "output_tokens": 5}
+    return [
+        {
+            "type": "system",
+            "subtype": "init",
+            "session_id": session_id,
+            "model": subagent_model_live_probe.EXPECTED_MODEL,
+        },
+        {
+            "type": "assistant",
+            "session_id": session_id,
+            "parent_tool_use_id": None,
+            "message": {
+                "model": subagent_model_live_probe.EXPECTED_MODEL,
+                "usage": dict(usage),
+                "content": [{
+                    "type": "tool_use",
+                    "id": task_id,
+                    "name": "Task",
+                    "input": {
+                        "subagent_type": (
+                            subagent_model_live_probe.EXPECTED_SUBAGENT_TYPE),
+                        "prompt": subagent_model_live_probe.CHILD_TASK_PROMPT,
+                    },
+                }],
+            },
+        },
+        {
+            "type": "assistant",
+            "session_id": session_id,
+            "parent_tool_use_id": task_id,
+            "message": {
+                "model": subagent_model_live_probe.EXPECTED_MODEL,
+                "usage": dict(usage),
+                "content": [{
+                    "type": "text",
+                    "text": subagent_model_live_probe.CHILD_MARKER,
+                }],
+            },
+        },
+        {
+            "type": "assistant",
+            "session_id": session_id,
+            "parent_tool_use_id": None,
+            "message": {
+                "model": subagent_model_live_probe.EXPECTED_MODEL,
+                "usage": dict(usage),
+                "content": [{
+                    "type": "text",
+                    "text": subagent_model_live_probe.PARENT_MARKER,
+                }],
+            },
+        },
+        {
+            "type": "result",
+            "subtype": "success",
+            "session_id": session_id,
+            "result": subagent_model_live_probe.PARENT_MARKER,
+        },
+    ]
 
 
 def make_v2_fixture(workspace, label, repo, target_sha,
@@ -351,6 +438,10 @@ def make_v2_fixture(workspace, label, repo, target_sha,
             SYNTHETIC_LIVE_PROBE_RECEIPT_SHA256,
         "judge_live_probe_execution_sha256":
             SYNTHETIC_LIVE_PROBE_EXECUTION_SHA256,
+        "subagent_model_live_probe_receipt_sha256":
+            SYNTHETIC_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256,
+        "subagent_model_live_probe_execution_sha256":
+            SYNTHETIC_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256,
         "judge_backend_cmd": judge_backend_cmd,
     })
     if run_mode == "flaky-infra":
@@ -373,6 +464,8 @@ def make_v2_fixture(workspace, label, repo, target_sha,
         "judge_retry_policy": runner.PILOT_V2_JUDGE_RETRY_POLICY,
         "judge_output_policy": runner.PILOT_V2_JUDGE_OUTPUT_POLICY,
         "judge_live_probe": runner.protocol_v2_live_probe_binding(config),
+        "subagent_model_live_probe": (
+            runner.protocol_v2_subagent_model_live_probe_binding(config)),
         "pilot_runtime_registration_sha256": (
             pilot_registration.standard_v2_runtime_registration_sha256()),
         "aggregation_policy": runner.PILOT_V2_AGGREGATION_POLICY,
@@ -593,6 +686,10 @@ def make_v2_aggregation_fixture(workspace, target_sha, label="golden"):
             SYNTHETIC_LIVE_PROBE_RECEIPT_SHA256,
         "judge_live_probe_execution_sha256":
             SYNTHETIC_LIVE_PROBE_EXECUTION_SHA256,
+        "subagent_model_live_probe_receipt_sha256":
+            SYNTHETIC_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256,
+        "subagent_model_live_probe_execution_sha256":
+            SYNTHETIC_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256,
         "sandbox_cmd": [
             sys.executable,
             str(HERE / pilot_registration.PLATFORM_WRAPPER.get(
@@ -626,6 +723,8 @@ def make_v2_aggregation_fixture(workspace, target_sha, label="golden"):
         "judge_retry_policy": runner.PILOT_V2_JUDGE_RETRY_POLICY,
         "judge_output_policy": runner.PILOT_V2_JUDGE_OUTPUT_POLICY,
         "judge_live_probe": runner.protocol_v2_live_probe_binding(config),
+        "subagent_model_live_probe": (
+            runner.protocol_v2_subagent_model_live_probe_binding(config)),
         "pilot_runtime_registration_sha256": (
             pilot_registration.standard_v2_runtime_registration_sha256()),
         "aggregation_policy": runner.PILOT_V2_AGGREGATION_POLICY,
@@ -1019,11 +1118,15 @@ def _run_preflight(registration_isolation_ok):
         and pilot_registration.seal_registration_pending()
         and current_registration["shared"][1:] == (
             SYNTHETIC_LIVE_PROBE_RECEIPT_SHA256,
-            SYNTHETIC_LIVE_PROBE_EXECUTION_SHA256)
+            SYNTHETIC_LIVE_PROBE_EXECUTION_SHA256,
+            SYNTHETIC_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256,
+            SYNTHETIC_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256)
         and current_registration["probe_operator"] == (
             pilot_registration.PENDING_SEAL_PACKAGE_SHA256,
             SYNTHETIC_LIVE_PROBE_RECEIPT_SHA256,
-            SYNTHETIC_LIVE_PROBE_EXECUTION_SHA256),
+            SYNTHETIC_LIVE_PROBE_EXECUTION_SHA256,
+            SYNTHETIC_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256,
+            SYNTHETIC_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256),
         notes)
     with tempfile.TemporaryDirectory() as tmp:
         ws = Path(tmp)
@@ -1260,6 +1363,12 @@ def _run_preflight(registration_isolation_ok):
                 pilot_registration.REGISTERED_LIVE_PROBE_RECEIPT_SHA256,
             "judge_live_probe_execution_sha256":
                 pilot_registration.REGISTERED_LIVE_PROBE_EXECUTION_SHA256,
+            "subagent_model_live_probe_receipt_sha256":
+                (pilot_registration
+                 .REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256),
+            "subagent_model_live_probe_execution_sha256":
+                (pilot_registration
+                 .REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256),
             "judge_backend_cmd": [
                 sys.executable, str(HERE / "mock_claude.py"),
                 "--mode", "judge-auto", "--effort", "{effort}",
@@ -1389,6 +1498,16 @@ def _run_preflight(registration_isolation_ok):
         registered_probe_valid = (
             probe_operator.live_probe_receipt_problem(
                 registered_probe_config, probe_backend=False) is None)
+        cross_proof_registered_config = json.loads(json.dumps(
+            registered_probe_config))
+        cross_proof_registered_config[
+            "subagent_model_live_probe_receipt_sha256"] = "1" * 64
+        cross_proof_registered_config[
+            "subagent_model_live_probe_execution_sha256"] = "2" * 64
+        cross_proof_judge_receipt_valid = (
+            judge_live_probe.verify_receipt(
+                cross_proof_registered_config, probe_backend=False)
+            == probe_receipt)
         probe_receipt_path.write_bytes(probe_receipt_bytes + b"\n")
         try:
             registered_probe_tamper_rejected = bool(
@@ -1449,15 +1568,279 @@ def _run_preflight(registration_isolation_ok):
             and replay_receipt == probe_receipt and not replay_launches
             and incomplete_namespace_rejected
             and probe_help.returncode == 0 and "--out" not in probe_help.stdout
-            and judge_live_probe.ROUND_NAMESPACE == "holdout-v2-round9"
-            and "holdout-v2-round9" in probe_help.stdout
+            and judge_live_probe.ROUND_NAMESPACE == "holdout-v2-round10"
+            and "holdout-v2-round10" in probe_help.stdout
             and probe_out_arg.returncode == 2
             and "unrecognized arguments: --out" in probe_out_arg.stderr
             and pending_probe_registration_rejected
             and registered_probe_valid
+            and cross_proof_judge_receipt_valid
             and registered_probe_tamper_rejected
             and alternate_probe_rejected and probe_tamper_rejected
             and probe_code_drift_rejected,
+            notes)
+
+        subagent_probe_events = synthetic_subagent_probe_events()
+        subagent_probe_raw = "\n".join(
+            json.dumps(event, sort_keys=True)
+            for event in subagent_probe_events) + "\n"
+        subagent_observation = (
+            subagent_model_live_probe._validated_observation(
+                subagent_probe_raw, probe_config))
+        subagent_parser_rejections = {}
+        parser_mutations = {}
+
+        wrong_child_model = json.loads(json.dumps(subagent_probe_events))
+        wrong_child_model[2]["message"]["model"] = "claude-sonnet-5"
+        parser_mutations["wrong child model"] = wrong_child_model
+
+        no_child = json.loads(json.dumps(subagent_probe_events))
+        del no_child[2]
+        parser_mutations["no child"] = no_child
+
+        wrong_lineage = json.loads(json.dumps(subagent_probe_events))
+        wrong_lineage[2]["parent_tool_use_id"] = "wrong-parent-tool-use"
+        parser_mutations["wrong lineage"] = wrong_lineage
+
+        wrong_type = json.loads(json.dumps(subagent_probe_events))
+        wrong_type[1]["message"]["content"][0]["input"][
+            "subagent_type"] = "unregistered:model-probe-child"
+        parser_mutations["wrong subagent type"] = wrong_type
+
+        no_task = json.loads(json.dumps(subagent_probe_events))
+        no_task[1]["message"]["content"] = []
+        parser_mutations["zero Task launches"] = no_task
+
+        two_tasks = json.loads(json.dumps(subagent_probe_events))
+        second_task = json.loads(json.dumps(
+            two_tasks[1]["message"]["content"][0]))
+        second_task["id"] = "public-subagent-model-probe-task-2"
+        two_tasks[1]["message"]["content"].append(second_task)
+        parser_mutations["two Task launches"] = two_tasks
+
+        error_terminal = json.loads(json.dumps(subagent_probe_events))
+        error_terminal[-1]["subtype"] = "error"
+        error_terminal[-1]["is_error"] = True
+        parser_mutations["error terminal"] = error_terminal
+
+        for label, events in parser_mutations.items():
+            try:
+                subagent_model_live_probe._validated_observation(
+                    "\n".join(json.dumps(event, sort_keys=True)
+                              for event in events) + "\n",
+                    probe_config)
+                subagent_parser_rejections[label] = False
+            except subagent_model_live_probe.ProbeError:
+                subagent_parser_rejections[label] = True
+
+        subagent_output = (
+            probe_round / subagent_model_live_probe.OUTPUT_NAMESPACE)
+        original_subagent_apply_sandbox = runner.apply_sandbox
+        original_subagent_spawn = runner.spawn_judge_session_capped
+        original_subagent_pin_gate = probe_operator.live_probe_config_problems
+        subagent_launches = []
+        subagent_capture = {}
+
+        def capture_subagent_probe(command, prompt, workdir, env, timeout,
+                                   sidecar, max_bytes, **kwargs):
+            subagent_launches.append((command, prompt, workdir, timeout,
+                                      sidecar, max_bytes, kwargs))
+            subagent_capture.update({
+                "command": list(command),
+                "prompt": prompt,
+                "env": dict(env),
+            })
+            raw_bytes = subagent_probe_raw.encode("utf-8")
+            return (
+                subagent_probe_raw,
+                len(raw_bytes),
+                hashlib.sha256(raw_bytes).hexdigest(),
+                [],
+                False,
+            )
+
+        ambient_name = subagent_model_live_probe.SUBAGENT_MODEL_ENV
+        ambient_existed = ambient_name in os.environ
+        ambient_value = os.environ.get(ambient_name)
+        saved_subagent_registration = (
+            pilot_registration
+            .REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256,
+            pilot_registration
+            .REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256,
+        )
+        subagent_pending_gate = False
+        subagent_registered_valid = False
+        subagent_registered_tamper_rejected = False
+        incomplete_subagent_blocked = False
+        subagent_drift_blocked_before_launch = False
+        try:
+            runner.apply_sandbox = apply_mock_probe_sandbox
+            runner.spawn_judge_session_capped = capture_subagent_probe
+            probe_operator.live_probe_config_problems = lambda _config: []
+            os.environ[ambient_name] = "claude-sonnet-5"
+            subagent_receipt = subagent_model_live_probe.run_probe(
+                probe_config)
+            subagent_reverified = subagent_model_live_probe.verify_receipt(
+                probe_config, probe_backend=False)
+            subagent_replay = subagent_model_live_probe.run_probe(probe_config)
+
+            incomplete_config = json.loads(json.dumps(probe_config))
+            incomplete_round = (
+                ws / "subagent-incomplete"
+                / subagent_model_live_probe.ROUND_NAMESPACE)
+            (incomplete_round
+             / subagent_model_live_probe.PACKAGE_NAMESPACE).mkdir(
+                 parents=True)
+            incomplete_config["seal_manifest"] = str(
+                incomplete_round
+                / subagent_model_live_probe.PACKAGE_NAMESPACE
+                / seal_package.MANIFEST_NAME)
+            incomplete_launches = []
+
+            def fail_incomplete_subagent_launch(*args, **kwargs):
+                incomplete_launches.append((args, kwargs))
+                raise subagent_model_live_probe.ProbeError(
+                    "synthetic incomplete launch")
+
+            runner.spawn_judge_session_capped = fail_incomplete_subagent_launch
+            try:
+                subagent_model_live_probe.run_probe(incomplete_config)
+            except subagent_model_live_probe.ProbeError:
+                pass
+            try:
+                subagent_model_live_probe.run_probe(incomplete_config)
+            except subagent_model_live_probe.ProbeError:
+                incomplete_subagent_blocked = (
+                    len(incomplete_launches) == 1)
+
+            drift_config = json.loads(json.dumps(probe_config))
+            drift_round = (
+                ws / "subagent-drift"
+                / subagent_model_live_probe.ROUND_NAMESPACE)
+            (drift_round
+             / subagent_model_live_probe.PACKAGE_NAMESPACE).mkdir(parents=True)
+            drift_config["seal_manifest"] = str(
+                drift_round / subagent_model_live_probe.PACKAGE_NAMESPACE
+                / seal_package.MANIFEST_NAME)
+            probe_operator.live_probe_config_problems = (
+                lambda _config: ["synthetic registered-pin drift"])
+            launches_before_drift = len(incomplete_launches)
+            try:
+                subagent_model_live_probe.run_probe(drift_config)
+            except subagent_model_live_probe.ProbeError:
+                subagent_drift_blocked_before_launch = (
+                    len(incomplete_launches) == launches_before_drift
+                    and not (drift_round
+                             / subagent_model_live_probe.OUTPUT_NAMESPACE)
+                    .exists())
+            probe_operator.live_probe_config_problems = lambda _config: []
+
+            subagent_receipt_path = (
+                subagent_output / subagent_model_live_probe.RECEIPT_NAME)
+            subagent_raw_path = (
+                subagent_output / subagent_model_live_probe.RAW_NAME)
+            subagent_receipt_bytes = subagent_receipt_path.read_bytes()
+            subagent_raw_bytes = subagent_raw_path.read_bytes()
+            actual_subagent_receipt_sha = hashlib.sha256(
+                subagent_receipt_bytes).hexdigest()
+            actual_subagent_execution_sha = subagent_receipt[
+                "identity"]["execution_sha256"]
+
+            pilot_registration\
+                .REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256 = (
+                    pilot_registration
+                    .PENDING_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256)
+            pilot_registration\
+                .REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256 = (
+                    pilot_registration
+                    .PENDING_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256)
+            original_subagent_verify = subagent_model_live_probe.verify_receipt
+
+            def forbidden_pending_receipt_read(*_args, **_kwargs):
+                raise AssertionError(
+                    "pending registration must gate before receipt read")
+
+            subagent_model_live_probe.verify_receipt = (
+                forbidden_pending_receipt_read)
+            try:
+                subagent_pending_gate = bool(
+                    probe_operator.subagent_model_live_probe_receipt_problem(
+                        probe_config, probe_backend=False))
+            finally:
+                subagent_model_live_probe.verify_receipt = (
+                    original_subagent_verify)
+
+            pilot_registration\
+                .REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256 = (
+                    actual_subagent_receipt_sha)
+            pilot_registration\
+                .REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256 = (
+                    actual_subagent_execution_sha)
+            registered_subagent_config = json.loads(json.dumps(probe_config))
+            registered_subagent_config[
+                "subagent_model_live_probe_receipt_sha256"] = (
+                    actual_subagent_receipt_sha)
+            registered_subagent_config[
+                "subagent_model_live_probe_execution_sha256"] = (
+                    actual_subagent_execution_sha)
+            subagent_registered_valid = (
+                probe_operator.subagent_model_live_probe_receipt_problem(
+                    registered_subagent_config, probe_backend=False) is None)
+
+            subagent_output.chmod(0o700)
+            subagent_raw_path.chmod(0o600)
+            subagent_raw_path.write_bytes(subagent_raw_bytes + b"\n")
+            subagent_raw_path.chmod(0o400)
+            subagent_output.chmod(0o500)
+            subagent_registered_tamper_rejected = bool(
+                probe_operator.subagent_model_live_probe_receipt_problem(
+                    registered_subagent_config, probe_backend=False))
+            subagent_output.chmod(0o700)
+            subagent_raw_path.chmod(0o600)
+            subagent_raw_path.write_bytes(subagent_raw_bytes)
+            subagent_model_live_probe._freeze_namespace(
+                subagent_output,
+                {subagent_model_live_probe.RAW_NAME,
+                 subagent_model_live_probe.RECEIPT_NAME})
+        finally:
+            runner.apply_sandbox = original_subagent_apply_sandbox
+            runner.spawn_judge_session_capped = original_subagent_spawn
+            probe_operator.live_probe_config_problems = (
+                original_subagent_pin_gate)
+            (pilot_registration
+             .REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256,
+             pilot_registration
+             .REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256) = (
+                saved_subagent_registration)
+            if ambient_existed:
+                os.environ[ambient_name] = ambient_value
+            else:
+                os.environ.pop(ambient_name, None)
+
+        ok &= check(
+            "subagent-model live probe is strict, pinned, and one-shot",
+            subagent_observation["reported_models"] == {
+                "parent": [subagent_model_live_probe.EXPECTED_MODEL],
+                "child": [subagent_model_live_probe.EXPECTED_MODEL],
+            }
+            and all(subagent_parser_rejections.values())
+            and len(subagent_parser_rejections) == 7
+            and subagent_receipt == subagent_reverified == subagent_replay
+            and len(subagent_launches) == 1
+            and subagent_capture["prompt"]
+            == subagent_model_live_probe.PUBLIC_PROMPT
+            and all(
+                subagent_model_live_probe.PUBLIC_PROMPT not in part
+                for part in subagent_capture["command"])
+            and subagent_capture["env"][ambient_name]
+            == subagent_model_live_probe.EXPECTED_MODEL
+            and subagent_receipt["observation"]["fixture_declared_model"]
+            == subagent_model_live_probe.FIXTURE_DECLARED_MODEL
+            and incomplete_subagent_blocked
+            and subagent_drift_blocked_before_launch
+            and subagent_pending_gate
+            and subagent_registered_valid
+            and subagent_registered_tamper_rejected,
             notes)
 
         fetch_root = ws / "stdin-fetch-root"
@@ -1806,11 +2189,15 @@ def _run_preflight(registration_isolation_ok):
         environment_canary_before = os.environ.get(environment_canary_name)
         auth_canary_name = "CLAUDE_SESSION_INGRESS_TOKEN"
         auth_canary_before = os.environ.get(auth_canary_name)
+        subagent_model_env = runner.PILOT_V2_SUBAGENT_MODEL_ENV
+        subagent_model_before = os.environ.get(subagent_model_env)
         try:
             os.environ[environment_canary_name] = SECRET
             os.environ[auth_canary_name] = "synthetic-auth-canary"
+            os.environ[subagent_model_env] = "claude-sonnet-5"
             v2_environment = runner.backend_env(
-                ws, runner.PILOT_V2_PROTOCOL_VERSION)
+                ws, runner.PILOT_V2_PROTOCOL_VERSION,
+                subagent_model="claude-opus-5")
         finally:
             if environment_canary_before is None:
                 os.environ.pop(environment_canary_name, None)
@@ -1820,8 +2207,22 @@ def _run_preflight(registration_isolation_ok):
                 os.environ.pop(auth_canary_name, None)
             else:
                 os.environ[auth_canary_name] = auth_canary_before
+            if subagent_model_before is None:
+                os.environ.pop(subagent_model_env, None)
+            else:
+                os.environ[subagent_model_env] = subagent_model_before
+        invalid_subagent_model_pins_rejected = True
+        for invalid_pin in (None, "", " claude-opus-5", "claude-opus-5\x00"):
+            try:
+                runner.backend_env(
+                    ws, runner.PILOT_V2_PROTOCOL_VERSION,
+                    subagent_model=invalid_pin)
+            except runner.InfraFailure:
+                continue
+            invalid_subagent_model_pins_rejected = False
+            break
         ok &= check(
-            "protocol-v2 child environment excludes unrelated secret canaries",
+            "protocol-v2 child environment pins subagents without ambient leakage",
             environment_canary_name not in v2_environment
             and SECRET not in v2_environment.values()
             and v2_environment.get(auth_canary_name)
@@ -1829,7 +2230,10 @@ def _run_preflight(registration_isolation_ok):
             and v2_environment.get("RPA_ENVIRONMENT_POLICY")
             == runner.PILOT_V2_ENVIRONMENT_POLICY_ID
             and v2_environment.get("CLAUDE_CONFIG_DIR") == str(ws)
-            and v2_environment.get("TMPDIR") == "/tmp",
+            and v2_environment.get("TMPDIR") == "/tmp"
+            and subagent_model_env not in runner.PILOT_V2_ENV_ALLOWLIST
+            and v2_environment.get(subagent_model_env) == "claude-opus-5"
+            and invalid_subagent_model_pins_rejected,
             notes)
 
         # Sealed judge materials, created up front so every config
@@ -2704,6 +3108,10 @@ def _run_preflight(registration_isolation_ok):
                 SYNTHETIC_LIVE_PROBE_RECEIPT_SHA256,
             "judge_live_probe_execution_sha256":
                 SYNTHETIC_LIVE_PROBE_EXECUTION_SHA256,
+            "subagent_model_live_probe_receipt_sha256":
+                SYNTHETIC_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256,
+            "subagent_model_live_probe_execution_sha256":
+                SYNTHETIC_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256,
         })
         runtime_cfg_path.write_text(
             json.dumps(runtime_cfg), encoding="utf-8")
@@ -3920,6 +4328,12 @@ def _run_preflight(registration_isolation_ok):
                 pilot_registration.REGISTERED_LIVE_PROBE_RECEIPT_SHA256,
             "judge_live_probe_execution_sha256":
                 pilot_registration.REGISTERED_LIVE_PROBE_EXECUTION_SHA256,
+            "subagent_model_live_probe_receipt_sha256":
+                (pilot_registration
+                 .REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256),
+            "subagent_model_live_probe_execution_sha256":
+                (pilot_registration
+                 .REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256),
             "backend_version": step5.REGISTERED_BACKEND_VERSION,
             "timeout_seconds": step5.REGISTERED_TIMEOUT_SECONDS,
             "max_infra_retries": step5.REGISTERED_MAX_INFRA_RETRIES,

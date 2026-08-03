@@ -44,23 +44,33 @@ installation (`docs/conventions.md` §1; pilot plan, "Atomic seal").
   persists digest-bound raw streams plus a revalidatable receipt. Run it with
   `python3 judge_live_probe.py --config FILLED_CONFIG`; the only output
   namespace is derived from
-  `<private-root>/holdout-v2-round9/package/seal-manifest.json` as its sibling
+  `<private-root>/holdout-v2-round10/package/seal-manifest.json` as its sibling
   `judge-live-probe/`. Namespace creation is an irreversible launch claim:
   an existing complete receipt is only revalidated, while incomplete or
   tampered state permanently blocks relaunch. `--verify` rechecks the same
   canonical receipt without launching either role. Register both printed
   digests in the config/operator before sealing; the seal binds the exact
   `{probe_version,receipt_sha256,execution_sha256}` proof.
+- `subagent_model_live_probe.py` — separate pre-seal, one-shot proof of
+  effective-model parity across a real parent/child agent tree. Its public
+  fixture deliberately requests `model: sonnet`; the harness-constructed
+  `CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-5` must take precedence, and the
+  strict receipt accepts only one `Task` launch, one matching child lineage,
+  positive parent/child accounting, and `claude-opus-5` on every model-bearing
+  node. Its canonical `subagent-model-live-probe/` sibling namespace is also
+  an irreversible launch claim. Run once with `--config FILLED_CONFIG`, then
+  use `--verify` for no-model replay; register both returned digests before
+  sealing.
 - `pilot_registration.py` — the single public authority for the complete
   path-free standard-v2 runtime: arm/install/model/effort/entrypoint pins,
   backend and judge commands/version, retry/deadline/parser/image policy,
-  exact platform sandbox wrapper bytes, seeds, semantic policies, live-probe
-  proof, and prospective seal digest. The direct runner, seal
+  exact platform sandbox wrapper bytes, seeds, semantic policies, both
+  live-probe proofs, and prospective seal digest. The direct runner, seal
   builder/verifier, and step-5 operator consume the same validator/constants;
   `nonstandard_config: true` is the only explicit dev path. The seal embeds
-  the canonical runtime-registration digest. Pending probe/seal sentinels
-  authorize only the one-shot probe and atomic seal build respectively, never
-  schedule creation, execution, or scoring.
+  the canonical runtime-registration digest. Pending proof/seal sentinels
+  authorize only the two one-shot probes and atomic seal build respectively,
+  never schedule creation, execution, or scoring.
 - `seal_package.py` — deterministic atomic builder/verifier for a fresh
   protocol-v2 holdout package; its CLI emits only the package digest and task
   basenames.
@@ -87,7 +97,7 @@ current count is printed by the preflight itself):
 | One runtime config across arms | `validate_arm_parity` refuses configs whose arms differ in model, effort, or workflow `entrypoint` before any run (a shared non-empty entrypoint is required): installation content is the only permitted arm difference. `validate_arm_topology` additionally requires the registered three-arm topology before EVERY run — direct run mode included — unless the config explicitly declares itself dev (`nonstandard_config: true`) |
 | Clean profile | fresh per-run `CLAUDE_CONFIG_DIR` containing only `settings.json` + the mounted installation |
 | Pinned operator runtime | Standard protocol v2 registers `operator_image_sha256: sha256:bbe9dbf152c933f4c3a69eae0809983cf698253a7a067fd6b73180ecc85c4975`, `artifact_parser: pyyaml`, and `artifact_parser_version: 6.0.2`. Before even probing the backend version, `step5_operator.py` requires `RPA_OPERATOR_IMAGE_SHA256` to equal the registered digest and verifies both the imported `yaml` module and installed PyYAML distribution report exactly 6.0.2. The gate receipt records the observation. `config_digest`, schedule, every v2 run record, and completion manifest bind the same canonical `runtime_pins` object, so parser/image drift cannot become an arm-specific artifact failure. |
-| Minimal child environment | protocol v2 constructs every evaluated and judge child environment from the fixed `claude-cli-minimal-env-v2-pyyaml-6.0.2` allowlist (pinned CLI auth, proxy/TLS, locale, HOME/PATH, and sandbox-wrapper inputs). Arbitrary ambient cloud/source-control/developer-tool variables — including the operator-image attestation variable — are absent; a secret-canary preflight proves the boundary. Historical v1 reproduction retains its original behavior. |
+| Minimal child environment | protocol v2 constructs every evaluated and judge child environment from the fixed `claude-cli-minimal-env-v3-subagent-model-pin-pyyaml-6.0.2` allowlist (pinned CLI auth, proxy/TLS, locale, HOME/PATH, and sandbox-wrapper inputs). Arbitrary ambient cloud/source-control/developer-tool variables — including the operator-image attestation variable — are absent. `CLAUDE_CODE_SUBAGENT_MODEL` is deliberately not ambient or allowlisted: after sanitization the harness unconditionally writes the current session's registered model, so a host override cannot select another child model. Synthetic canaries prove both exclusion and overwrite, and the separate live proof exercises a conflicting public child pin. Historical v1 reproduction retains its original behavior. |
 | Filesystem sandbox | production configs must register `sandbox_cmd` — a wrapper (bwrap/sandbox-exec, validated at the real-backend preflight) confining **every evaluated and judge session** to its own workdir + profile (`{workdir}`/`{profile}` expand per session); a clean profile alone is not filesystem isolation — without the sandbox a session could traverse to sealed materials, prior artifacts, or manifests. Dev configs (`nonstandard_config: true`) may omit it; a production `sandbox_cmd` without both `{workdir}` and `{profile}` confinement placeholders is refused (a wrapper that never receives the paths confines nothing) |
 | Worktree isolation | disposable detached `git worktree` at the task's pinned `target-sha`, verified clean and matching, removed after the run; destinations are resolved to absolute paths before reaching git, so a relative `--output` cannot split the worktree between two locations. Every session runs in its **own process group** and a timeout kills the whole tree — spawned tool subprocesses cannot outlive the recorded timeout, keep consuming budget, or touch the worktree during cleanup |
 | Prompt extraction | only the `## Task prompt` section reaches the session; the marker is required unconditionally — any task without it is refused, never sent whole |

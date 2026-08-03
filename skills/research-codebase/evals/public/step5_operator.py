@@ -97,6 +97,16 @@ REGISTERED_LIVE_PROBE_RECEIPT_SHA256 = (
 REGISTERED_LIVE_PROBE_EXECUTION_SHA256 = (
     pilot_registration.REGISTERED_LIVE_PROBE_EXECUTION_SHA256)
 REGISTERED_LIVE_PROBE_VERSION = pilot_registration.LIVE_PROBE_VERSION
+PENDING_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256 = (
+    pilot_registration.PENDING_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256)
+PENDING_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256 = (
+    pilot_registration.PENDING_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256)
+REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256 = (
+    pilot_registration.REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256)
+REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256 = (
+    pilot_registration.REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256)
+REGISTERED_SUBAGENT_MODEL_LIVE_PROBE_VERSION = (
+    pilot_registration.SUBAGENT_MODEL_LIVE_PROBE_VERSION)
 REGISTERED_HOLDOUT_TASKS = pilot_registration.HOLDOUT_TASKS
 REGISTERED_ABLATION_TASKS = pilot_registration.ABLATION_TASKS
 REGISTERED_MODEL = pilot_registration.MODEL
@@ -127,6 +137,7 @@ REGISTERED_VERIFIER_SEED = pilot_registration.VERIFIER_SEED
 REGISTERED_PROTOCOL_VERSION = pilot_registration.PROTOCOL_VERSION
 REGISTERED_MAX_JUDGE_ATTEMPTS = pilot_registration.MAX_JUDGE_ATTEMPTS
 REGISTERED_ENVIRONMENT_POLICY_ID = pilot_registration.ENVIRONMENT_POLICY_ID
+REGISTERED_SUBAGENT_MODEL_POLICY = pilot_registration.SUBAGENT_MODEL_POLICY
 REGISTERED_OPERATOR_IMAGE_SHA256 = pilot_registration.OPERATOR_IMAGE_SHA256
 REGISTERED_ARTIFACT_PARSER = pilot_registration.ARTIFACT_PARSER
 REGISTERED_ARTIFACT_PARSER_VERSION = pilot_registration.ARTIFACT_PARSER_VERSION
@@ -373,6 +384,8 @@ def all_docs_population(results, runs_out):
                     "artifact_parser": REGISTERED_ARTIFACT_PARSER,
                     "artifact_parser_version":
                         REGISTERED_ARTIFACT_PARSER_VERSION,
+                    "subagent_model_policy":
+                        REGISTERED_SUBAGENT_MODEL_POLICY,
                     "judge_output_policy":
                         REGISTERED_JUDGE_OUTPUT_POLICY,
                     "structured_output_schema_sha256":
@@ -801,6 +814,20 @@ def validate_config(config, *, allow_pending_probe=False,
             "the live judge probe execution digest is still the temporary "
             "all-zero placeholder; register the canonical execution before "
             "any operator phase")
+    registered_subagent_probe = (
+        pilot_registration.subagent_model_live_probe_binding())
+    if (registered_subagent_probe["receipt_sha256"]
+            == PENDING_SUBAGENT_MODEL_LIVE_PROBE_RECEIPT_SHA256):
+        problems.append(
+            "the subagent-model live probe receipt digest is still the "
+            "temporary all-zero placeholder; register the canonical receipt "
+            "before any operator phase")
+    if (registered_subagent_probe["execution_sha256"]
+            == PENDING_SUBAGENT_MODEL_LIVE_PROBE_EXECUTION_SHA256):
+        problems.append(
+            "the subagent-model live probe execution digest is still the "
+            "temporary all-zero placeholder; register the canonical execution "
+            "before any operator phase")
     semantic_pins = (
         (runner.PILOT_V2_PROTOCOL_VERSION,
          REGISTERED_PROTOCOL_VERSION, "protocol version"),
@@ -910,6 +937,16 @@ def validate_config(config, *, allow_pending_probe=False,
         problems.append(
             "judge_live_probe_execution_sha256 does not match the registered "
             "live probe execution")
+    if (config.get("subagent_model_live_probe_receipt_sha256")
+            != registered_subagent_probe["receipt_sha256"]):
+        problems.append(
+            "subagent_model_live_probe_receipt_sha256 does not match the "
+            "registered subagent-model live probe receipt")
+    if (config.get("subagent_model_live_probe_execution_sha256")
+            != registered_subagent_probe["execution_sha256"]):
+        problems.append(
+            "subagent_model_live_probe_execution_sha256 does not match the "
+            "registered subagent-model live probe execution")
     # Execution fields are part of the registered configuration: the
     # runner binds whatever it is given into a fresh config digest, so
     # drifted CLI flags or abort-code classification would otherwise
@@ -972,8 +1009,13 @@ def live_probe_config_problems(config):
         "seal digest is still the temporary all-zero placeholder",
         "probe receipt digest is still the temporary all-zero placeholder",
         "probe execution digest is still the temporary all-zero placeholder",
+        "subagent-model live probe receipt digest is still the temporary "
+        "all-zero placeholder",
+        "subagent-model live probe execution digest is still the temporary "
+        "all-zero placeholder",
         "seal package registration is pending",
         "live judge probe registration is pending",
+        "subagent-model live probe registration is pending",
     )
     return [problem for problem in problems
             if not any(fragment in problem for fragment in pending_fragments)]
@@ -998,6 +1040,33 @@ def live_probe_receipt_problem(config, probe_backend=True):
             return "the live judge probe execution differs from its registration"
     except (OSError, runner.InfraFailure, judge_live_probe.ProbeError):
         return "the registered live judge probe receipt/raw streams are invalid"
+    return None
+
+
+def subagent_model_live_probe_receipt_problem(config, probe_backend=True):
+    """Revalidate the registered child-model precedence receipt and stream."""
+    registered_probe = pilot_registration.subagent_model_live_probe_binding()
+    if pilot_registration.subagent_model_live_probe_registration_pending():
+        return ("the subagent-model live probe receipt/execution registration "
+                "is pending")
+    try:
+        # Local import avoids subagent_model_live_probe -> operator becoming a
+        # module import cycle.
+        import subagent_model_live_probe
+        receipt = subagent_model_live_probe.verify_receipt(
+            config, probe_backend=probe_backend)
+        if (subagent_model_live_probe.receipt_sha256(config)
+                != registered_probe["receipt_sha256"]):
+            return ("the subagent-model live probe receipt differs from its "
+                    "registration")
+        if (receipt.get("identity", {}).get("execution_sha256")
+                != registered_probe["execution_sha256"]):
+            return ("the subagent-model live probe execution differs from its "
+                    "registration")
+    except (OSError, runner.InfraFailure,
+            subagent_model_live_probe.ProbeError):
+        return ("the registered subagent-model live probe receipt/raw stream "
+                "is invalid")
     return None
 
 
@@ -1608,6 +1677,10 @@ def main():
     if probe_issue:
         fail(probe_issue)
     ok("registered live judge probe receipt and raw streams revalidated")
+    subagent_probe_issue = subagent_model_live_probe_receipt_problem(config)
+    if subagent_probe_issue:
+        fail(subagent_probe_issue)
+    ok("registered subagent-model live probe receipt and raw stream revalidated")
 
     canonical, problem = canonical_tasks(args.tasks)
     if problem:
@@ -1657,6 +1730,10 @@ def main():
             probe_issue = live_probe_receipt_problem(config)
             if probe_issue:
                 fail(probe_issue)
+            subagent_probe_issue = (
+                subagent_model_live_probe_receipt_problem(config))
+            if subagent_probe_issue:
+                fail(subagent_probe_issue)
             print(f"\n=== phase: {name} ===")
             globals()[f"phase_{name.replace('-', '_')}"](args, config)
     finally:

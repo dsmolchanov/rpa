@@ -1195,6 +1195,39 @@ only `holdout-v2-1.md` through `holdout-v2-6.md` returned to this context.
 No private holdout content returned. This seal authorizes only the fresh
 round-9 preflight, complete schedule, drift gate, judge batches, and aggregate.
 
+Round 9 then began its fresh randomized schedule. The first 28 schedule slots
+reached terminal workflow outcomes: 17 completed with a passing artifact gate,
+and 11 ended as `workflow_failure` with `failure_kind: artifact_contract` and a
+failed artifact gate. At zero-based schedule index 28 (the twenty-ninth slot),
+the initial infrastructure attempt and both registered retries each observed a
+model-bearing subagent node with effective model `claude-sonnet-5`, differing
+from the registered `claude-opus-5`. The driver therefore stopped fail-closed
+with `infrastructure_retries_exhausted`. Its private terminal receipt SHA-256 is
+`1ad6c7f7ef63213381ed53f40108e805403916881c5a1562134951c4d6d1500c`.
+No source-drift gate, scorer, verifier, or aggregate was launched. Under the
+prospectively registered exhausted-infrastructure rule, the entire round is
+indeterminate: its probe, seal, schedule, 28 final outcomes, three superseded
+infrastructure attempts, tasks, and documents remain immutable evidence and
+may not be resumed, repaired, selectively rerun, or reused.
+
+The post-hoc parity gate behaved correctly, but the failure exposed a
+prelaunch control gap: the main-session model pin did not itself constrain
+subagent model resolution. Prospectively, the replacement uses the fresh
+`holdout-v2-round10` namespace and resets the judge live-probe registration,
+the new subagent-model live-probe registration, and seal authority to their
+exact all-zero sentinels. Before any round-10 holdout authoring, the harness
+must construct, rather than inherit,
+`CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-5`; the exact variable name, source
+policy, and registered session-model value are bound into the versioned
+environment policy, standard runtime registration, probe identities, config
+identity, and seal. A separate public one-shot proof must deliberately launch
+a model-bearing child whose public agent definition requests `model: sonnet`
+and accept only an exact one-parent/one-child lineage in which both report
+effective model `claude-opus-5`. Missing, drifted, incomplete, or tampered
+judge or subagent-model proof blocks sealing. Round 10 then requires six
+genuinely new tasks, a new atomic seal, all-arm real-backend preflight, and a
+completely new 42-slot schedule.
+
 1. Implement strict role validation, bounded crash-safe judge attempts,
    all-document role coverage, immutable policy bindings, and deterministic
    aggregation in `skills/research-codebase/evals/public/`.

@@ -174,6 +174,8 @@ PILOT_V2_SCHEDULE_SEED = pilot_registration.SCHEDULE_SEED
 PILOT_V2_SCORER_SEED = pilot_registration.SCORER_SEED
 PILOT_V2_VERIFIER_SEED = pilot_registration.VERIFIER_SEED
 PILOT_V2_LIVE_PROBE_VERSION = pilot_registration.LIVE_PROBE_VERSION
+PILOT_V2_SUBAGENT_MODEL_LIVE_PROBE_VERSION = (
+    pilot_registration.SUBAGENT_MODEL_LIVE_PROBE_VERSION)
 # Judge responses are capped at 1 MiB by judge_contract; 4 MiB leaves room
 # for stream-json envelopes and accounting nodes. An oversized stream is
 # preserved verbatim in a sidecar and consumes one invalid attempt, so bounded
@@ -193,6 +195,8 @@ PROGRESS_HEARTBEAT_STAGES = frozenset({
 # particular, arbitrary cloud, source-control, and developer-tool tokens from
 # the operator process must never become model-visible ambient context.
 PILOT_V2_ENVIRONMENT_POLICY_ID = pilot_registration.ENVIRONMENT_POLICY_ID
+PILOT_V2_SUBAGENT_MODEL_ENV = pilot_registration.SUBAGENT_MODEL_ENV
+PILOT_V2_SUBAGENT_MODEL_POLICY = pilot_registration.SUBAGENT_MODEL_POLICY
 PILOT_V2_ENV_ALLOWLIST = frozenset({
     "ALL_PROXY",
     "ANTHROPIC_API_KEY",
@@ -936,6 +940,7 @@ def protocol_v2_runtime_pins(config):
         "operator_image_sha256": config.get("operator_image_sha256"),
         "artifact_parser": config.get("artifact_parser"),
         "artifact_parser_version": config.get("artifact_parser_version"),
+        "subagent_model_policy": dict(PILOT_V2_SUBAGENT_MODEL_POLICY),
         "judge_output_policy": PILOT_V2_JUDGE_OUTPUT_POLICY,
         "structured_output_schema_sha256": {
             role: judge_contract.structured_output_schema_sha256(role)
@@ -959,6 +964,17 @@ def protocol_v2_live_probe_binding(config):
         "probe_version": PILOT_V2_LIVE_PROBE_VERSION,
         "receipt_sha256": config.get("judge_live_probe_receipt_sha256"),
         "execution_sha256": config.get("judge_live_probe_execution_sha256"),
+    }
+
+
+def protocol_v2_subagent_model_live_probe_binding(config):
+    """Canonical proof that the highest-precedence child-model pin worked."""
+    return {
+        "probe_version": PILOT_V2_SUBAGENT_MODEL_LIVE_PROBE_VERSION,
+        "receipt_sha256": config.get(
+            "subagent_model_live_probe_receipt_sha256"),
+        "execution_sha256": config.get(
+            "subagent_model_live_probe_execution_sha256"),
     }
 
 
@@ -1132,7 +1148,11 @@ def load_config(path):
                     "`artifact_parser_version` as numeric MAJOR.MINOR.PATCH")
             for field, digest in (
                     ("judge_live_probe_receipt_sha256", probe_receipt),
-                    ("judge_live_probe_execution_sha256", probe_execution)):
+                    ("judge_live_probe_execution_sha256", probe_execution),
+                    ("subagent_model_live_probe_receipt_sha256", config.get(
+                        "subagent_model_live_probe_receipt_sha256")),
+                    ("subagent_model_live_probe_execution_sha256", config.get(
+                        "subagent_model_live_probe_execution_sha256"))):
                 if not isinstance(digest, str) or SHA256_RE.fullmatch(
                         digest) is None:
                     raise InfraFailure(
@@ -1191,6 +1211,8 @@ def config_digest(config):
             material["runtime_pins"] = protocol_v2_runtime_pins(config)
             material["judge_live_probe"] = (
                 protocol_v2_live_probe_binding(config))
+            material["subagent_model_live_probe"] = (
+                protocol_v2_subagent_model_live_probe_binding(config))
     return hashlib.sha256(
         json.dumps(material, sort_keys=True).encode("utf-8")
     ).hexdigest()
@@ -1300,14 +1322,22 @@ def make_profile(workspace, label, installation_dir=None, settings=None):
     return profile, mount
 
 
-def backend_env(profile, protocol_version=1):
+def backend_env(profile, protocol_version=1, *, subagent_model=None):
     """Build the child environment without leaking operator credentials.
 
     Historical v1 reproduction keeps its original ambient-environment
     behavior.  Protocol v2 is prospective and fail-closed: only the fixed
-    CLI/auth/proxy/TLS/locale allowlist crosses the session boundary.
+    CLI/auth/proxy/TLS/locale allowlist crosses the session boundary. The
+    highest-precedence Claude subagent-model variable is never inherited;
+    the harness injects the current session's registered model explicitly.
     """
     if protocol_version == PILOT_V2_PROTOCOL_VERSION:
+        if (not isinstance(subagent_model, str) or not subagent_model
+                or subagent_model != subagent_model.strip()
+                or "\x00" in subagent_model):
+            raise InfraFailure(
+                "protocol v2 child environment requires an explicit "
+                "registered subagent model")
         env = {
             name: os.environ[name]
             for name in PILOT_V2_ENV_ALLOWLIST
@@ -1317,6 +1347,7 @@ def backend_env(profile, protocol_version=1):
         # Linux supplies private /tmp and the macOS wrapper replaces it again.
         env["TMPDIR"] = "/tmp"
         env["RPA_ENVIRONMENT_POLICY"] = PILOT_V2_ENVIRONMENT_POLICY_ID
+        env[PILOT_V2_SUBAGENT_MODEL_ENV] = subagent_model
     else:
         env = dict(os.environ)
     env["CLAUDE_CONFIG_DIR"] = str(profile)
@@ -1579,6 +1610,25 @@ def validate_sealed_judge_config(config, seal_doc, seal_manifest_path=None,
         raise InfraFailure(
             "protocol v2 seal `judge_live_probe` differs from the runtime "
             "receipt/execution registration")
+    subagent_model_live_probe = (
+        protocol_v2_subagent_model_live_probe_binding(config))
+    if not config.get("nonstandard_config"):
+        registered_subagent_probe = (
+            pilot_registration.subagent_model_live_probe_binding())
+        if pilot_registration.subagent_model_live_probe_registration_pending():
+            raise InfraFailure(
+                "standard protocol v2 requires a publicly registered live "
+                "subagent-model probe; pending registration cannot authorize "
+                "a seal")
+        if subagent_model_live_probe != registered_subagent_probe:
+            raise InfraFailure(
+                "standard protocol v2 live subagent-model probe differs from "
+                "the public receipt/execution registration")
+    if (seal_doc.get("subagent_model_live_probe")
+            != subagent_model_live_probe):
+        raise InfraFailure(
+            "protocol v2 seal `subagent_model_live_probe` differs from the "
+            "runtime receipt/execution registration")
     if seal_doc.get("aggregation_policy") != PILOT_V2_AGGREGATION_POLICY:
         raise InfraFailure(
             "protocol v2 seal `aggregation_policy` must be exactly "
@@ -2793,7 +2843,9 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
                                  arm.get("effort", "default"))
         cmd = with_stream_json_transport(cmd)
         cmd = apply_sandbox(config, cmd, worktree, profile)
-        env = backend_env(profile, config.get("protocol_version", 1))
+        env = backend_env(
+            profile, config.get("protocol_version", 1),
+            subagent_model=arm["model"])
         abort_exits = validate_abort_exits(config)
         before = snapshot_research(worktree)
         # Duration budgets and latency telemetry share one monotonic clock;
@@ -6263,7 +6315,8 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
                 workdir = judge_root / "workdir"
                 workdir.mkdir()
 
-            env = backend_env(profile, protocol_version)
+            env = backend_env(
+                profile, protocol_version, subagent_model=judge_model)
             sandboxed_cmd = apply_sandbox(
                 config, with_stream_json_transport(judge_cmd), workdir,
                 profile)

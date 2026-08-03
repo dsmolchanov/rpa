@@ -28,7 +28,7 @@ import step5_operator as operator_contract  # noqa: E402
 
 
 ROLES = ("scorer", "verifier")
-ROUND_NAMESPACE = "holdout-v2-round9"
+ROUND_NAMESPACE = "holdout-v2-round10"
 PACKAGE_NAMESPACE = "package"
 OUTPUT_NAMESPACE = "judge-live-probe"
 RECEIPT_NAME = "judge-structured-output-live-probe.json"
@@ -195,7 +195,9 @@ def _execution_identity(config):
     for field in (
             "seal_package_sha256",
             "judge_live_probe_receipt_sha256",
-            "judge_live_probe_execution_sha256"):
+            "judge_live_probe_execution_sha256",
+            "subagent_model_live_probe_receipt_sha256",
+            "subagent_model_live_probe_execution_sha256"):
         identity_config.pop(field, None)
     material = {
         "protocol_version": runner.PILOT_V2_PROTOCOL_VERSION,
@@ -393,7 +395,8 @@ def run_probe(config):
             command = runner.apply_sandbox(
                 config, expanded, workdir, profile)
             env = runner.backend_env(
-                profile, runner.PILOT_V2_PROTOCOL_VERSION)
+                profile, runner.PILOT_V2_PROTOCOL_VERSION,
+                subagent_model=config["judge_model"])
             temporary_sidecar = output / f".{RAW_NAMES[role]}.capture"
             (raw_text, raw_bytes, raw_digest, launch_defects,
              external) = runner.spawn_judge_session_capped(
@@ -438,7 +441,7 @@ def receipt_sha256(config):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True,
-                        help="filled runner config for holdout-v2-round9")
+                        help="filled runner config for holdout-v2-round10")
     parser.add_argument("--verify", action="store_true",
                         help="only revalidate an existing receipt")
     args = parser.parse_args()

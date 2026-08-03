@@ -54,6 +54,7 @@ METADATA_KEYS = {
     "judge_retry_policy",
     "judge_output_policy",
     "judge_live_probe",
+    "subagent_model_live_probe",
     "pilot_runtime_registration_sha256",
     "aggregation_policy",
     "judge_prompts",
@@ -348,6 +349,22 @@ def _validate_metadata(metadata, files, package_root):
         raise SealError(
             "judge_live_probe differs from the exact public pilot "
             "receipt/execution registration")
+    subagent_model_live_probe = metadata["subagent_model_live_probe"]
+    _exact_keys(
+        subagent_model_live_probe,
+        LIVE_PROBE_KEYS,
+        "subagent_model_live_probe",
+    )
+    if not metadata["nonstandard_config"]:
+        if pilot_registration.subagent_model_live_probe_registration_pending():
+            raise SealError(
+                "public live subagent-model probe registration is pending; "
+                "standard sealing is not authorized")
+        if (subagent_model_live_probe
+                != pilot_registration.subagent_model_live_probe_binding()):
+            raise SealError(
+                "subagent_model_live_probe differs from the exact public "
+                "pilot receipt/execution registration")
     runtime_registration_sha256 = metadata[
         "pilot_runtime_registration_sha256"]
     if (not isinstance(runtime_registration_sha256, str)
