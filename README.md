@@ -202,9 +202,11 @@ After installation, your `~/.claude/` directory should look like:
 │   ├── research-codebase/
 │   │   ├── SKILL.md
 │   │   └── references/
-│   └── create-plan/
-│       ├── SKILL.md
-│       └── references/
+│   ├── create-plan/
+│   │   ├── SKILL.md
+│   │   └── references/
+│   └── iterate-plan/
+│       └── SKILL.md
 ├── hooks/
 │   └── run_gate.py
 └── settings.json              # optional: "hooks" object merged from hooks/hooks.json

@@ -1,6 +1,6 @@
 {
   "name": "rpa",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Research, Plan, Act - Structured software development workflows with technical debt management",
   "author": {
     "name": "Dmitry Molchanov",
