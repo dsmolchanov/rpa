@@ -199,7 +199,10 @@ After installation, your `~/.claude/` directory should look like:
 │   ├── bootstrap_aidlc_project.sh
 │   └── spec_metadata.sh
 ├── skills/
-│   └── research-codebase/
+│   ├── research-codebase/
+│   │   ├── SKILL.md
+│   │   └── references/
+│   └── create-plan/
 │       ├── SKILL.md
 │       └── references/
 ├── hooks/
@@ -544,15 +547,16 @@ Creates documentation of how the codebase currently works. Uses parallel agents 
 
 ### /create_plan
 
-Interactive command that creates detailed implementation plans.
+Creates a persistent, implementation-ready plan grounded in the current
+checkout. The command is a thin Claude adapter over the shared
+`skills/create-plan/` workflow kernel.
 
 **Flow:**
 1. Read any referenced files
-2. Research the codebase
-3. Present understanding and ask questions
-4. Propose plan structure
-5. Write detailed plan with success criteria
-6. Iterate based on feedback
+2. Research the affected code and established patterns
+3. Resolve only material scope or architecture decisions
+4. Write dependency-ordered phases with exact success criteria
+5. Iterate based on feedback
 
 ### /implement_plan
 
