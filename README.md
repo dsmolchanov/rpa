@@ -207,7 +207,10 @@ After installation, your `~/.claude/` directory should look like:
 │   │   └── references/
 │   ├── iterate-plan/
 │   │   └── SKILL.md
-│   └── enhance-plan/
+│   ├── enhance-plan/
+│   │   ├── SKILL.md
+│   │   └── references/
+│   └── enhance-research/
 │       ├── SKILL.md
 │       └── references/
 ├── hooks/
