@@ -1181,6 +1181,20 @@ The probe used only public synthetic material. Round-9 seal authority remains
 the exact all-zero sentinel until the clean one-shot stability gate and
 atomic package build succeed.
 
+The round-9 clean one-shot boundary then completed in a separate
+uncontaminated session. Before atomic promotion, the private launcher fetched
+the single staged external source three times through the registered
+URL-over-stdin transport; all three raw digests were identical and matched
+the staged snapshot. The read-only stability receipt SHA-256 is
+`bdf2a719370c4c17aaf9a6b51f3cc2bae3e5a620a9c2c8c9820641e80ec41c4c`,
+and its authorization is bound to the launcher, manifest, and promoted seal.
+The package independently reverified in the pinned operator image at
+registered SHA-256
+`5626d795f0e7a39457ce74ccabdc3e7a0e7372c9f2f64c2f651bf2a9626f1e67`;
+only `holdout-v2-1.md` through `holdout-v2-6.md` returned to this context.
+No private holdout content returned. This seal authorizes only the fresh
+round-9 preflight, complete schedule, drift gate, judge batches, and aggregate.
+
 1. Implement strict role validation, bounded crash-safe judge attempts,
    all-document role coverage, immutable policy bindings, and deterministic
    aggregation in `skills/research-codebase/evals/public/`.

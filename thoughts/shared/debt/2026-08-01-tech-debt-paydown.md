@@ -66,9 +66,12 @@ auto_fixable_count: 7
 - [x] Execute a completely new 42-slot randomized round-8 schedule. Preserve
   it unchanged after unstable live bytes made digest-bound source-drift
   adjudication impossible before either judge role.
-- [ ] Add the mandatory three-fetch raw-byte equality check to the private
-  round-9 one-shot sealer, then run a new probe, seal, schedule, scorer,
-  verifier, and aggregate. Reuse nothing from an invalid round.
+- [x] Add the mandatory three-fetch raw-byte equality check to the private
+  round-9 one-shot sealer and complete a fresh probe plus atomic seal. All
+  three observations matched the staged snapshot and the sealed package
+  independently reverified. Reuse nothing from an invalid round.
+- [ ] Run the fresh round-9 real-backend preflight, complete schedule,
+  independent drift gate, scorer, verifier, and aggregate.
 - [x] Complete and no-model revalidate the fresh round-9 public live probe;
   register only its receipt/execution digests while keeping seal authority at
   the exact pending sentinel.

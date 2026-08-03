@@ -297,6 +297,11 @@ schema and never canonicalizes external bytes.
 
 The fresh round-9 public live probe has now passed in the pinned operator and
 revalidated without another model observation. Only its receipt/execution
-digests are registered; no holdout material existed and seal authority stays
-at the exact pending sentinel until the private three-fetch stability gate
-and one-shot atomic seal complete.
+digests are registered; no holdout material existed at probe time. The
+private three-fetch stability gate and one-shot atomic seal have now completed:
+all three raw source observations matched the staged snapshot, the read-only
+stability receipt is authorization-bound, and the package independently
+reverified at registered SHA-256
+`5626d795f0e7a39457ce74ccabdc3e7a0e7372c9f2f64c2f651bf2a9626f1e67`.
+The remaining round-9 schedule, drift gate, judges, and aggregate are
+operational pilot work rather than harness debt.
