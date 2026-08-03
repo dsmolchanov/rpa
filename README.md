@@ -205,8 +205,11 @@ After installation, your `~/.claude/` directory should look like:
 │   ├── create-plan/
 │   │   ├── SKILL.md
 │   │   └── references/
-│   └── iterate-plan/
-│       └── SKILL.md
+│   ├── iterate-plan/
+│   │   └── SKILL.md
+│   └── enhance-plan/
+│       ├── SKILL.md
+│       └── references/
 ├── hooks/
 │   └── run_gate.py
 └── settings.json              # optional: "hooks" object merged from hooks/hooks.json
