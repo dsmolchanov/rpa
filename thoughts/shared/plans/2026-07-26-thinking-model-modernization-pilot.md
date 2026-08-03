@@ -1308,6 +1308,16 @@ Both receipts independently revalidated without another model call. The seal
 authority remains the exact all-zero sentinel until these four proof digests
 are committed and a fresh operator checkout revalidates them.
 
+After that registration was frozen at detached operator commit
+`62e80f17600737fb5145c1ab88cbe88e8e02b39d`, one isolated clean authoring
+session created and atomically promoted the round-11 package. The launcher
+returned only task basenames `holdout-v2-1.md` through `holdout-v2-6.md` and
+registered package SHA-256
+`793d36cf1acce9390456d51fe0f5782790aa7d946fe9af80d0d8b467100f1f4a`;
+no task, ground-truth, rubric, snapshot, or judge-prompt content crossed back
+into the implementation context. Independent verification in the pinned
+operator image reproduced the same package digest.
+
 1. Implement strict role validation, bounded crash-safe judge attempts,
    all-document role coverage, immutable policy bindings, and deterministic
    aggregation in `skills/research-codebase/evals/public/`.
