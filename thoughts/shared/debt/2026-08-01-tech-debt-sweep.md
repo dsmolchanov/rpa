@@ -283,3 +283,14 @@ only the six generic task basenames returned to this context. The duplicated
 probe-version ownership defect is therefore closed, while the post-seal
 real-backend preflight, schedule, judge batches, and aggregate remain
 operational work rather than harness debt.
+
+Round 8 subsequently passed real-backend preflight and completed all 42
+scheduled runs, but the pre-score drift gate exposed request-variant raw live
+bytes. Independent clean re-fetches could not reproduce the first receipt's
+digest, so a digest-bound materiality adjudication was impossible; no judge
+or aggregate was launched and the round is preserved as indeterminate. The
+prospective round-9 boundary resets probe/seal authority and adds a mandatory
+three-fetch byte-equality check to the private atomic sealer before manifest
+creation or promotion. A public, runtime-bound source-stability proof remains
+post-pilot hardening; the immediate gate deliberately changes no sealed
+schema and never canonicalizes external bytes.

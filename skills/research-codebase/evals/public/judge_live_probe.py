@@ -28,7 +28,7 @@ import step5_operator as operator_contract  # noqa: E402
 
 
 ROLES = ("scorer", "verifier")
-ROUND_NAMESPACE = "holdout-v2-round8"
+ROUND_NAMESPACE = "holdout-v2-round9"
 PACKAGE_NAMESPACE = "package"
 OUTPUT_NAMESPACE = "judge-live-probe"
 RECEIPT_NAME = "judge-structured-output-live-probe.json"
@@ -438,7 +438,7 @@ def receipt_sha256(config):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True,
-                        help="filled runner config for holdout-v2-round8")
+                        help="filled runner config for holdout-v2-round9")
     parser.add_argument("--verify", action="store_true",
                         help="only revalidate an existing receipt")
     args = parser.parse_args()

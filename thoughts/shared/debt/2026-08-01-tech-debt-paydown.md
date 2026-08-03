@@ -43,9 +43,10 @@ auto_fixable_count: 7
   seal/config proof binding. The prior probe is invalidated by the prospective
   semantic-reminder/code change. The fresh round-7 probe has now passed and
   been revalidated without another model call; its receipt/execution digests
-  were superseded after its pre-model stop. The fresh round-8 probe and atomic
-  seal have now passed and revalidated; the post-seal all-arm real-backend
-  preflight remains pending.
+  were superseded after its pre-model stop. The fresh round-8 probe, atomic
+  seal, and post-seal all-arm real-backend preflight passed, but its authority
+  is now superseded by the pre-score source-drift failure. Round 9 requires a
+  new probe and seal.
 - [x] Diagnose the round-7 pre-model seal stop without opening any prompt or
   package content: a duplicated private-launcher v1 probe-version literal
   rejected the registered v2 proof before Codex launch. Preserve the claimed
@@ -58,12 +59,16 @@ auto_fixable_count: 7
   its SHA-256 and six task basenames.
 - [x] Register that exact seal through the shared authority consumed by
   `step5_operator.py` before any round-8 schedule or backend outcome.
-- [ ] Rebuild all three arm installations in the pinned operator image and
+- [x] Rebuild all three arm installations in the pinned operator image and
   verify the registered hashes.
-- [ ] Run the real-backend preflight with an unrelated environment canary and
+- [x] Run the real-backend preflight with an unrelated environment canary and
   verify it is absent inside evaluated and judge processes.
-- [ ] Execute a completely new 42-slot randomized schedule; then run scorer,
-  verifier, and aggregate sequentially. Reuse nothing from an invalid round.
+- [x] Execute a completely new 42-slot randomized round-8 schedule. Preserve
+  it unchanged after unstable live bytes made digest-bound source-drift
+  adjudication impossible before either judge role.
+- [ ] Add the mandatory three-fetch raw-byte equality check to the private
+  round-9 one-shot sealer, then run a new probe, seal, schedule, scorer,
+  verifier, and aggregate. Reuse nothing from an invalid round.
 - [x] Move legacy harness temp roots to a dated folder under the user's Trash
   after validating every exact target; keep the cleanup recoverable.
 

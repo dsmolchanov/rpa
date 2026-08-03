@@ -1144,6 +1144,31 @@ content returned to the implementation context. This digest now authorizes
 only the fresh round-8 real-backend preflight, 42-slot schedule, complete
 scorer/verifier batches, and independent aggregate described below.
 
+Round 8 then passed the pinned all-arm real-backend preflight and completed
+its entire fresh 42-slot randomized schedule. Before either judge role was
+launched, the mandatory source-drift fetch found one changed sealed source.
+Two independent clean adjudication sessions could not reproduce the exact
+bytes bound by that first fetch: repeated registered fetches produced
+different SHA-256 values, so no digest-bound materiality decision could be
+validly authored. The private binding-failure receipt SHA-256 is
+`b94ad804addc1f8eae375b8c84f828bca8efd239a43623be0663b1d3288f1b65`.
+No scorer, verifier, or aggregate call was launched, no score or verdict is
+reported, and the complete round-8 namespace remains immutable evidence. The
+round is indeterminate and neither its probe, seal, schedule, tasks, nor run
+documents may authorize or enter a later outcome.
+
+Prospectively, the replacement uses the fresh `holdout-v2-round9` namespace
+with live-probe and seal registrations reset to their exact all-zero
+sentinels. The clean one-shot sealer must independently fetch every staged
+external source three times through the registered URL-over-stdin transport
+before manifest creation or atomic promotion. All three raw byte streams must
+be identical to one another and to the staged snapshot; a timeout, fetch
+error, or mismatch permanently stops that one-shot namespace. This
+pre-seal stability control does not canonicalize source bytes and does not
+replace the independent pre-score source-drift gate. Round 9 still requires a
+new public live probe, six genuinely new tasks, a new atomic seal, and a new
+complete schedule before either judge role can run.
+
 1. Implement strict role validation, bounded crash-safe judge attempts,
    all-document role coverage, immutable policy bindings, and deterministic
    aggregation in `skills/research-codebase/evals/public/`.
