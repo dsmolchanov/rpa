@@ -1141,16 +1141,23 @@ def phase_real_preflight(args, config):
     preflight_env = os.environ.copy()
     preflight_env["RPA_REAL_PREFLIGHT_CANARY"] = hashlib.sha256(
         os.urandom(32)).hexdigest()
-    for arm in sorted(REGISTERED_INSTALL_SHA256):
+    preflight_arms = sorted(REGISTERED_INSTALL_SHA256)
+    preflight_progress_started = time.monotonic()
+    runner.emit_progress_heartbeat(
+        "real-preflight", 0, completed=0, total=len(preflight_arms))
+    for position, arm in enumerate(preflight_arms, 1):
         arm_output = root / arm
-        result = subprocess.run([
-            sys.executable, str(HERE / "runner.py"),
-            "--config", str(dev_config_path),
-            "--arm", arm,
-            "--task", str(Path(args.real_preflight_task).resolve()),
-            "--repo", repository,
-            "--output", str(arm_output),
-        ], capture_output=True, text=True, env=preflight_env)
+        with runner.progress_heartbeat(
+                "real-preflight", completed=position - 1,
+                total=len(preflight_arms)):
+            result = subprocess.run([
+                sys.executable, str(HERE / "runner.py"),
+                "--config", str(dev_config_path),
+                "--arm", arm,
+                "--task", str(Path(args.real_preflight_task).resolve()),
+                "--repo", repository,
+                "--output", str(arm_output),
+            ], capture_output=True, text=True, env=preflight_env)
         if result.returncode not in allowed_exit_codes[arm]:
             fail("real-backend preflight stopped before an acceptable "
                  f"terminal outcome for arm `{arm}`; its immutable records "
@@ -1162,6 +1169,10 @@ def phase_real_preflight(args, config):
         except runner.InfraFailure as exc:
             fail(f"real-backend preflight arm `{arm}` produced invalid "
                  f"state before the next arm could launch: {exc}")
+        runner.emit_progress_heartbeat(
+            "real-preflight",
+            time.monotonic() - preflight_progress_started,
+            completed=position, total=len(preflight_arms))
     try:
         records = _verified_real_preflight_records(
             root, dev_config, Path(args.real_preflight_task).resolve())

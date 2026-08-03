@@ -85,6 +85,9 @@ topic: "Nonconforming mock artifact"
 Free-form text without the contract's frontmatter or sections.
 """
 
+INVALID_UTF8_TRANSPORT = (
+    b"PRIVATE-TRANSPORT-CANARY" + bytes((255, 10)))
+
 
 SCORER_RESPONSE = {
     "coverage": {
@@ -381,6 +384,35 @@ def main():
         if args.mode in ("wrong-model", "abort-wrong-model")
         else args.model
     )
+
+    if args.mode in ("non-utf8-stdout", "abort-non-utf8-stdout",
+                     "timeout-non-utf8-stdout"):
+        # Exercise the runner's byte-oriented transport boundary.  A valid
+        # accounting prefix must not make a malformed raw stream acceptable.
+        emit_nodes(model, args.effort, args.effort)
+        if args.mode == "non-utf8-stdout":
+            write_artifact()
+            emit({"type": "result", "subtype": "success",
+                  "session_id": session_id,
+                  "result": "MOCK-VERDICT: malformed transport"})
+        os.write(sys.stdout.fileno(), INVALID_UTF8_TRANSPORT)
+        if args.mode == "abort-non-utf8-stdout":
+            sys.exit(21)
+        if args.mode == "timeout-non-utf8-stdout":
+            time.sleep(30)
+        return
+
+    if args.mode in ("non-utf8-stderr", "abort-non-utf8-stderr"):
+        emit_nodes(model, args.effort, args.effort)
+        if args.mode == "non-utf8-stderr":
+            write_artifact()
+            emit({"type": "result", "subtype": "success",
+                  "session_id": session_id,
+                  "result": "MOCK-VERDICT: malformed diagnostics"})
+        os.write(sys.stderr.fileno(), INVALID_UTF8_TRANSPORT)
+        if args.mode == "abort-non-utf8-stderr":
+            sys.exit(21)
+        return
 
     if args.mode == "launch-no-child":
         # Delegation happened (subagent_launches=1) but the child died

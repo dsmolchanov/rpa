@@ -109,6 +109,7 @@ Stdlib only.
 
 import argparse
 import codecs
+import contextlib
 import fcntl
 import importlib.util
 import hashlib
@@ -122,6 +123,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -177,6 +179,15 @@ PILOT_V2_LIVE_PROBE_VERSION = pilot_registration.LIVE_PROBE_VERSION
 # preserved verbatim in a sidecar and consumes one invalid attempt, so bounded
 # attempt JSON never discards audit evidence or permits unbounded retries.
 PILOT_V2_MAX_RAW_STREAM_BYTES = 4 * 1024 * 1024
+# Progress is operator-only stderr telemetry, never protocol evidence.  Keep
+# its vocabulary closed so a caller cannot accidentally copy a prompt, task,
+# document, source URL, path, argv element, or identifier into a heartbeat.
+PROGRESS_HEARTBEAT_SECONDS = 30.0
+PROGRESS_HEARTBEAT_STAGES = frozenset({
+    "judge-model-call",
+    "real-preflight",
+    "workflow-model-call",
+})
 # Protocol-v2 sessions receive only the environment needed by the pinned
 # Claude CLI, its filesystem wrapper, locale/TLS, and network proxy.  In
 # particular, arbitrary cloud, source-control, and developer-tool tokens from
@@ -305,6 +316,101 @@ class WorkflowFailure(Exception):
         if failure_kind not in PILOT_V2_FAILURE_KINDS:
             raise ValueError(f"unknown workflow failure kind: {failure_kind}")
         self.failure_kind = failure_kind
+
+
+def _progress_heartbeat_line(stage, elapsed_seconds, *, completed=None,
+                             total=None, call=None, call_total=None):
+    """Build one metadata-only progress line from a closed vocabulary.
+
+    Arbitrary text is deliberately not accepted.  This keeps private model
+    inputs and process details out of operator logs by construction while
+    still exposing enough aggregate state to distinguish a healthy long call
+    from a stalled driver.
+    """
+    if stage not in PROGRESS_HEARTBEAT_STAGES:
+        raise ValueError("progress heartbeat stage is not registered")
+    if (isinstance(elapsed_seconds, bool)
+            or not isinstance(elapsed_seconds, (int, float))
+            or elapsed_seconds < 0):
+        raise ValueError("progress heartbeat elapsed time must be nonnegative")
+
+    def checked_pair(first, second, first_name, second_name, minimum):
+        if (first is None) != (second is None):
+            raise ValueError(
+                f"progress heartbeat {first_name}/{second_name} must be paired")
+        if first is None:
+            return None
+        if (isinstance(first, bool) or isinstance(second, bool)
+                or not isinstance(first, int) or not isinstance(second, int)
+                or first < minimum or second < minimum or first > second):
+            raise ValueError(
+                f"progress heartbeat {first_name}/{second_name} is invalid")
+        return first, second
+
+    progress = checked_pair(completed, total, "completed", "total", 0)
+    invocation = checked_pair(call, call_total, "call", "call_total", 1)
+    fields = ["progress-heartbeat", f"stage={stage}"]
+    if progress is not None:
+        fields.extend((f"completed={progress[0]}", f"total={progress[1]}"))
+    if invocation is not None:
+        fields.extend((f"call={invocation[0]}",
+                       f"call_total={invocation[1]}"))
+    fields.append(f"elapsed_seconds={int(elapsed_seconds)}")
+    return " ".join(fields)
+
+
+def emit_progress_heartbeat(stage, elapsed_seconds, *, completed=None,
+                            total=None, call=None, call_total=None,
+                            stream=None):
+    """Emit safe progress to stderr without affecting protocol state."""
+    line = _progress_heartbeat_line(
+        stage, elapsed_seconds, completed=completed, total=total,
+        call=call, call_total=call_total)
+    try:
+        print(line, file=stream if stream is not None else sys.stderr,
+              flush=True)
+    except (OSError, ValueError):
+        # Observability must never change an experimental outcome.
+        pass
+
+
+@contextlib.contextmanager
+def progress_heartbeat(stage, *, completed=None, total=None, call=None,
+                       call_total=None, interval_seconds=None, stream=None):
+    """Emit periodic metadata-only stderr progress around a blocking call."""
+    interval = (PROGRESS_HEARTBEAT_SECONDS if interval_seconds is None
+                else interval_seconds)
+    if (isinstance(interval, bool) or not isinstance(interval, (int, float))
+            or interval <= 0):
+        raise ValueError("progress heartbeat interval must be positive")
+    # Validate synchronously.  The worker then receives only registered
+    # literals and numeric counters, never any private call inputs.
+    _progress_heartbeat_line(
+        stage, 0, completed=completed, total=total,
+        call=call, call_total=call_total)
+    started = time.monotonic()
+    stop = threading.Event()
+
+    def report():
+        while not stop.wait(interval):
+            emit_progress_heartbeat(
+                stage, time.monotonic() - started,
+                completed=completed, total=total,
+                call=call, call_total=call_total, stream=stream)
+
+    worker = threading.Thread(
+        target=report, name="rpa-progress-heartbeat", daemon=True)
+    try:
+        worker.start()
+    except RuntimeError:
+        worker = None
+    try:
+        yield
+    finally:
+        stop.set()
+        if worker is not None:
+            # A broken logging sink must not delay or reclassify the call.
+            worker.join(timeout=0.1)
 
 
 # Blind SCORERS receive the anonymized document inline; filesystem, exec,
@@ -1106,6 +1212,27 @@ def load_json_object(path, what):
     return data
 
 
+def _decode_backend_text(data, stream):
+    """Decode one backend-owned stream without exposing malformed bytes.
+
+    Backend stdout/stderr are private transport data.  Letting ``subprocess``
+    decode them in text mode can raise an unclassified ``UnicodeDecodeError``
+    whose default representation includes byte offsets and fragments.  Keep
+    capture byte-exact until the child is terminal, then fail closed with one
+    stable, content-free classification.
+    """
+    if not isinstance(data, bytes):
+        raise InfraFailure(f"backend {stream} was not captured as bytes")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        # Leave the handler before constructing the public exception.
+        # ``from None`` only suppresses display; raising inside the handler
+        # would still retain the raw byte object in ``__context__``.
+        pass
+    raise InfraFailure(f"backend {stream} is not valid UTF-8")
+
+
 def verify_backend_version(config):
     """The pinned-runtime protocol includes the exact backend (Claude Code)
     version: it is registered in the config and probed before EVERY run and
@@ -1119,15 +1246,17 @@ def verify_backend_version(config):
             "— the pinned-runtime protocol requires a per-run version check"
         )
     try:
-        proc = subprocess.run(probe, capture_output=True, text=True, timeout=60)
+        proc = subprocess.run(probe, capture_output=True, timeout=60)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise InfraFailure(f"backend version probe failed: {exc}") from exc
+    stdout = _decode_backend_text(proc.stdout, "version-probe stdout")
+    stderr = _decode_backend_text(proc.stderr, "version-probe stderr")
     if proc.returncode != 0:
         raise InfraFailure(
             f"backend version probe exited {proc.returncode}: "
-            f"{proc.stderr.strip()[:200]}"
+            f"{stderr.strip()[:200]}"
         )
-    actual = proc.stdout.strip()
+    actual = stdout.strip()
     if actual != expected:
         raise InfraFailure(
             f"backend version `{actual}` differs from registered "
@@ -1702,7 +1831,9 @@ def kill_process_group(proc):
 
 
 def spawn_session(cmd, prompt, cwd, env, timeout, resume=None,
-                  workflow_abort_exits=()):
+                  workflow_abort_exits=(), heartbeat_call=None,
+                  heartbeat_call_total=None, heartbeat_completed=None,
+                  heartbeat_total=None):
     """`workflow_abort_exits` lists backend exit codes that represent an
     evaluated-workflow abort: those are WorkflowFailure (counted, never
     replaced), while any other nonzero exit is an infra crash (rerun). The
@@ -1715,32 +1846,85 @@ def spawn_session(cmd, prompt, cwd, env, timeout, resume=None,
     # continuation, document, rubric, and judge-policy bytes must never be
     # placed in argv, where another process on the host could read them.
     full += ["-p", "--output-format", "stream-json"]
+    prompt_invalid = False
+    try:
+        prompt_bytes = prompt.encode("utf-8")
+    except (AttributeError, UnicodeEncodeError):
+        # As above, leave the handler before raising so a private prompt is
+        # not retained in a UnicodeEncodeError exception context.
+        prompt_invalid = True
+    if prompt_invalid:
+        raise InfraFailure(
+            "backend prompt is not valid UTF-8 text")
     try:
         proc = subprocess.Popen(
             full, cwd=cwd, env=env, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, stdin=subprocess.PIPE, text=True,
-            encoding="utf-8", errors="strict",
+            stderr=subprocess.PIPE, stdin=subprocess.PIPE,
             start_new_session=True
         )
     except OSError as exc:
         raise InfraFailure(f"backend could not be spawned: {exc}") from exc
+    timeout_error = None
     try:
-        stdout, stderr = proc.communicate(input=prompt, timeout=timeout)
+        with progress_heartbeat(
+                "workflow-model-call", completed=heartbeat_completed,
+                total=heartbeat_total, call=heartbeat_call,
+                call_total=heartbeat_call_total):
+            stdout_bytes, stderr_bytes = proc.communicate(
+                input=prompt_bytes, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         # The session runs in its OWN process group (start_new_session):
         # on timeout the WHOLE tree is killed, so spawned tool
         # subprocesses cannot keep consuming the budget or touching the
         # disposable worktree after the timeout is recorded.
+        timeout_error = exc
         kill_process_group(proc)
-        stdout, stderr = proc.communicate()
-        raise WorkflowFailure(
-            f"session timed out after {timeout}s", stdout=stdout,
-            failure_kind="timeout",
-        ) from exc
+        stdout_bytes, stderr_bytes = proc.communicate()
     # The parent CLI exiting is not proof that its tool subprocesses exited.
     # Kill the dedicated process group after *every* terminal parent outcome
     # before artifact discovery or worktree cleanup.
     kill_process_group(proc)
+
+    try:
+        stdout = _decode_backend_text(stdout_bytes, "stdout")
+    except InfraFailure as exc:
+        if timeout_error is not None:
+            raise BlockingInfraFailure(
+                "timed-out backend emitted non-UTF-8 stdout; the observed "
+                "timeout cannot be counted or rerun",
+                failure_kind="timeout",
+            ) from exc
+        if proc.returncode in workflow_abort_exits:
+            raise BlockingInfraFailure(
+                "aborted backend emitted non-UTF-8 stdout; the observed "
+                "abort cannot be counted or rerun",
+                failure_kind="abort",
+            ) from exc
+        raise
+    try:
+        stderr = _decode_backend_text(stderr_bytes, "stderr")
+    except InfraFailure as exc:
+        if timeout_error is not None:
+            # The transcript remains valid accounting evidence.  Preserve
+            # the already-observed timeout without retaining or repairing
+            # the malformed diagnostic stream.
+            raise WorkflowFailure(
+                f"session timed out after {timeout}s; backend stderr was "
+                "not valid UTF-8",
+                stdout=stdout, failure_kind="timeout",
+            ) from exc
+        if proc.returncode in workflow_abort_exits:
+            raise WorkflowFailure(
+                f"workflow aborted (exit {proc.returncode}); backend "
+                "stderr was not valid UTF-8",
+                stdout=stdout, failure_kind="abort",
+            ) from exc
+        raise
+    if timeout_error is not None:
+        raise WorkflowFailure(
+            f"session timed out after {timeout}s", stdout=stdout,
+            failure_kind="timeout",
+        ) from timeout_error
     if proc.returncode != 0:
         detail = (stderr or "").strip()[:500]
         if proc.returncode in workflow_abort_exits:
@@ -1757,7 +1941,11 @@ def spawn_session(cmd, prompt, cwd, env, timeout, resume=None,
 
 def spawn_judge_session_capped(cmd, prompt, cwd, env, timeout,
                                raw_stream_path, max_stream_bytes,
-                               structured_output_schema=None):
+                               structured_output_schema=None,
+                               heartbeat_call=None,
+                               heartbeat_call_total=None,
+                               heartbeat_completed=None,
+                               heartbeat_total=None):
     """Run one v2 judge with stdout captured to disk and a live size cap.
 
     Disk capture avoids unbounded in-memory ``communicate`` buffering. The
@@ -1800,18 +1988,22 @@ def spawn_judge_session_capped(cmd, prompt, cwd, env, timeout,
         timed_out = False
         if proc is not None:
             deadline = time.monotonic() + timeout
-            while proc.poll() is None:
-                raw_handle.flush()
-                if os.fstat(raw_handle.fileno()).st_size > max_stream_bytes:
-                    oversized = True
-                elif time.monotonic() >= deadline:
-                    timed_out = True
-                else:
-                    time.sleep(0.02)
-                    continue
-                kill_process_group(proc)
-                proc.wait()
-                break
+            with progress_heartbeat(
+                    "judge-model-call", completed=heartbeat_completed,
+                    total=heartbeat_total, call=heartbeat_call,
+                    call_total=heartbeat_call_total):
+                while proc.poll() is None:
+                    raw_handle.flush()
+                    if os.fstat(raw_handle.fileno()).st_size > max_stream_bytes:
+                        oversized = True
+                    elif time.monotonic() >= deadline:
+                        timed_out = True
+                    else:
+                        time.sleep(0.02)
+                        continue
+                    kill_process_group(proc)
+                    proc.wait()
+                    break
             # A successful/nonzero parent can leave detached-stdio tool
             # children in its process group. Reap them before reading the
             # final stream or tearing down judge isolation.
@@ -2462,7 +2654,8 @@ def anonymize(text, run_id):
 
 def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
              scheduled=False, schedule_binding=None, output_binding=None,
-             task_snapshot=None):
+             task_snapshot=None, heartbeat_completed=None,
+             heartbeat_total=None):
     require_standard_v2_registration(config)
     arms = config.get("arms", {})
     if arm_name not in arms:
@@ -2630,7 +2823,13 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
             try:
                 return spawn_session(cmd, prompt_text, worktree, env,
                                      remaining, resume=resume,
-                                     workflow_abort_exits=abort_exits)
+                                     workflow_abort_exits=abort_exits,
+                                     heartbeat_call=(
+                                         record["interventions"] + 1),
+                                     heartbeat_call_total=(
+                                         MAX_CONTINUATIONS + 1),
+                                     heartbeat_completed=heartbeat_completed,
+                                     heartbeat_total=heartbeat_total)
             except WorkflowFailure as wf:
                 try:
                     partial = parse_nodes_tolerant(wf.stdout)
@@ -3022,7 +3221,8 @@ def run_task(config, arm_name, task_path, repo_dir, output_dir, attempt=1,
 def run_task_with_retries(config, arm_name, task_path, repo_dir, output_dir,
                           scheduled=False, starting_attempt=1,
                           schedule_binding=None, output_binding=None,
-                          task_snapshot=None):
+                          task_snapshot=None, heartbeat_completed=None,
+                          heartbeat_total=None):
     """Registered protocol: an infrastructure failure invalidates the run and
     the run is re-executed, automatically and bounded — workflow failures are
     counted, never replaced. Every attempt's record is written to disk."""
@@ -3051,7 +3251,9 @@ def run_task_with_retries(config, arm_name, task_path, repo_dir, output_dir,
                           attempt=attempt, scheduled=scheduled,
                           schedule_binding=schedule_binding,
                           output_binding=output_binding,
-                          task_snapshot=task_snapshot)
+                          task_snapshot=task_snapshot,
+                          heartbeat_completed=heartbeat_completed,
+                          heartbeat_total=heartbeat_total)
         attempts.append(record)
         if record["status"] != "infra_failure":
             break
@@ -4502,6 +4704,8 @@ def _run_schedule_locked(config, schedule_path, repos, output_dir, task_paths,
                     },
                     output_binding=output_binding,
                     task_snapshot=task_snapshots[entry["task"]],
+                    heartbeat_completed=len(results),
+                    heartbeat_total=len(entries),
                 )
                 if protocol_v2:
                     for new_record in new_attempts:
@@ -6101,7 +6305,11 @@ def _score_locked(config, doc_paths, judge_prompt_path, output_dir,
                     config["timeout_seconds"], sidecar_path,
                     PILOT_V2_MAX_RAW_STREAM_BYTES,
                     structured_output_schema=(
-                        judge_contract.structured_output_schema_text(role)))
+                        judge_contract.structured_output_schema_text(role)),
+                    heartbeat_call=attempt,
+                    heartbeat_call_total=PILOT_V2_MAX_JUDGE_ATTEMPTS,
+                    heartbeat_completed=slot,
+                    heartbeat_total=len(order))
             if external_stream:
                 (session_id, nodes, response, structured_output,
                  stream_defects) = (None, [], "", None, [])

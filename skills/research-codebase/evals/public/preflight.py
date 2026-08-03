@@ -1049,6 +1049,97 @@ def _run_preflight(registration_isolation_ok):
             "backend stream transport adds verbose idempotently",
             existing_verbose == ["claude", "--verbose"], notes)
 
+        # Operator progress has a deliberately closed metadata grammar.  It
+        # cannot accept any private string, and it stays on stderr so the
+        # runner's structured stdout and persisted protocol records are
+        # byte-for-byte unaffected.
+        heartbeat_line = runner._progress_heartbeat_line(
+            "workflow-model-call", 61.9, completed=7, total=42,
+            call=2, call_total=4)
+        rejected_private_stage = False
+        rejected_text_counter = False
+        try:
+            runner._progress_heartbeat_line(
+                "PRIVATE-TASK-CONTENT", 1, completed=0, total=1)
+        except ValueError:
+            rejected_private_stage = True
+        try:
+            runner._progress_heartbeat_line(
+                "workflow-model-call", 1,
+                completed="private", total=1)
+        except ValueError:
+            rejected_text_counter = True
+        ok &= check(
+            "progress heartbeat accepts only registered stages and integers",
+            heartbeat_line == (
+                "progress-heartbeat stage=workflow-model-call completed=7 "
+                "total=42 call=2 call_total=4 elapsed_seconds=61")
+            and rejected_private_stage and rejected_text_counter, notes)
+
+        heartbeat_private = "PRIVATE-HEARTBEAT-CANARY-argv-env-prompt"
+        heartbeat_workdir = ws / "private-heartbeat-workdir"
+        heartbeat_workdir.mkdir()
+        heartbeat_cmd = [
+            sys.executable, "-c",
+            ("import sys,time; sys.stdin.read(); time.sleep(0.08); "
+             "sys.stdout.write('heartbeat-transport-ok\\n')"),
+            heartbeat_private,
+        ]
+        heartbeat_env = os.environ.copy()
+        heartbeat_env["PRIVATE_HEARTBEAT_ENV"] = heartbeat_private
+        original_heartbeat_interval = runner.PROGRESS_HEARTBEAT_SECONDS
+        runner.PROGRESS_HEARTBEAT_SECONDS = 0.01
+        try:
+            workflow_heartbeat_stderr = io.StringIO()
+            with contextlib.redirect_stderr(workflow_heartbeat_stderr):
+                heartbeat_stdout = runner.spawn_session(
+                    heartbeat_cmd, heartbeat_private, heartbeat_workdir,
+                    heartbeat_env, 10, heartbeat_call=1,
+                    heartbeat_call_total=4, heartbeat_completed=7,
+                    heartbeat_total=42)
+            judge_heartbeat_stderr = io.StringIO()
+            with contextlib.redirect_stderr(judge_heartbeat_stderr):
+                (judge_heartbeat_stdout, _heartbeat_bytes,
+                 _heartbeat_digest, heartbeat_defects,
+                 heartbeat_external) = runner.spawn_judge_session_capped(
+                    heartbeat_cmd, heartbeat_private, heartbeat_workdir,
+                    heartbeat_env, 10, ws / "heartbeat-sidecar",
+                    runner.PILOT_V2_MAX_RAW_STREAM_BYTES,
+                    heartbeat_call=2, heartbeat_call_total=3,
+                    heartbeat_completed=5, heartbeat_total=12)
+        finally:
+            runner.PROGRESS_HEARTBEAT_SECONDS = original_heartbeat_interval
+        workflow_heartbeat_lines = (
+            workflow_heartbeat_stderr.getvalue().splitlines())
+        judge_heartbeat_lines = judge_heartbeat_stderr.getvalue().splitlines()
+        heartbeat_forbidden = (
+            heartbeat_private, str(heartbeat_workdir), sys.executable,
+            heartbeat_cmd[2],
+        )
+        ok &= check(
+            "long-call heartbeats preserve stdout and leak no call inputs",
+            heartbeat_stdout == "heartbeat-transport-ok\n"
+            and judge_heartbeat_stdout == "heartbeat-transport-ok\n"
+            and not heartbeat_defects and not heartbeat_external
+            and workflow_heartbeat_lines and judge_heartbeat_lines
+            and all(line.startswith(
+                "progress-heartbeat stage=workflow-model-call "
+                "completed=7 total=42 call=1 call_total=4 "
+                "elapsed_seconds=")
+                and line.rsplit("=", 1)[-1].isdigit()
+                for line in workflow_heartbeat_lines)
+            and all(line.startswith(
+                "progress-heartbeat stage=judge-model-call "
+                "completed=5 total=12 call=2 call_total=3 "
+                "elapsed_seconds=")
+                and line.rsplit("=", 1)[-1].isdigit()
+                for line in judge_heartbeat_lines)
+            and all(secret not in emitted
+                    for secret in heartbeat_forbidden
+                    for emitted in (
+                        workflow_heartbeat_stderr.getvalue(),
+                        judge_heartbeat_stderr.getvalue())), notes)
+
         # All evaluated and judge input is private transport data. Claude
         # 2.1.220's `-p` switch reads stdin when there is no positional
         # prompt; prove initial, resumed/continuation, wrapper, and capped
@@ -2928,6 +3019,49 @@ def _run_preflight(registration_isolation_ok):
             notes)
 
         config, _ = build_config(ws, "normal")
+        config["backend_version_cmd"] = [
+            sys.executable, "-c",
+            "import os; os.write(1, b'PRIVATE-TRANSPORT-CANARY' + "
+            "bytes((255, 10)))",
+        ]
+        record = runner.run_task(
+            config, "mock", task_v, repo, ws / "out-non-utf8-version")
+        ok &= check(
+            "non-UTF-8 backend version output is classified without raw bytes",
+            record.get("status") == "infra_failure"
+            and record.get("failure")
+            == "backend version-probe stdout is not valid UTF-8"
+            and "UnicodeDecodeError" not in record.get("failure", "")
+            and "PRIVATE-TRANSPORT-CANARY" not in record.get("failure", "")
+            and "�" not in record.get("failure", ""),
+            notes)
+
+        transport_canary = (
+            b"PRIVATE-TRANSPORT-CANARY" + bytes((255,)))
+        try:
+            runner._decode_backend_text(transport_canary, "stdout")
+            detached_decode_error = False
+        except runner.InfraFailure as exc:
+            detached_decode_error = (
+                str(exc) == "backend stdout is not valid UTF-8"
+                and exc.__cause__ is None
+                and exc.__context__ is None)
+        try:
+            runner.spawn_session(
+                ["must-not-spawn"], "PRIVATE-PROMPT-CANARY\ud800",
+                ws, {}, 1)
+            detached_prompt_error = False
+        except runner.InfraFailure as exc:
+            detached_prompt_error = (
+                str(exc) == "backend prompt is not valid UTF-8 text"
+                and exc.__cause__ is None
+                and exc.__context__ is None)
+        ok &= check(
+            "sanitized transport failures retain no raw exception context",
+            detached_decode_error and detached_prompt_error,
+            notes)
+
+        config, _ = build_config(ws, "normal")
         repo_r, sha_r = make_git_repo(ws, "relout")
         task_r = write_task(ws, "relout", sha_r)
         old_cwd = os.getcwd()
@@ -2947,6 +3081,71 @@ def _run_preflight(registration_isolation_ok):
         record, _, _, _ = run_case(ws, "infra-crash")
         ok &= check("infra failure classified (backend crash)",
                     record["status"] == "infra_failure", notes)
+
+        record, non_utf8_stream_out, _, _ = run_case(
+            ws, "non-utf8-stdout", use_retries=True)
+        ok &= check(
+            "non-UTF-8 backend stdout fails closed with bounded infra retries",
+            record.get("status") == "infra_failure"
+            and record.get("attempt") == runner.DEFAULT_MAX_INFRA_RETRIES + 1
+            and not record.get("blocking", False)
+            and record.get("failure") == "backend stdout is not valid UTF-8"
+            and "PRIVATE-TRANSPORT-CANARY" not in record.get("failure", "")
+            and len(list(non_utf8_stream_out.glob("run-*.json")))
+            == runner.DEFAULT_MAX_INFRA_RETRIES + 1,
+            notes)
+
+        record, _, _, _ = run_case(ws, "non-utf8-stderr")
+        ok &= check(
+            "non-UTF-8 backend stderr fails closed without byte replacement",
+            record.get("status") == "infra_failure"
+            and record.get("failure") == "backend stderr is not valid UTF-8"
+            and "UnicodeDecodeError" not in record.get("failure", "")
+            and "PRIVATE-TRANSPORT-CANARY" not in record.get("failure", "")
+            and "�" not in record.get("failure", ""),
+            notes)
+
+        record, non_utf8_abort_out, _, _ = run_case(
+            ws, "abort-non-utf8-stdout", use_retries=True,
+            protocol_v2=True)
+        ok &= check(
+            "non-UTF-8 abort stream blocks without changing retry semantics",
+            record.get("status") == "infra_failure"
+            and record.get("blocking") is True
+            and record.get("failure_kind") == "abort"
+            and record.get("attempt") == 1
+            and "non-UTF-8 stdout" in record.get("failure", "")
+            and "PRIVATE-TRANSPORT-CANARY" not in record.get("failure", "")
+            and len(list(non_utf8_abort_out.glob("run-*.json"))) == 1,
+            notes)
+
+        record, non_utf8_timeout_out, _, _ = run_case(
+            ws, "timeout-non-utf8-stdout", timeout=2, use_retries=True,
+            protocol_v2=True)
+        ok &= check(
+            "non-UTF-8 timeout stream blocks without changing retry semantics",
+            record.get("status") == "infra_failure"
+            and record.get("blocking") is True
+            and record.get("failure_kind") == "timeout"
+            and record.get("attempt") == 1
+            and "non-UTF-8 stdout" in record.get("failure", "")
+            and "PRIVATE-TRANSPORT-CANARY" not in record.get("failure", "")
+            and len(list(non_utf8_timeout_out.glob("run-*.json"))) == 1,
+            notes)
+
+        record, non_utf8_abort_stderr_out, _, _ = run_case(
+            ws, "abort-non-utf8-stderr", use_retries=True,
+            protocol_v2=True)
+        ok &= check(
+            "non-UTF-8 abort stderr preserves counted accounting",
+            record.get("status") == "workflow_failure"
+            and record.get("failure_kind") == "abort"
+            and record.get("attempt") == 1
+            and record.get("accounting", {}).get("tree") == EXPECTED_TREE
+            and "stderr was not valid UTF-8" in record.get("failure", "")
+            and "PRIVATE-TRANSPORT-CANARY" not in record.get("failure", "")
+            and len(list(non_utf8_abort_stderr_out.glob("run-*.json"))) == 1,
+            notes)
 
         state_file = ws / "flaky-state"
         record, _, _, _ = run_case(
@@ -7440,7 +7639,12 @@ def _run_preflight(registration_isolation_ok):
             and deep_attempts[0].get("schema_valid") is False
             and deep_attempts[0].get("transport_invalid") is True
             and deep_attempts[0].get("raw_stream") == deep_stream_text
+            # Python <=3.13 rejects this depth in the JSON decoder; 3.14's
+            # decoder can construct it, after which the event-object gate
+            # rejects the same transport deterministically. Both paths must
+            # consume one invalid attempt without repair.
             and any("maximum recursion depth" in defect
+                    or "not a JSON object" in defect
                     for defect in deep_invalid_defects)
             and deep_attempts[1].get("schema_valid") is True
             and deep_manifest.get("complete") is True
