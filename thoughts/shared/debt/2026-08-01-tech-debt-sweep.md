@@ -274,3 +274,12 @@ The round-8 dual-role public probe has now passed and revalidated without a
 second model observation. Its two public digests are registered; no holdout
 material existed and seal authority remains pending for the corrected
 one-shot launcher.
+
+The corrected round-8 one-shot launcher then completed atomically. The sealed
+package independently reverified in the pinned operator image at registered
+SHA-256
+`b14a554c558a02349a3c55626de6492aab2cc13d27f3250c9eceb2370f25b4ce`;
+only the six generic task basenames returned to this context. The duplicated
+probe-version ownership defect is therefore closed, while the post-seal
+real-backend preflight, schedule, judge batches, and aggregate remain
+operational work rather than harness debt.

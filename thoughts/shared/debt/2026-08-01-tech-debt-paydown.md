@@ -43,8 +43,9 @@ auto_fixable_count: 7
   seal/config proof binding. The prior probe is invalidated by the prospective
   semantic-reminder/code change. The fresh round-7 probe has now passed and
   been revalidated without another model call; its receipt/execution digests
-  are registered while the seal and post-seal all-arm real-backend preflight
-  remain pending.
+  were superseded after its pre-model stop. The fresh round-8 probe and atomic
+  seal have now passed and revalidated; the post-seal all-arm real-backend
+  preflight remains pending.
 - [x] Diagnose the round-7 pre-model seal stop without opening any prompt or
   package content: a duplicated private-launcher v1 probe-version literal
   rejected the registered v2 proof before Codex launch. Preserve the claimed
@@ -53,10 +54,10 @@ auto_fixable_count: 7
 - [x] Complete and no-model revalidate the fresh round-8 dual-role live probe;
   register only its receipt/execution digests while keeping seal authority at
   the exact pending sentinel.
-- [ ] Create a fresh round-7 seal in an uncontaminated session and return only
+- [x] Create a fresh round-8 seal in an uncontaminated session and return only
   its SHA-256 and six task basenames.
-- [ ] Register that exact seal through the shared authority consumed by
-  `step5_operator.py` before any round-7 schedule or backend outcome.
+- [x] Register that exact seal through the shared authority consumed by
+  `step5_operator.py` before any round-8 schedule or backend outcome.
 - [ ] Rebuild all three arm installations in the pinned operator image and
   verify the registered hashes.
 - [ ] Run the real-backend preflight with an unrelated environment canary and

@@ -1134,6 +1134,16 @@ the registered execution SHA-256 is
 No holdout material existed during the probe; seal authority remains the
 exact all-zero sentinel until the round-8 one-shot boundary succeeds.
 
+The corrected round-8 one-shot boundary subsequently completed in a separate
+clean session and the package independently reverified in the pinned operator
+image. Its registered SHA-256 is
+`b14a554c558a02349a3c55626de6492aab2cc13d27f3250c9eceb2370f25b4ce` and
+the only returned task identifiers are `holdout-v2-1.md` through
+`holdout-v2-6.md`. No task, context, ground-truth, snapshot, rubric, or judge
+content returned to the implementation context. This digest now authorizes
+only the fresh round-8 real-backend preflight, 42-slot schedule, complete
+scorer/verifier batches, and independent aggregate described below.
+
 1. Implement strict role validation, bounded crash-safe judge attempts,
    all-document role coverage, immutable policy bindings, and deterministic
    aggregation in `skills/research-codebase/evals/public/`.
