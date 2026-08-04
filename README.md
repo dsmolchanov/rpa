@@ -76,35 +76,42 @@ mkdir -p ~/.claude/skills
 mkdir -p ~/.claude/hooks
 
 # Copy commands
-cp commands/*.md ~/.claude/commands/
+cp plugins/rpa/commands/*.md ~/.claude/commands/
 
 # Copy agents (enables parallel sub-agents)
-cp agents/*.md ~/.claude/agents/
+cp plugins/rpa/agents/*.md ~/.claude/agents/
 
 # Copy workflow skill packages (kernels the commands delegate to)
-cp -R skills/* ~/.claude/skills/
+cp -R plugins/rpa/skills/* ~/.claude/skills/
 
 # Optional: copy the compatibility bootstrap if using AI-DLC workflows
-cp CLAUDE.md ~/.claude/CLAUDE-rpa-aidlc.md
+cp plugins/rpa/CLAUDE.md ~/.claude/CLAUDE-rpa-aidlc.md
 
 # Copy and make scripts executable
-cp scripts/*.sh ~/.claude/scripts/
+cp plugins/rpa/scripts/*.sh ~/.claude/scripts/
 chmod +x ~/.claude/scripts/*.sh
 
 # Optional: hooks for deterministic quality gates — merge the "hooks" object
-# from hooks/hooks.json into ~/.claude/settings.json (hooks are read from
+# from plugins/rpa/hooks/hooks.json into ~/.claude/settings.json (hooks are read from
 # settings, not from a standalone file; see "How Hooks Work" below)
-cp hooks/run_gate.py ~/.claude/hooks/
+cp plugins/rpa/hooks/run_gate.py ~/.claude/hooks/
 chmod +x ~/.claude/hooks/run_gate.py
 ```
 
 ### Plugin Install (Alternative)
 
-Install as a Claude Code plugin (adds `rpa:` prefix to commands):
+Install as a Claude Code plugin from the marketplace (adds `rpa:` prefix to commands):
 
 ```bash
-git clone https://github.com/dsmolchanov/rpa.git
-claude plugin install --plugin-dir ./rpa
+claude plugin marketplace add dsmolchanov/rpa
+claude plugin install rpa@dsmolchanov-rpa
+```
+
+Codex CLI is also supported:
+
+```bash
+codex plugin marketplace add dsmolchanov/rpa --ref master
+codex plugin add rpa@dsmolchanov-rpa
 ```
 
 ### Verify Installation
@@ -218,7 +225,7 @@ After installation, your `~/.claude/` directory should look like:
 │       └── references/
 ├── hooks/
 │   └── run_gate.py
-└── settings.json              # optional: "hooks" object merged from hooks/hooks.json
+└── settings.json              # optional: "hooks" object merged from plugins/rpa/hooks/hooks.json
 ```
 
 ## Project Setup
@@ -425,7 +432,7 @@ These specialized agents support the debt sweep:
 
 ### How Hooks Work
 
-`hooks/hooks.json` defines three deterministic quality gates implemented by
+`plugins/rpa/hooks/hooks.json` defines three deterministic quality gates implemented by
 `hooks/run_gate.py` — no model judgment involved:
 
 1. **PostToolUse (`Edit|Write`)** — formats supported files with the

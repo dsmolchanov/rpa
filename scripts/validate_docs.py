@@ -65,6 +65,13 @@ except ImportError:  # pragma: no cover
 
 EXCLUDED_PARTS = {".git", "node_modules"}
 FIXTURES_REL = Path("tests/fixtures/docs-validate")
+# The plugin subtree in the real repo; fixture repos keep components at root.
+PLUGIN_REL = Path("plugins/rpa")
+
+
+def plugin_root(root):
+    candidate = root / PLUGIN_REL
+    return candidate if candidate.is_dir() else root
 
 # Any RFC 3986 scheme (case-insensitive) or protocol-relative URL is external.
 URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
@@ -176,7 +183,7 @@ def iter_markdown(root, exclude_fixtures=True):
 
 
 def check_commands(root, errors):
-    directory = root / "commands"
+    directory = plugin_root(root) / "commands"
     files = sorted(directory.glob("*.md")) if directory.is_dir() else []
     if not files:
         errors.append("commands/: no markdown files found (empty target set fails the gate)")
@@ -191,7 +198,7 @@ def check_commands(root, errors):
 
 
 def check_agents(root, errors):
-    directory = root / "agents"
+    directory = plugin_root(root) / "agents"
     files = sorted(directory.glob("*.md")) if directory.is_dir() else []
     if not files:
         errors.append("agents/: no markdown files found (empty target set fails the gate)")
@@ -217,7 +224,8 @@ def check_agents(root, errors):
 
 
 def check_skills(root, errors):
-    skill_files = sorted((root / "skills").glob("*/SKILL.md")) if (root / "skills").is_dir() else []
+    skills_dir = plugin_root(root) / "skills"
+    skill_files = sorted(skills_dir.glob("*/SKILL.md")) if skills_dir.is_dir() else []
     if not skill_files:
         errors.append("skills/: no */SKILL.md found (empty target set fails the gate)")
         return
@@ -268,8 +276,9 @@ def _require_json_str(data, key, rel_path, errors, pattern=None, pattern_desc=""
 
 
 def check_json_manifests(root, errors):
-    plugin_rel = ".claude-plugin/plugin.json"
-    plugin_path = root / plugin_rel
+    plugin_base = plugin_root(root)
+    plugin_path = plugin_base / ".claude-plugin/plugin.json"
+    plugin_rel = str(plugin_path.relative_to(root))
     if not plugin_path.is_file():
         errors.append(f"{plugin_rel}: file not found")
     else:
@@ -479,7 +488,7 @@ def check_artifact_validator(root, errors):
     (conventions SS4)."""
     import subprocess as _sp
     import sys as _sys
-    skill_root = root / "skills" / "research-codebase"
+    skill_root = plugin_root(root) / "skills" / "research-codebase"
     if not skill_root.is_dir():
         # not_applicable: the research skill package is absent from this
         # root (e.g. the self-test fixture repos) — there is no artifact
