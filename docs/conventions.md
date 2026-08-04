@@ -1,7 +1,7 @@
 # RPA Design Conventions — v0.2.1
 
 Status: **operationally adopted 2026-08-03 by owner decision**. The
-`/research_codebase` pilot remains formally indeterminate and provides no
+`/research-codebase` pilot remains formally indeterminate and provides no
 repo-wide quality claim; the owner explicitly stopped further sealed rounds
 and accepted a pragmatic rollout under ordinary bounded checks. Treat this as
 a product policy decision, not as platform-neutral eval evidence. Future
@@ -276,7 +276,7 @@ Rules that follow:
   model).
 - **Address-level precision comes from tools** (grep/glob baseline; LSP or
   code-graph tools where available), not from prompt-stuffed indexes.
-- `/research_codebase` cites layers 1–2 when present and flags observed
+- `/research-codebase` cites layers 1–2 when present and flags observed
   drift; `docs-auditor` owns layer-1/2 drift detection (named symbols still
   exist, documented commands still run) and reports it through
-  `/tech_debt_sweep`.
+  `/tech-debt-sweep`.

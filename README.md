@@ -16,27 +16,27 @@ This approach reduces errors, improves code quality, and creates documentation t
 
 | Command | Description |
 |---------|-------------|
-| `/research_codebase` | Document and explain the codebase as it exists |
-| `/create_plan` | Create detailed implementation plans through interactive iteration |
+| `/research-codebase` | Document and explain the codebase as it exists |
+| `/create-plan` | Create detailed implementation plans through interactive iteration |
 | `/implement_plan` | Execute approved plans with verification at each phase |
-| `/iterate_plan` | Update existing plans based on feedback |
-| `/enhance_plan` | Synthesize multiple opinions into plan improvements |
-| `/enhance_research` | Improve research documents with additional findings |
+| `/iterate-plan` | Update existing plans based on feedback |
+| `/enhance-plan` | Synthesize multiple opinions into plan improvements |
+| `/enhance-research` | Improve research documents with additional findings |
 | `/validate_plan` | Verify that a plan was correctly implemented |
 | `/create_handoff` | Create handoff documents to transfer work between sessions |
 | `/resume_handoff` | Resume work from a handoff document |
 | `/commit` | Create well-structured git commits for session changes |
 | `/debug` | Investigate problems via logs, DB state, and git history without editing files |
-| `/create_test_plan` | Create comprehensive test plans and TDD strategies |
+| `/create-test-plan` | Create comprehensive test plans and TDD strategies |
 | `/tdd` | Execute full TDD cycle with Red/Green/Refactor verification |
 | `/test_suite` | Create, update, and maintain test suites (audit, init, update, gaps, run, ci, standardize) |
 | `/refactor_candidates` | Discover and index God-like modules as refactoring candidates |
 | `/refactor` | Refactor monolithic modules into focused, testable modules |
-| `/tech_debt_sweep` | Scan codebase for technical debt and generate paydown plan |
+| `/tech-debt-sweep` | Scan codebase for technical debt and generate paydown plan |
 | `/tech_debt_trends` | Analyze technical debt trends over time |
 | `/aidlc_init` | Bootstrap the current repository for the AI-DLC compatibility workflow |
 | `/aidlc_start` | Initialize or resume the AI-DLC compatibility workflow |
-| `/aidlc_inception` | Execute approved inception stages and generate canonical artifacts |
+| `/aidlc-inception` | Execute approved inception stages and generate canonical artifacts |
 | `/aidlc_bolt` | Execute one construction unit in the AI-DLC workflow |
 | `/aidlc_build_test` | Run the global Build and Test stage |
 | `/aidlc_operations` | Generate experimental operations artifacts |
@@ -53,11 +53,11 @@ Claude Code ships native skills and agents that partially overlap with this plug
 | Check an implementation against its plan and success criteria | — | `/validate_plan` (then follow up with `/code-review`) |
 | Decompose a God module into focused modules (multi-phase, with API snapshots and rollback) | — | `/refactor`, `/refactor_candidates` |
 | Ad-hoc "where is X / how does Y work" exploration | `Explore` agent | — |
-| Durable research docs in `thoughts/shared/research/` | — | `/research_codebase` |
+| Durable research docs in `thoughts/shared/research/` | — | `/research-codebase` |
 | Security audit of pending changes | `/security-review` | — |
-| Find hardcoded config that should be externalized | — | `config-auditor` (via `/tech_debt_sweep`) |
+| Find hardcoded config that should be externalized | — | `config-auditor` (via `/tech-debt-sweep`) |
 | Deep multi-source web research report | `deep-research` | — |
-| Targeted web lookups inside plan/research flows | — | `web-search-researcher` (spawned by `/create_plan`, `/research_codebase`) |
+| Targeted web lookups inside plan/research flows | — | `web-search-researcher` (spawned by `/create-plan`, `/research-codebase`) |
 
 Rule of thumb: native skills work at the **diff level** on the current branch; this plugin works at the **workflow level** — persistent artifacts in `thoughts/`, multi-phase orchestration, and cross-session state.
 
@@ -113,8 +113,8 @@ After installation, start Claude Code and check that commands are available:
 
 ```bash
 # In Claude Code, these commands should now be available
-/research_codebase
-/create_plan
+/research-codebase
+/create-plan
 /implement_plan
 /aidlc_init
 /aidlc_start
@@ -128,30 +128,21 @@ After installation, your `~/.claude/` directory should look like:
 ~/.claude/
 ├── commands/
 │   │                          # RPA core
-│   ├── research_codebase.md
-│   ├── create_plan.md
 │   ├── implement_plan.md
-│   ├── iterate_plan.md
-│   ├── enhance_plan.md
-│   ├── enhance_research.md
 │   ├── validate_plan.md
 │   ├── create_handoff.md
 │   ├── resume_handoff.md
 │   ├── commit.md
 │   ├── debug.md
 │   │                          # Testing
-│   ├── create_test_plan.md
-│   ├── tdd.md
 │   ├── test_suite.md
 │   │                          # Refactoring & tech debt
 │   ├── refactor_candidates.md
 │   ├── refactor.md
-│   ├── tech_debt_sweep.md
 │   ├── tech_debt_trends.md
 │   │                          # AI-DLC compatibility
 │   ├── aidlc_init.md
 │   ├── aidlc_start.md
-│   ├── aidlc_inception.md
 │   ├── aidlc_bolt.md
 │   ├── aidlc_build_test.md
 │   ├── aidlc_operations.md
@@ -267,7 +258,7 @@ This repo also includes an AWS AI-DLC-compatible facade for teams that want plug
 |---------|-------|-------------|
 | `/aidlc_init` | Bootstrap | Create or refresh the repo-local AI-DLC substrate |
 | `/aidlc_start` | Entry | Initialize state, resolve rules, write execution plan |
-| `/aidlc_inception` | Inception | Execute approved inception stages |
+| `/aidlc-inception` | Inception | Execute approved inception stages |
 | `/aidlc_bolt` | Construction | Execute one approved construction unit |
 | `/aidlc_build_test` | Construction | Run the global Build and Test stage |
 | `/aidlc_operations` | Operations (Experimental) | Generate deployment and rollback artifacts |
@@ -365,7 +356,7 @@ Optional flags:
 3. Review `thoughts/shared/steering-rules/default.yaml`
 4. Start the workflow with `/aidlc_start "<full request>"`
 5. Answer any generated question files under `aidlc-docs/inception/questions/`
-6. Run `/aidlc_inception`
+6. Run `/aidlc-inception`
 7. Execute units with `/aidlc_bolt`
 8. Run `/aidlc_build_test`
 9. Optionally use `/aidlc_operations` and `/aidlc_feedback`
@@ -381,14 +372,14 @@ Tech debt work follows the same RPA pattern as feature work:
 2. **Plan** (prioritize) - Create actionable paydown plan
 3. **Act** (apply) - Fix safe issues, plan larger refactors
 
-### /tech_debt_sweep
+### /tech-debt-sweep
 
 Performs a comprehensive technical debt scan and generates actionable artifacts.
 
 **Usage:**
 ```bash
-/tech_debt_sweep        # Scan and generate report + plan
-/tech_debt_sweep apply  # Auto-fix safe issues
+/tech-debt-sweep        # Scan and generate report + plan
+/tech-debt-sweep apply  # Auto-fix safe issues
 ```
 
 **What it scans:**
@@ -428,8 +419,8 @@ These specialized agents support the debt sweep:
 
 ### Recommended Schedule
 
-- **Weekly**: Run `/tech_debt_sweep` every Friday
-- **After sweep**: Review plan, run `/tech_debt_sweep apply`
+- **Weekly**: Run `/tech-debt-sweep` every Friday
+- **After sweep**: Review plan, run `/tech-debt-sweep apply`
 - **Monthly**: Run `/tech_debt_trends` to track progress
 
 ### How Hooks Work
@@ -480,7 +471,7 @@ Agents will check this file and skip whitelisted items.
 ### Research a Codebase
 
 ```
-/research_codebase
+/research-codebase
 > How does the authentication system work?
 ```
 
@@ -492,7 +483,7 @@ The command will:
 ### Create an Implementation Plan
 
 ```
-/create_plan
+/create-plan
 > Add rate limiting to the API endpoints
 ```
 
@@ -555,7 +546,7 @@ The command will:
 
 ## Command Details
 
-### /research_codebase
+### /research-codebase
 
 Creates documentation of how the codebase currently works. Uses parallel agents to explore efficiently.
 
@@ -565,7 +556,7 @@ Creates documentation of how the codebase currently works. Uses parallel agents 
 - Include specific file:line references
 - Save research for future reference
 
-### /create_plan
+### /create-plan
 
 Creates a persistent, implementation-ready plan grounded in the current
 checkout. The command is a thin Claude adapter over the shared
