@@ -63,7 +63,32 @@ Rule of thumb: native skills work at the **diff level** on the current branch; t
 
 ## Installation
 
-### Quick Install (Recommended)
+### Plugin Install (Recommended)
+
+Install from the marketplace (adds the `rpa:` prefix to commands, updates via `claude plugin update rpa`):
+
+```bash
+claude plugin marketplace add dsmolchanov/rpa
+claude plugin install rpa@dsmolchanov-rpa
+```
+
+Codex CLI is also supported:
+
+```bash
+codex plugin marketplace add dsmolchanov/rpa --ref master
+codex plugin add rpa@dsmolchanov-rpa
+```
+
+To pick up a new release later: `claude plugin update rpa` in Claude Code; in Codex run
+`codex plugin marketplace upgrade dsmolchanov-rpa` followed by `codex plugin add rpa@dsmolchanov-rpa`.
+
+### Manual Copy Install (Alternative)
+
+> **Do not combine this with the plugin install.** Copied files and the installed
+> plugin both register the same commands, agents, and skills, so every one of
+> them shows up twice. Pick one method; if you switch to the plugin later,
+> delete the copies from `~/.claude/commands`, `~/.claude/agents`, and
+> `~/.claude/skills` first.
 
 Copy commands, agents, and scripts to your global Claude configuration:
 
@@ -98,28 +123,13 @@ cp plugins/rpa/hooks/run_gate.py ~/.claude/hooks/
 chmod +x ~/.claude/hooks/run_gate.py
 ```
 
-### Plugin Install (Alternative)
-
-Install as a Claude Code plugin from the marketplace (adds `rpa:` prefix to commands):
-
-```bash
-claude plugin marketplace add dsmolchanov/rpa
-claude plugin install rpa@dsmolchanov-rpa
-```
-
-Codex CLI is also supported:
-
-```bash
-codex plugin marketplace add dsmolchanov/rpa --ref master
-codex plugin add rpa@dsmolchanov-rpa
-```
-
 ### Verify Installation
 
 After installation, start Claude Code and check that commands are available:
 
 ```bash
 # In Claude Code, these commands should now be available
+# (plugin installs expose them with the rpa: prefix, e.g. /rpa:create-plan)
 /research-codebase
 /create-plan
 /implement_plan
@@ -129,7 +139,7 @@ After installation, start Claude Code and check that commands are available:
 
 ## Directory Structure
 
-After installation, your `~/.claude/` directory should look like:
+After a manual copy install, your `~/.claude/` directory should look like:
 
 ```
 ~/.claude/
