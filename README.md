@@ -34,13 +34,6 @@ This approach reduces errors, improves code quality, and creates documentation t
 | `/refactor` | Refactor monolithic modules into focused, testable modules |
 | `/tech-debt-sweep` | Scan codebase for technical debt and generate paydown plan |
 | `/tech_debt_trends` | Analyze technical debt trends over time |
-| `/aidlc_init` | Bootstrap the current repository for the AI-DLC compatibility workflow |
-| `/aidlc_start` | Initialize or resume the AI-DLC compatibility workflow |
-| `/aidlc-inception` | Execute approved inception stages and generate canonical artifacts |
-| `/aidlc_bolt` | Execute one construction unit in the AI-DLC workflow |
-| `/aidlc_build_test` | Run the global Build and Test stage |
-| `/aidlc_operations` | Generate experimental operations artifacts |
-| `/aidlc_feedback` | Capture experimental retrospective feedback |
 
 ## When to Use Plugin vs Native Claude Code
 
@@ -109,9 +102,6 @@ cp plugins/rpa/agents/*.md ~/.claude/agents/
 # Copy workflow skill packages (kernels the commands delegate to)
 cp -R plugins/rpa/skills/* ~/.claude/skills/
 
-# Optional: copy the compatibility bootstrap if using AI-DLC workflows
-cp plugins/rpa/CLAUDE.md ~/.claude/CLAUDE-rpa-aidlc.md
-
 # Copy and make scripts executable
 cp plugins/rpa/scripts/*.sh ~/.claude/scripts/
 chmod +x ~/.claude/scripts/*.sh
@@ -133,8 +123,6 @@ After installation, start Claude Code and check that commands are available:
 /research-codebase
 /create-plan
 /implement_plan
-/aidlc_init
-/aidlc_start
 ```
 
 ## Directory Structure
@@ -156,14 +144,7 @@ After a manual copy install, your `~/.claude/` directory should look like:
 │   │                          # Refactoring & tech debt
 │   ├── refactor_candidates.md
 │   ├── refactor.md
-│   ├── tech_debt_trends.md
-│   │                          # AI-DLC compatibility
-│   ├── aidlc_init.md
-│   ├── aidlc_start.md
-│   ├── aidlc_bolt.md
-│   ├── aidlc_build_test.md
-│   ├── aidlc_operations.md
-│   └── aidlc_feedback.md
+│   └── tech_debt_trends.md
 ├── agents/
 │   │                          # Codebase research
 │   ├── codebase-locator.md
@@ -196,15 +177,8 @@ After a manual copy install, your `~/.claude/` directory should look like:
 │   ├── dependency-auditor.md
 │   ├── architecture-guard.md
 │   ├── docs-auditor.md
-│   ├── config-auditor.md
-│   │                          # AI-DLC
-│   ├── uow-decomposer.md
-│   ├── steering-rules-checker.md
-│   ├── quality-gate-runner.md
-│   ├── operations-planner.md
-│   └── feedback-collector.md
+│   └── config-auditor.md
 ├── scripts/
-│   ├── bootstrap_aidlc_project.sh
 │   └── spec_metadata.sh
 ├── skills/
 │   ├── research-codebase/
@@ -227,10 +201,7 @@ After a manual copy install, your `~/.claude/` directory should look like:
 │   ├── tdd/
 │   │   ├── SKILL.md
 │   │   └── references/
-│   ├── tech-debt-sweep/
-│   │   ├── SKILL.md
-│   │   └── references/
-│   └── aidlc-inception/
+│   └── tech-debt-sweep/
 │       ├── SKILL.md
 │       └── references/
 ├── hooks/
@@ -240,7 +211,7 @@ After a manual copy install, your `~/.claude/` directory should look like:
 
 ## Project Setup
 
-For each project using the legacy RPA workflow, create a `thoughts/` directory structure:
+For each project using the RPA workflow, create a `thoughts/` directory structure:
 
 ```bash
 mkdir -p thoughts/shared/{research,plans,implementations,handoffs,debt}
@@ -254,129 +225,6 @@ This creates:
 - `thoughts/shared/debt/` - Technical debt reports and paydown plans
 
 **Important**: Ensure `thoughts/shared/debt/` is tracked in git (not in `.gitignore`) for trend analysis to work.
-
-## AI-DLC Compatibility Layer
-
-This repo also includes an AWS AI-DLC-compatible facade for teams that want plugin-native slash commands while staying close to the upstream AI-DLC artifact model.
-
-### Philosophy Difference
-
-| Aspect | RPA (Legacy) | AI-DLC Facade |
-|--------|-------------|--------------|
-| Cycle | Linear: research -> plan -> implement -> validate | Stage-based compatibility flow with canonical state |
-| Canonical Artifacts | `thoughts/shared/*` | `aidlc-docs/*` |
-| Adaptivity | Same depth for all work | Stage selection in execution plan + depth per executed stage |
-| Operations | Not covered | Experimental extension beyond upstream core |
-| Feedback | Not covered | Experimental extension beyond upstream core |
-
-### AI-DLC Commands
-
-| Command | Phase | Description |
-|---------|-------|-------------|
-| `/aidlc_init` | Bootstrap | Create or refresh the repo-local AI-DLC substrate |
-| `/aidlc_start` | Entry | Initialize state, resolve rules, write execution plan |
-| `/aidlc-inception` | Inception | Execute approved inception stages |
-| `/aidlc_bolt` | Construction | Execute one approved construction unit |
-| `/aidlc_build_test` | Construction | Run the global Build and Test stage |
-| `/aidlc_operations` | Operations (Experimental) | Generate deployment and rollback artifacts |
-| `/aidlc_feedback` | Feedback (Experimental) | Capture structured retrospective feedback |
-
-### Canonical Artifacts
-
-The AI-DLC facade writes canonical artifacts under:
-
-- `aidlc-docs/aidlc-state.md`
-- `aidlc-docs/audit.md`
-- `aidlc-docs/inception/...`
-- `aidlc-docs/construction/...`
-- `aidlc-docs/operations/...`
-
-### Plugin Overlay
-
-Plugin-local conventions live in:
-
-- `thoughts/shared/steering-rules/default.yaml`
-
-That overlay is secondary. It does not replace canonical state or execution planning.
-
-### Question Files
-
-Required clarifications for AI-DLC flows should be written to markdown files and answered via `[Answer]:` tags rather than being handled only in chat.
-
-### Project Setup
-
-If a repo will use the AI-DLC compatibility layer, create:
-
-```bash
-mkdir -p aidlc-docs/{inception,construction,operations}
-mkdir -p thoughts/shared/steering-rules
-```
-
-If you installed commands by copying files into `~/.claude/commands/`, also copy the compatibility rule details into the working repository:
-
-```bash
-cp -R /path/to/rpa/.aidlc-rule-details .
-cp /path/to/rpa/CLAUDE.md .
-```
-
-### Bootstrap Script
-
-For a first-time project bootstrap, use the helper script instead of creating the structure manually:
-
-```bash
-/path/to/rpa/scripts/bootstrap_aidlc_project.sh /path/to/project
-```
-
-What it does:
-- creates `aidlc-docs/` with starter templates and `.gitkeep` files
-- copies `.aidlc-rule-details/`
-- creates `thoughts/shared/steering-rules/default.yaml`
-- detects package-manager and test/build commands for the overlay
-- copies `CLAUDE.md` if missing, or appends the AI-DLC bootstrap section if the repo already has its own `CLAUDE.md`
-
-Useful flags:
-
-```bash
-/path/to/rpa/scripts/bootstrap_aidlc_project.sh --force-overlay /path/to/project
-/path/to/rpa/scripts/bootstrap_aidlc_project.sh --force-claude /path/to/project
-```
-
-Example:
-
-```bash
-/Users/dmitrymolchanov/Programs/rpa/scripts/bootstrap_aidlc_project.sh /Users/dmitrymolchanov/Programs/teaming
-```
-
-After the script runs, review `thoughts/shared/steering-rules/default.yaml` before the first `/aidlc_build_test` because multi-stack repos may need command adjustments.
-
-### `/aidlc_init` Wrapper
-
-If the RPA scripts were copied into `~/.claude/scripts/`, you can bootstrap directly from Claude Code with:
-
-```text
-/aidlc_init
-```
-
-Optional flags:
-
-```text
-/aidlc_init --force-overlay
-/aidlc_init --force-claude
-```
-
-`/aidlc_init` is a thin wrapper over `~/.claude/scripts/bootstrap_aidlc_project.sh`. It bootstraps the current repository root, then tells you to review the generated overlay and proceed to `/aidlc_start`.
-
-### Quick Start
-
-1. Open the target repo in Claude Code
-2. Run `/aidlc_init`
-3. Review `thoughts/shared/steering-rules/default.yaml`
-4. Start the workflow with `/aidlc_start "<full request>"`
-5. Answer any generated question files under `aidlc-docs/inception/questions/`
-6. Run `/aidlc-inception`
-7. Execute units with `/aidlc_bolt`
-8. Run `/aidlc_build_test`
-9. Optionally use `/aidlc_operations` and `/aidlc_feedback`
 
 ## Technical Debt Management
 

@@ -18,7 +18,7 @@ The adapters are thin (tools, model policy, contract pointer). The two
 locator adapters carry `Read` solely to load their own contract file —
 an authority bound stated in the contracts themselves (repository and
 document contents are never read; locating is not analyzing). These shared
-adapters serve research, planning, testing, and AI-DLC callers from one
+adapters serve research, planning, and testing callers from one
 contract source. Historical `research-v2-*` adapters remain solely for
 reproducing the frozen pilot installation.
 
