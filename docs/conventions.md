@@ -260,8 +260,7 @@ below (proposed as reviewable changes):
    (closest-wins) in monorepos; path-scoped rules where the harness
    supports them; skills/references for on-demand procedure.
 4. **Task memory:** `thoughts/` (this plugin's artifact store) — research,
-   plans, validation reports, handoffs — and, for repos using the AI-DLC
-   facade, `aidlc-docs/` (its canonical state and stage artifacts).
+   plans, validation reports, handoffs.
 
 Rules that follow:
 
