@@ -3,16 +3,16 @@
 **Date**: 2026-08-21T00:00:00+00:00
 **Test Plan**: `thoughts/shared/tests/2026-08-21-TEST-missing-checkpoint.md`
 **Requested Phase**: `full`
-**Repository State**: `master 37f7af33e37f`
+**Repository State**: `master 05177b9e8ae5`
 **Evidence schema**: `tdd/1`
-**Evidence run**: `tdd-20260821-215909-6db91041-c8f282`
-**Evidence export**: `receipts/tdd-20260821-215909-6db91041-c8f282.json`
+**Evidence run**: `tdd-20260821-220811-6db91041-548bb7`
+**Evidence export**: `receipts/tdd-20260821-220811-6db91041-548bb7.json`
 
 ## Baseline
 
 - **Pre-existing worktree changes**: None
 - **Relevant implementation state**: absent (synthetic fixture)
-- **Test configuration**: fixtures/junit_stub.py (synthetic; no runner config)
+- **Test configuration**: `fixtures/junit_stub.py`
 - **Baseline runs**: Not run — synthetic fixture
 - **Pre-existing relevant failures**: None observed
 
@@ -20,15 +20,15 @@
 
 | Case ID | Layer | Disposition | Evidence |
 |---|---|---|---|
-| U-01 | unit | valid Red | receipt c6b993142458 — AssertionError at the assertion |
-| U-02 | unit | valid Red | receipt 4714681d880c — AssertionError at the assertion |
+| U-01 | unit | valid Red | receipt 446a05174387 — AssertionError at the assertion |
+| U-02 | unit | valid Red | receipt 59832fa933a0 — AssertionError at the assertion |
 
 ## Red Phase
 
 - **Files changed**: tests/test_x.py
 - **Receipts**:
-  - `receipt c6b993142458`: AssertionError: missing behavior
-  - `receipt 4714681d880c`: AssertionError: missing behavior
+  - `receipt 446a05174387`: AssertionError: missing behavior
+  - `receipt 59832fa933a0`: AssertionError: missing behavior
 - **Deviations**: None
 
 ## Green Phase

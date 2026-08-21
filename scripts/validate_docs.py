@@ -92,6 +92,7 @@ SESSION_LOG_FIXTURE_CASES = (
     "colon-transcription", "disposition-transcription", "receipts-field-missing",
     "contradictory-not-run", "extra-disposition-cell",
     "receipts-label-hybrid", "test-configuration-command", "duplicate-baseline-runs",
+    "test-configuration-unquoted-command", "receipt-outside-citation",
     "attempt-after-checkpoint", "record-after-final",
 )
 

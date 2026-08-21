@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Tests for validate_session_log.py against the fixtures under
-fixtures/session-logs/ (VL-01 … VL-42). Each invalid case must be rejected
+fixtures/session-logs/ (VL-01 … VL-44). Each invalid case must be rejected
 naming the contract check it violates; the two valid cases must pass."""
 
 from __future__ import annotations
@@ -60,6 +60,8 @@ CASES = [
     ("VL-40", "receipts-label-hybrid", "g"),
     ("VL-41", "test-configuration-command", "g"),
     ("VL-42", "duplicate-baseline-runs", "g"),
+    ("VL-43", "test-configuration-unquoted-command", "g"),
+    ("VL-44", "receipt-outside-citation", "g"),
 ]
 
 

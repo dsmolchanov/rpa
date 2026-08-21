@@ -3,16 +3,16 @@
 **Date**: 2026-08-21T00:00:00+00:00
 **Test Plan**: `thoughts/shared/tests/2026-08-21-TEST-valid-continuing.md`
 **Requested Phase**: `full`
-**Repository State**: `master a99c4d39786e`
+**Repository State**: `master 841a45a2646e`
 **Evidence schema**: `tdd/1`
-**Evidence run**: `tdd-20260821-215906-9b05d2c1-f84573`
-**Evidence export**: `receipts/tdd-20260821-215906-9b05d2c1-f84573.json`
+**Evidence run**: `tdd-20260821-220810-9b05d2c1-6a0a31`
+**Evidence export**: `receipts/tdd-20260821-220810-9b05d2c1-6a0a31.json`
 
 ## Baseline
 
 - **Pre-existing worktree changes**: None
 - **Relevant implementation state**: absent (synthetic fixture)
-- **Test configuration**: fixtures/junit_stub.py (synthetic; no runner config)
+- **Test configuration**: `fixtures/junit_stub.py`
 - **Baseline runs**: Not run — synthetic fixture
 - **Pre-existing relevant failures**: None observed
 
@@ -20,15 +20,15 @@
 
 | Case ID | Layer | Disposition | Evidence |
 |---|---|---|---|
-| U-01 | unit | valid Red | receipt 9420bbbeb7aa — AssertionError at the assertion |
-| U-02 | unit | valid Red | receipt 1b2523a18cf0 — AssertionError at the assertion |
+| U-01 | unit | valid Red | receipt 76d4f577954c — AssertionError at the assertion |
+| U-02 | unit | valid Red | receipt 755ed61f5c0f — AssertionError at the assertion |
 
 ## Red Phase
 
 - **Files changed**: tests/test_x.py
 - **Receipts**:
-  - `receipt 9420bbbeb7aa`: AssertionError: missing behavior
-  - `receipt 1b2523a18cf0`: AssertionError: missing behavior
+  - `receipt 76d4f577954c`: AssertionError: missing behavior
+  - `receipt 755ed61f5c0f`: AssertionError: missing behavior
 - **Deviations**: None
 
 ## Green Phase

@@ -3,16 +3,16 @@
 **Date**: 2026-08-21T00:00:00+00:00
 **Test Plan**: `thoughts/shared/tests/2026-08-21-TEST-valid.md`
 **Requested Phase**: `full`
-**Repository State**: `master 606e8c6b8b44`
+**Repository State**: `master 73d212f83b65`
 **Evidence schema**: `tdd/1`
-**Evidence run**: `tdd-20260821-215903-cb157441-5eb344`
-**Evidence export**: `receipts/tdd-20260821-215903-cb157441-5eb344.json`
+**Evidence run**: `tdd-20260821-220808-cb157441-9325a9`
+**Evidence export**: `receipts/tdd-20260821-220808-cb157441-9325a9.json`
 
 ## Baseline
 
 - **Pre-existing worktree changes**: None
 - **Relevant implementation state**: absent (synthetic fixture)
-- **Test configuration**: fixtures/junit_stub.py (synthetic; no runner config)
+- **Test configuration**: `fixtures/junit_stub.py`
 - **Baseline runs**: Not run — synthetic fixture
 - **Pre-existing relevant failures**: None observed
 

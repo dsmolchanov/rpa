@@ -150,7 +150,7 @@ def log_text(sc: Scenario, *, title, rows, red, green, refactor, final_focused, 
         "",
         "- **Pre-existing worktree changes**: None",
         "- **Relevant implementation state**: absent (synthetic fixture)",
-        "- **Test configuration**: fixtures/junit_stub.py (synthetic; no runner config)",
+        "- **Test configuration**: `fixtures/junit_stub.py`",
         "- **Baseline runs**: Not run — synthetic fixture",
         "- **Pre-existing relevant failures**: None observed",
         "",
@@ -341,8 +341,17 @@ def main() -> int:
     log_mut("receipts-label-hybrid", lambda t: t.replace("- **Receipts**:", "- **Receipts** and exits:"))
     # legacy command-string field instead of Test configuration
     log_mut("test-configuration-command", lambda t: t.replace(
-        "- **Test configuration**: fixtures/junit_stub.py (synthetic; no runner config)",
+        "- **Test configuration**: `fixtures/junit_stub.py`",
         "- **Test command(s)**: `python3 junit_stub.py` → `0`", 1))
+    # unquoted command in the exact Test configuration field
+    log_mut("test-configuration-unquoted-command", lambda t: t.replace(
+        "- **Test configuration**: `fixtures/junit_stub.py`",
+        "- **Test configuration**: python3 junit_stub.py --case sample.test_x", 1))
+    # a receipt moved out of the Receipts bullets into Deviations
+    log_mut("receipt-outside-citation", lambda t: t.replace(
+        f"  - `receipt {g2['receipt']}`: 1 passed\n", "", 1).replace(
+        "- **Deviations**: None\n\n## Refactor Phase",
+        f"- **Deviations**: receipt {g2['receipt']} · `python3 junit_stub.py` → `0`\n\n## Refactor Phase", 1))
     # an earlier duplicate Baseline runs line smuggling a transcription
     log_mut("duplicate-baseline-runs", lambda t: t.replace(
         "- **Baseline runs**: Not run — synthetic fixture",
@@ -427,9 +436,9 @@ def main() -> int:
     pair[1] = recompute(pair[1])
     events = list(export["events"]) + pair
     e = dict(export, events=events, records_through=last_n + 1, run=dict(export["run"], records=len(events)))
-    exp_mut("record-after-final", e, text + f"\n<!-- {pair[1]['receipt']} -->\n" if False else text.replace(
-        f"- **Remaining blockers or follow-ups**: None",
-        f"- **Remaining blockers or follow-ups**: None (extra attempt `receipt {pair[1]['receipt']}`)"))
+    exp_mut("record-after-final", e, text.replace(
+        "- **Relevant surrounding suite**: Not applicable — synthetic fixture",
+        f"- **Relevant surrounding suite**: `receipt {pair[1]['receipt']}`: extra attempt after final", 1))
 
     # --- continuing-based cases ------------------------------------------------------
     sc2, text2, export2, refs2 = build_continuing(out)

@@ -96,9 +96,14 @@ accepts no other layout.
   field's **only** bullet — a phase that cites receipts may not also carry a
   not-run bullet. Field labels are matched **exactly** (`- **Label**:`, colon
   immediately after the emphasis) and each mandatory field appears exactly
-  once: `**Test configuration**:` (paths only — no commands, exits, or
-  receipts), `**Baseline runs**:`, `**Receipts**:` per phase, `**Focused
-  suite**:` and `**Relevant surrounding suite**:`.
+  once: `**Test configuration**:` (configuration file paths only — path
+  tokens such as `pyproject.toml`, `package.json`, `Makefile`, or `Not
+  applicable — <reason>`; no commands, exits, or receipts),
+  `**Baseline runs**:`, `**Receipts**:` per phase, `**Focused suite**:` and
+  `**Relevant surrounding suite**:`. Receipt tokens may appear **only** in
+  those citation fields and in Evidence cells — never in Deviations, Files
+  changed, Summary, or prose — and attempt coverage is computed from those
+  fields alone.
   `valid Red` cites a `red` receipt of that case with `outcome PASS` and a
   `test … fail-with` claim (or, marked `stand-in`, the pair `exit != 0` +
   `contains`); `Green` cites a `green` receipt of that case whose `--requires`

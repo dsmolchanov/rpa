@@ -52,6 +52,21 @@ NOT_RUN_ENTRY_RE = re.compile(r"^(?!.*\breceipt [0-9a-f]{12}\b)(Not run|Not appl
 # (optionally containing the word stand-in) — same no-transcription rule.
 EVIDENCE_CELL_RE = re.compile(r"^receipt [0-9a-f]{12} — [^`→·\n]*\S$")
 REASON_CELL_RE = re.compile(r"^(?!.*\breceipt [0-9a-f]{12}\b)[^`→·\n]*\S$")
+# `**Test configuration**`: a list of configuration FILE PATHS (comma/space
+# separated, optionally backticked) — each token is path-shaped (no spaces,
+# contains `/` or `.`, no shell characters) — or an anchored not-run entry.
+PATH_TOKEN_RE = re.compile(r"^[A-Za-z0-9_@+./-]+$")
+
+
+def test_configuration_ok(value: str) -> bool:
+    if NOT_RUN_ENTRY_RE.match(value):
+        return True
+    if RECEIPT_RE.search(value) or "→" in value or "·" in value:
+        return False
+    tokens = [t.strip().strip("`") for t in re.split(r"[,\s]+", value) if t.strip()]
+    if not tokens:
+        return False
+    return all(PATH_TOKEN_RE.match(t) and ("/" in t or "." in t) for t in tokens)
 
 
 def entry_ok(body: str) -> bool:
@@ -367,8 +382,10 @@ def validate(log_path: Path) -> tuple[int, list]:
     for key in ("state", "achieved", "phase", "records", "reports"):
         if run.get(key) != derived.get(key):
             errors.add("d", f"export run.{key}={run.get(key)!r} disagrees with the ledger ({derived.get(key)!r})")
-    body_text = "\n".join(line for _, line in lines)
-    cited = set(RECEIPT_RE.findall(body_text))
+    # `cited` is derived ONLY from validated citation entries (collected in
+    # check g / the Evidence cells); receipt tokens anywhere else are rejected.
+    cited = set()
+    citation_lines = set()
     by_receipt = {r.get("receipt"): r for r in events if r.get("kind") in TERMINAL_KINDS + ("checkpoint",)}
     for rc in cited:
         rec = by_receipt.get(rc)
@@ -408,20 +425,22 @@ def validate(log_path: Path) -> tuple[int, list]:
     if len(tc) != 1:
         errors.add("g", f"Baseline must carry exactly one `**Test configuration**:` line (found {len(tc)})")
     for no, val in tc:
-        spans = re.findall(r"`([^`]*)`", val)
         if not val:
             errors.add("g", f"line {no}: `**Test configuration**` is empty")
-        elif RECEIPT_RE.search(val) or "→" in val or "·" in val or any(re.search(r"\s", sp) for sp in spans):
-            errors.add("g", f"line {no}: `**Test configuration**` lists configuration file paths only — no commands, exits, or receipts")
+        elif not test_configuration_ok(val):
+            errors.add("g", f"line {no}: `**Test configuration**` must list configuration file paths (path tokens only, e.g. `pyproject.toml`, `package.json`) or `Not applicable — <reason>`; commands, exits, and receipts are rejected (got {val[:60]!r})")
     # `**Baseline runs**:` — exactly once, every occurrence entry-shaped
     runs = field_lines(baseline, "Baseline runs")
     if len(runs) != 1:
         errors.add("g", f"Baseline must carry exactly one `**Baseline runs**:` line (found {len(runs)})")
     for no, body in runs:
+        citation_lines.add(no)
         if not body:
             errors.add("g", f"line {no}: `**Baseline runs**` is empty")
         elif not entry_ok(body):
             errors.add("g", f"line {no}: `**Baseline runs**` must be `` `receipt <hex12>`: <summary> `` or `Not run — <reason>` (entire entry)")
+        else:
+            cited.update(RECEIPT_RE.findall(body))
     active = False
     for bno, bline in baseline:
         bs = bline.strip()
@@ -430,8 +449,11 @@ def validate(log_path: Path) -> tuple[int, list]:
             continue
         if active and re.match(r"^\s{2,}-\s", bline):
             b = re.sub(r"^-\s*", "", bs)
+            citation_lines.add(bno)
             if not entry_ok(b):
                 errors.add("g", f"line {bno}: baseline receipt bullet must be receipt-only or `Not run — <reason>` (entire entry)")
+            else:
+                cited.update(RECEIPT_RE.findall(b))
         elif active and re.match(r"^-\s", bs):
             active = False
     for name in ("red", "green", "refactor"):
@@ -440,16 +462,35 @@ def validate(log_path: Path) -> tuple[int, list]:
             errors.add("g", f"{name} section must carry exactly one `**Receipts**:` field (found {n_fields}; the label is matched exactly)")
         for no, bullet in commands_bullets(phase_sections[name]):
             body = re.sub(r"^-\s*", "", bullet)
+            citation_lines.add(no)
             if not entry_ok(body):
                 errors.add("g", f"line {no}: receipt bullet must be receipt-only — `` `receipt <hex12>`: <salient result> `` "
                                 f"or an entire `Not run — <reason>` / `Not applicable — <reason>` entry; argv and exits live in the export")
+            else:
+                cited.update(RECEIPT_RE.findall(body))
     for key in ("Focused suite", "Relevant surrounding suite"):
         found = field_lines(phase_sections["final"], key)
         if len(found) != 1:
             errors.add("g", f"Final Verification must carry exactly one `**{key}**:` line (found {len(found)})")
         for no, body in found:
+            citation_lines.add(no)
             if not entry_ok(body):
                 errors.add("g", f"line {no}: `**{key}**` must be `` `receipt <hex12>`: <summary> `` or an entire `Not run — <reason>` / `Not applicable — <reason>` entry")
+            else:
+                cited.update(RECEIPT_RE.findall(body))
+    # Evidence cells are citation locations too (validated in check j below)
+    disp_body = find_section(secs, "## Case Dispositions")
+    for no, line in disp_body:
+        s_ = line.strip()
+        if s_.startswith("|") and CASE_ROW_RE.match(s_):
+            citation_lines.add(no)
+            cells = [c.strip() for c in s_.strip("|").split("|")]
+            if len(cells) == 4 and EVIDENCE_CELL_RE.match(cells[3]):
+                cited.update(RECEIPT_RE.findall(cells[3]))
+    # Receipt tokens anywhere outside a validated citation entry are rejected
+    for no, line in lines:
+        if no not in citation_lines and RECEIPT_RE.search(line):
+            errors.add("g", f"line {no}: receipt token outside a citation field (Receipts bullets, Baseline runs, Final lines, Evidence cells) — transcriptions cannot hide in Deviations or prose")
 
     # (h) case completeness
     planned: list = []
