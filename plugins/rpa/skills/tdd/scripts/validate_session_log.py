@@ -387,15 +387,6 @@ def validate(log_path: Path) -> tuple[int, list]:
     cited = set()
     citation_lines = set()
     by_receipt = {r.get("receipt"): r for r in events if r.get("kind") in TERMINAL_KINDS + ("checkpoint",)}
-    for rc in cited:
-        rec = by_receipt.get(rc)
-        if rec and records_through is not None and rec.get("n", 0) > records_through:
-            errors.add("d", f"receipt {rc} cites n={rec.get('n')} beyond records_through={records_through}")
-
-    # (e) receipts resolve
-    for rc in sorted(cited):
-        if rc not in by_receipt:
-            errors.add("e", f"receipt {rc} does not resolve to a terminal or checkpoint record")
 
     # (f) recomputation and checkpoint binding
     cap_by_path = {c.get("path"): c for c in capsules}
@@ -491,6 +482,15 @@ def validate(log_path: Path) -> tuple[int, list]:
     for no, line in lines:
         if no not in citation_lines and RECEIPT_RE.search(line):
             errors.add("g", f"line {no}: receipt token outside a citation field (Receipts bullets, Baseline runs, Final lines, Evidence cells) — transcriptions cannot hide in Deviations or prose")
+
+    # (d, tail) no citation may point beyond records_through; (e) receipts resolve
+    for rc in sorted(cited):
+        rec = by_receipt.get(rc)
+        if rec and records_through is not None and rec.get("n", 0) > records_through:
+            errors.add("d", f"receipt {rc} cites n={rec.get('n')} beyond records_through={records_through}")
+    for rc in sorted(cited):
+        if rc not in by_receipt:
+            errors.add("e", f"receipt {rc} does not resolve to a terminal or checkpoint record")
 
     # (h) case completeness
     planned: list = []
