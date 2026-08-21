@@ -485,11 +485,11 @@ def validate(log_path: Path) -> tuple[int, list]:
         if rec.get("kind") == "checkpoint":
             last_cp[rec.get("phase")] = rec.get("n", 0)
             cp_phases.append(rec.get("phase"))
-        elif rec.get("kind") in TERMINAL_KINDS:
+        elif rec.get("kind") in TERMINAL_KINDS and rec.get("outcome") == "PASS":
             last_attempt[rec.get("phase")] = max(last_attempt.get(rec.get("phase"), 0), rec.get("n", 0))
     for ph, n in last_attempt.items():
         if last_cp.get(ph, -1) < n:
-            errors.add("l", f"phase {ph} has attempts (n={n}) newer than its last checkpoint ({last_cp.get(ph)})")
+            errors.add("l", f"phase {ph} has PASS attempts (n={n}) newer than its last checkpoint ({last_cp.get(ph)})")
     ranks = [PHASE_RANK.get(p, -1) for p in cp_phases]
     if any(b < a for a, b in zip(ranks, ranks[1:])):
         errors.add("l", f"checkpoint phases are not non-decreasing: {cp_phases}")

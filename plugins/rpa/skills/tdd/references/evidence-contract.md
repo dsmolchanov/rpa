@@ -185,10 +185,13 @@ directory.
   refactor` requires at least one `PASS` receipt of that phase, and
   `--achieved red|green|refactored-green` requires a `PASS` receipt of
   `red|green|refactor` — an empty phase transition can never seal an
-  achievement. Invariant: for every phase P with attempts, the last
-  `checkpoint P` has a larger `n` than every P attempt — a checkpoint refuses
-  while an earlier phase has attempts newer than its own last checkpoint;
-  `checkpoint final` is the last record of a run.
+  achievement. Invariant: for every phase P with **PASS** attempts, the last
+  `checkpoint P` has a larger `n` than every P `PASS` attempt — a checkpoint
+  refuses while an earlier phase has PASS attempts newer than its own last
+  checkpoint (failed attempts stay in the ledger and must be cited in the log,
+  but they do not need a checkpoint after them, so a blocked cycle with a
+  failed attempt can still be sealed); `checkpoint final` is the last record
+  of a run.
 - **Checkpoint transaction**: under the lock, after repair and the
   branch/plan check: build the capsule describing the state **after** this
   checkpoint → write `capsules/<nnnn>-<phase>.md` (durable write rules above)

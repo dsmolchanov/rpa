@@ -9,7 +9,7 @@ description: >
   refactor; use create-test-plan, debug/test-runner, test-suite, or refactor
   instead.
 user-invocable: true
-permission-class: "workspace_write (plan-scoped source, tests, and thoughts/shared/tests session log)"
+permission-class: "workspace_write (plan-scoped source, tests, thoughts/shared/tests session log and receipts, .rpa/evidence local state)"
 invocation: "both"
 ---
 
@@ -25,8 +25,10 @@ changing behavior.
 
 ## Scope & authority
 
-Read the named test plan and repository. Write only the source, tests, fixtures,
-and session artifact needed for cases in that plan and the requested phase.
+Read the named test plan and repository. Write only the source, tests, and
+fixtures needed for cases in that plan and the requested phase, the session log
+and its receipt export under `thoughts/shared/tests/`, and the local evidence
+store under `.rpa/evidence/` (never committed; nothing else under `.rpa/`).
 Preserve pre-existing user changes and unrelated failures. Do not add
 dependencies, broaden product behavior, weaken assertions, alter project-wide
 quality thresholds, or commit/push unless separately authorized.
@@ -37,6 +39,11 @@ quality thresholds, or commit/push unless separately authorized.
   [`../create-test-plan/references/artifact-contract.md`](../create-test-plan/references/artifact-contract.md).
 - Maintain the evidence log defined by
   [`references/session-log-contract.md`](references/session-log-contract.md).
+- Produce receipts with the evidence kernel defined by
+  [`references/evidence-contract.md`](references/evidence-contract.md).
+  `<skill-dir>` is the directory containing this file; the tool is
+  `python3 <skill-dir>/scripts/evidence.py` and the log validator is
+  `python3 <skill-dir>/scripts/validate_session_log.py`.
 - Use [`../../docs/testing-patterns.md`](../../docs/testing-patterns.md) for
   language-appropriate test shapes when the repository itself has no nearer
   established pattern.
@@ -52,7 +59,10 @@ Read the applicable contracts before editing.
    repository instructions.
 2. Inspect git status, target implementation/tests, installed test stack, and
    exact commands. Map each planned case to current behavior and note drift,
-   duplicates, pre-existing failures, or missing prerequisites.
+   duplicates, pre-existing failures, or missing prerequisites. If a session
+   log for this plan already exists, `evidence.py begin --resume <its Evidence
+   run>`; otherwise `evidence.py begin --plan <test plan>`. Then
+   `evidence.py checkpoint baseline`.
 3. Continue without ritual phase confirmations while work remains within the
    user's requested phase and plan scope. Pause only under the escalation rules.
 
@@ -62,20 +72,28 @@ Read the applicable contracts before editing.
    local conventions and assert observable behavior rather than implementation
    structure. Preserve stable case IDs from the test plan where the framework
    permits comments or names.
-5. Run the narrowest command that executes each new case. A valid Red result
-   must fail because the specified behavior is absent or incorrect. Import,
-   syntax, environment, discovery, or fixture failures are infrastructure
-   defects: fix those until the test reaches the intended assertion. It is
-   acceptable for unaffected or already-implemented cases to pass; explain
-   duplicates or drift rather than forcing artificial failure.
-6. Record command, exit status, and the expected failure signal. If every new
-   assertion already passes, verify the test is meaningful and whether the
-   behavior already exists; do not sabotage production code to manufacture Red.
+5. Run the narrowest command that executes each new case **through the
+   kernel**: `evidence.py run --phase red --case <id> --scope red_inputs=<tests,
+   fixtures, helpers, runner config, lockfiles> --scope plan=<test plan>
+   --report <name>` with `{report}` in the argv when the stack emits JUnit, and
+   the plan's `test <selector> fail-with "<literal>"` claim (or its stand-in
+   pair). A valid Red result is a receipt with `outcome=PASS`: the test failed
+   because the specified behavior is absent or incorrect. `ERROR` or
+   `SURPRISE` means import, syntax, environment, discovery, or fixture failure
+   — infrastructure defects: fix those until the test reaches the intended
+   assertion. It is acceptable for unaffected or already-implemented cases to
+   pass; explain duplicates or drift rather than forcing artificial failure.
+6. Cite the receipt in the log. If every new assertion already passes, verify
+   the test is meaningful and whether the behavior already exists; do not
+   sabotage production code to manufacture Red. `evidence.py checkpoint red`
+   (again after any re-run Red).
 
 ### Green
 
 7. Green requires valid Red evidence for each newly implemented behavior,
-   either from this session or an auditable prior phase. Implement the smallest
+   either from this session or an auditable prior phase — concretely, a `PASS`
+   Red receipt in the same evidence run; Green runs pass `--phase green --case
+   <id> --requires <Red ref>`. Implement the smallest
    **correct, general** behavior that satisfies the agreed requirement and
    repository contracts. Do not hard-code a one-example answer, omit necessary
    validation, or introduce speculative extras simply because the current test
@@ -83,13 +101,17 @@ Read the applicable contracts before editing.
 8. Run the focused cases after each coherent implementation chunk, then the
    relevant surrounding suite. Distinguish failures introduced by the change
    from unrelated baseline failures; never weaken or delete an assertion just
-   to reach Green.
+   to reach Green. A `STALE` result means the Red inputs, plan, branch, or
+   `HEAD` changed since Red (or during the run): re-run Red and re-checkpoint
+   it; do not edit the claim to fit.
 9. Green is reached only when planned cases pass and no relevant previously
-   passing case regresses. Record exact commands and outcomes.
+   passing case regresses. Cite the receipts, then `evidence.py checkpoint
+   green`.
 
 ### Refactor
 
-10. Refactor requires a green baseline. Apply only evidence-backed improvements
+10. Refactor requires a green baseline; refactor runs pass `--phase refactor
+    --case <id> --requires <Green ref>`. Apply only evidence-backed improvements
     within touched code: duplication, boundary clarity, naming, cohesion, or
     maintainability issues that materially benefit the change. A refactor phase
     may legitimately be `not_applicable` when Green code is already clear.
@@ -97,7 +119,7 @@ Read the applicable contracts before editing.
     refactor batch with the narrow suite, then re-run the relevant surrounding
     suite. If a change breaks tests, diagnose from the diff and restore behavior
     with a targeted patch; never discard unrelated work with destructive git
-    commands.
+    commands. `evidence.py checkpoint refactor` when the batch is green.
 
 ### Completion
 
@@ -105,8 +127,12 @@ Read the applicable contracts before editing.
     or test plan defines a threshold. Coverage is supporting evidence, not a
     substitute for behavior and failure-mode coverage. Do not invent an 80%
     target, timing limit, or flake threshold.
-13. Finish the session log with actual transitions, files, commands, exit
-    statuses, deviations, and `not_applicable` outcomes. Return a concise result
+13. Final-verification runs use `--phase final`. When the cycle ends
+    (Refactored Green, Green with Refactor not applicable, or Blocked),
+    `evidence.py checkpoint final --achieved <phase>`. In **every** session:
+    `evidence.py export`, finish the session log with actual transitions,
+    files, receipts, deviations, `not_applicable` outcomes, and `**Cycle
+    state**`, then run `validate_session_log.py <log>`. Return a concise result
     with changed files, phase state, verification evidence, and remaining
     blockers.
 
@@ -130,10 +156,11 @@ The requested TDD scope is complete when:
 3. Green implements the agreed behavior without weakening tests or regressing
    the relevant existing suite.
 4. Refactoring, when applicable, preserves behavior and public contracts.
-5. Only plan-scoped files and the session log are changed; pre-existing user
+5. Only plan-scoped files, the session log, and its receipt export are
+   changed; the local evidence store is not committed; pre-existing user
    changes remain intact.
-6. Commands, exit statuses, and salient outcomes are recorded exactly; counts,
-   coverage, duration, and LOC are never guessed.
+6. Commands, exit statuses, and salient outcomes are recorded exactly as
+   receipts; counts, coverage, duration, and LOC are never guessed.
 7. The final response links the session log and states the achieved phase,
    verification results, deviations, and blockers.
 
@@ -142,10 +169,12 @@ The requested TDD scope is complete when:
 | Gate | Applicability | Runner | When | Mode | Evidence |
 |---|---|---|---|---|---|
 | Baseline protection | every session | `git status --short` plus target diff inspection | before and after edits | blocking | pre-existing vs session changes identified |
-| Red causality | every new behavior | narrow repository test command | before Green | blocking | non-zero exit and expected assertion failure |
-| Green regression | every Green/refactor phase | focused tests plus relevant existing suite | after each coherent batch | blocking | commands, exits, test summary |
+| Red causality | every new behavior | `evidence.py run --phase red --case <id>` with mandatory `red_inputs`/`plan` scopes and a `test … fail-with` claim or the stand-in pair | before Green | blocking | receipt ref with outcome PASS |
+| Green regression | every Green/refactor phase | `evidence.py run --phase green --case <id> --requires <Red ref>` (refactor: `--phase refactor --requires <Green ref>`), focused tests plus relevant existing suite | after each coherent batch | blocking | receipt refs, outcome PASS, no STALE |
 | Coverage policy | only when repo/plan defines a threshold | repository coverage command | at completion | blocking when policy says so | measured report and configured threshold |
-| Session artifact | every session | compare with `references/session-log-contract.md` | before finishing | blocking | phase evidence and dispositions present |
+| Recovery capsule | every phase boundary | `evidence.py checkpoint <phase>` | at each boundary | blocking | checkpoint record and capsule snapshot |
+| Evidence export | every session | `evidence.py export` (after `checkpoint final` when the cycle ends) | before finishing | blocking | receipt file committed alongside the log |
+| Session artifact | every session | `python3 <skill-dir>/scripts/validate_session_log.py <log>` | before finishing | blocking | exit status 0 |
 | Kernel/docs hygiene | this repository's kernel and adapter files | `python3 scripts/validate_docs.py` | before commit / in CI | blocking | exit status 0 |
 
 ## Escalation conditions
@@ -158,3 +187,12 @@ The requested TDD scope is complete when:
 - Stop before Refactor when the relevant suite is not green.
 - If unrelated baseline failures exist, continue only when the requested phase
   can be isolated safely; report them without repairing out-of-scope code.
+- Stop and report when `run` returns `STALE` twice for the same Red ref without
+  an intervening test/plan edit you made — the scope declaration is wrong, not
+  the code.
+- Stop when `run` returns `STALE` with `drift during execution` — the command
+  mutates its own inputs.
+- Stop when `run` returns `TIMEOUT` or `INTERRUPTED` for a command that should
+  be fast — do not raise `--timeout` to hide a hang.
+- Stop when `run` reports `execution in progress` and you did not start it —
+  another session holds the lease.

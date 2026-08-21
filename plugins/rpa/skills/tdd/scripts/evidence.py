@@ -1199,15 +1199,19 @@ def admitted_checkpoint(state: str, phase: str) -> bool:
 
 
 def unclosed_phases(records: list, checkpoint_phase: str) -> list:
-    """Phases (other than the one being checkpointed) whose last attempt is
-    newer than their last checkpoint. For a non-final checkpoint only earlier
-    phases are considered; `checkpoint final` considers every other phase."""
+    """Phases (other than the one being checkpointed) with a PASS attempt
+    newer than their last checkpoint. Only PASS attempts need closing — they
+    change the verified state; failed attempts stay in the ledger (and must be
+    cited) but a blocked cycle must remain sealable. For a non-final checkpoint
+    only earlier phases are considered; `checkpoint final` considers every
+    other phase."""
     last_cp: dict = {}
     last_attempt: dict = {}
     for rec in records:
         if rec.get("kind") == "checkpoint":
             last_cp[rec["phase"]] = rec["n"]
-        elif rec.get("kind") in ("finished", "error", "interrupted", "timeout"):
+        elif rec.get("kind") in ("finished", "error", "interrupted", "timeout") \
+                and rec.get("outcome") == "PASS":
             last_attempt[rec["phase"]] = rec["n"]
     out = []
     for phase, n in last_attempt.items():
