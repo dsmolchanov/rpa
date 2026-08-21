@@ -1413,6 +1413,20 @@ runners.
 **Changes**: bump `2.0.0` → `2.1.0` in both (new scripts, additive contract
 fields).
 
+#### 4b. Discovered during implementation (2026-08-21)
+
+- The negative dry run exposed that `checkpoint final --achieved blocked` was
+  refused after a `STALE` Green attempt (an unclosed green attempt, while
+  `checkpoint green` itself requires a PASS green receipt) — a blocked cycle
+  with a failed attempt could never be sealed. The closure invariant now binds
+  **PASS** attempts only, in the kernel (`unclosed_phases`), the validator
+  (check (l)), and the contract: failed attempts stay in the ledger and must be
+  cited in the log (check (i)), but they do not need a checkpoint after them.
+  EV/VL suites unchanged and green (34/34, 30 cases).
+- `SKILL.md` step numbering kept; the kernel wiring lives in steps 2, 5–11,
+  13 and the verification profile; the `E-01` example in the test-plan contract
+  shows the stand-in claim form.
+
 #### 5. Hooks README cross-reference (documentation only)
 
 **Files**: `plugins/rpa/hooks/README.md`
@@ -1425,17 +1439,17 @@ closed at the artifact gate and in CI by `validate_docs.py`).
 
 #### Automated Verification
 
-- [ ] `python3 scripts/validate_docs.py --self-test && python3 scripts/validate_docs.py --root .` exits 0 (frontmatter incl. the new `permission-class`, links, manifests, both validator bindings, log discovery fixtures).
-- [ ] `python3 plugins/rpa/skills/tdd/scripts/validate_session_log.py plugins/rpa/skills/tdd/scripts/fixtures/session-logs/valid/thoughts/shared/tests/<date>-TDD-SESSION-valid.md` exits 0.
-- [ ] `git diff --name-only origin/master..HEAD` lists only files named in this plan plus the plan itself.
-- [ ] End-to-end dry run in this repo (implementer executes and pastes output into the PR; no git commits; order matters): `evidence.py begin --plan <this plan>`; `evidence.py checkpoint baseline`;
+- [x] `python3 scripts/validate_docs.py --self-test && python3 scripts/validate_docs.py --root .` exits 0 (frontmatter incl. the new `permission-class`, links, manifests, both validator bindings, log discovery fixtures). (2026-08-21: self-test 55/55, root clean after the Phase 3 edits.)
+- [x] `python3 plugins/rpa/skills/tdd/scripts/validate_session_log.py plugins/rpa/skills/tdd/scripts/fixtures/session-logs/valid/thoughts/shared/tests/<date>-TDD-SESSION-valid.md` exits 0 (`session-log: OK`).
+- [x] `git diff --name-only origin/master..HEAD` lists only files named in this plan plus the plan itself (verified 2026-08-21: ci.yml, validate_docs.py, the tdd skill package, the session-log fixture tree, the docs-validate fixture roots, the create-test-plan contract, hooks README, both manifests, the plan).
+- [x] End-to-end dry run in this repo (implementer executes and pastes output into the PR; no git commits; order matters) — executed 2026-08-21: run `tdd-20260821-164049-915b9f03-3ba89c`, red `outcome=PASS`, green `outcome=PASS`, open export `records=5 state=open`, after `checkpoint final --achieved green` re-export `records=6 state=sealed` with the previous events as a prefix (7 → 8 records); `git status --porcelain` showed only the one new file under `thoughts/shared/tests/receipts/` and nothing under `.rpa/`; export deleted afterwards: `evidence.py begin --plan <this plan>`; `evidence.py checkpoint baseline`;
       `evidence.py run --phase red --case U-01 --because "red" --scope red_inputs='plugins/rpa/skills/tdd/scripts/test_*.py,plugins/rpa/skills/tdd/scripts/fixtures/junit_stub.py' --scope plan=<this plan> --report dryrun.xml --expect 'test sample.test_x fail-with "AssertionError"' -- python3 plugins/rpa/skills/tdd/scripts/fixtures/junit_stub.py --out={report} --case sample.test_x --outcome failure --message "AssertionError: expected"`
       → `outcome=PASS`; `evidence.py checkpoint red`;
       `evidence.py run --phase green --case U-01 --because "green" --requires <red ref> --report dryrun.xml --expect 'test sample.test_x pass' -- python3 plugins/rpa/skills/tdd/scripts/fixtures/junit_stub.py --out={report} --case sample.test_x --outcome pass`
       → `outcome=PASS`; `evidence.py checkpoint green`; `evidence.py export` (open run) → one new file under `thoughts/shared/tests/receipts/`;
       `evidence.py checkpoint final --achieved green`; `evidence.py export` again → same file rewritten with the previous content as prefix;
       `git status --porcelain` shows exactly that one new file and nothing under `.rpa/` (delete the export before commit — it is a dry run, not a session).
-- [ ] Negative dry run in a throwaway repo (scratch dir, not this checkout): `git init`, one test file, `begin`, `checkpoint baseline`, Red as above with `--scope red_inputs='tests/*.py'`, `checkpoint red`, then append a line to the test file, then the Green `run --requires <red ref>` → `outcome=STALE`, exit 3, the stub's report was not rewritten; `run --phase red` again (admitted in state `red`) → `PASS`; `checkpoint green` before re-checkpointing red → exit 2; `checkpoint red`; then `checkpoint final --achieved blocked` and a further `run` → exit 2 (sealed); while a `run` with a sleeping command is in flight from one terminal, `evidence.py export` from another → exit 2 `execution in progress`.
+- [x] Negative dry run in a throwaway repo (scratch dir, not this checkout): — executed 2026-08-21: green after drift → `outcome=STALE` exit 3 with the Red report left intact (one `<failure>`), `run --phase red` again `PASS`, `checkpoint green` before re-checkpointing red → exit 2 (`phases with attempts newer than their checkpoint: red`), `checkpoint red` OK, `checkpoint final --achieved blocked` OK (after the PASS-only closure fix below), further `run` → exit 2 (`is sealed`), `export` while another run was in flight → exit 2 (`execution in progress: <ref>`): `git init`, one test file, `begin`, `checkpoint baseline`, Red as above with `--scope red_inputs='tests/*.py'`, `checkpoint red`, then append a line to the test file, then the Green `run --requires <red ref>` → `outcome=STALE`, exit 3, the stub's report was not rewritten; `run --phase red` again (admitted in state `red`) → `PASS`; `checkpoint green` before re-checkpointing red → exit 2; `checkpoint red`; then `checkpoint final --achieved blocked` and a further `run` → exit 2 (sealed); while a `run` with a sleeping command is in flight from one terminal, `evidence.py export` from another → exit 2 `execution in progress`.
 
 #### Manual Verification
 
