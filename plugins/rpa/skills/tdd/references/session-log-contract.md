@@ -78,9 +78,12 @@ accepts no other layout.
 - Every executed verification is a receipt from `scripts/evidence.py`, run
   with the phase and case it belongs to; the log cites the receipt and the
   exported receipt file. Citations are **receipt-only**: `` `receipt <hex12>`:
-  <salient result> `` — the argv, exit status, outputs, and timestamps are
-  persisted by the kernel in the export and are never transcribed into the
-  log. **Every** attempt in the export is cited — a receipt that is `STALE`,
+  <salient result> `` — the whole entry; the summary carries no backticked
+  commands, no `→` exit arrows, no ` · ` separators — because the argv, exit
+  status, outputs, and timestamps are persisted by the kernel in the export
+  and are never transcribed into the log. `**Baseline runs**` is mandatory
+  and has the same shape (or `Not run — reason`); baseline receipts are cited
+  there. **Every** attempt in the export is cited — a receipt that is `STALE`,
   `SURPRISE`, `TIMEOUT` or `INTERRUPTED` is evidence of a corrected belief,
   not something to omit.
 - Exactly one Case Dispositions row per case id in the test plan's §3 tables.

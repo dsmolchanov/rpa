@@ -36,8 +36,10 @@ EVIDENCE_DISPOSITIONS = {"valid Red", "Green", "refactored-green"}
 ACHIEVED_MAP = {"Red": "red", "Green": "green", "Refactored Green": "refactored-green", "Blocked": "blocked"}
 STATE_TO_ACHIEVED_PHASE = {"red": "Red", "green": "Green", "refactor": "Refactored Green"}
 RECEIPT_RE = re.compile(r"\breceipt ([0-9a-f]{12})\b")
-# Receipt-only citation shape: the argv/exit live in the export, never in the log.
-CITATION_RE = re.compile(r"^`receipt [0-9a-f]{12}`:\s*\S")
+# Receipt-only citation shape, anchored over the WHOLE entry: the argv/exit
+# live in the export, never in the log — a summary may not carry backticked
+# commands, `→` exit arrows, or ` · ` separators.
+CITATION_RE = re.compile(r"^`receipt [0-9a-f]{12}`:\s*[^`→\n]*\S[^`→\n]*$")
 CASE_ROW_RE = re.compile(r"^\|\s*([UIE]-\d+)\s*\|")
 NOT_RUN_RE = re.compile(r"(Not run|Not applicable) — \S")
 PHASE_RANK = {"baseline": 0, "red": 1, "green": 2, "refactor": 3, "final": 4}
@@ -366,6 +368,33 @@ def validate(log_path: Path) -> tuple[int, list]:
     # (g) commands-and-exits bullets
     phase_sections = {"red": find_section(secs, "## Red Phase"), "green": find_section(secs, "## Green Phase"),
                       "refactor": find_section(secs, "## Refactor Phase"), "final": find_section(secs, "## Final Verification")}
+    baseline = find_section(secs, "## Baseline")
+    baseline_runs = None
+    for no, line in baseline:
+        s_ = line.strip().lstrip("- ").strip()
+        if s_.startswith("**Baseline runs**"):
+            baseline_runs = (no, s_[len("**Baseline runs**"):].lstrip(": ").strip())
+    if baseline_runs is None:
+        errors.add("g", "Baseline lacks `**Baseline runs**` (receipt-only citation or `Not run — …`)")
+    else:
+        no, body = baseline_runs
+        if not body:
+            errors.add("g", f"line {no}: `**Baseline runs**` is empty")
+        elif not NOT_RUN_RE.search(body) and not CITATION_RE.match(body):
+            errors.add("g", f"line {no}: `**Baseline runs**` must be `` `receipt <hex12>`: <summary> `` or `Not run — …`")
+        # nested bullets under Baseline runs carry the same shape
+        active = False
+        for bno, bline in baseline:
+            bs = bline.strip()
+            if bs.lstrip("- ").startswith("**Baseline runs**"):
+                active = True
+                continue
+            if active and re.match(r"^\s{2,}-\s", bline):
+                b = re.sub(r"^-\s*", "", bs)
+                if not NOT_RUN_RE.search(b) and not CITATION_RE.match(b):
+                    errors.add("g", f"line {bno}: baseline receipt bullet must be receipt-only")
+            elif active and re.match(r"^-\s", bs):
+                active = False
     for name in ("red", "green", "refactor"):
         for no, bullet in commands_bullets(phase_sections[name]):
             body = re.sub(r"^-\s*", "", bullet)
@@ -432,7 +461,7 @@ def validate(log_path: Path) -> tuple[int, list]:
 
     # (i) coverage: every attempt of phases red/green/refactor/final is cited
     for rec in terminals:
-        if rec.get("phase") in ("red", "green", "refactor", "final") and rec.get("receipt") not in cited:
+        if rec.get("phase") in ("baseline", "red", "green", "refactor", "final") and rec.get("receipt") not in cited:
             errors.add("i", f"{rec.get('ref')} ({rec.get('phase')}/{rec.get('case') or '-'} {rec.get('outcome')}) is not cited in the log")
 
     # (j) disposition <-> receipt; (k) manual-as-green

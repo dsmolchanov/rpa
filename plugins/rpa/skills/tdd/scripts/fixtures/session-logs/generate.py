@@ -317,6 +317,10 @@ def main() -> int:
     log_mut("partial-cases", lambda t: "\n".join(l for l in t.splitlines() if not l.startswith("| U-02 |")) + "\n")
     log_mut("export-traversal", lambda t: t.replace(f"`receipts/{sc.run_id}.json`", f"`../receipts/{sc.run_id}.json`"))
     log_mut("export-absolute", lambda t: t.replace(f"`receipts/{sc.run_id}.json`", f"`/tmp/receipts/{sc.run_id}.json`"))
+    # trailing transcription after a valid receipt citation
+    log_mut("trailing-transcription", lambda t: t.replace(
+        f"  - `receipt {g1['receipt']}`: 1 passed", f"  - `receipt {g1['receipt']}`: 1 passed · `python3 junit_stub.py` → `0`", 1))
+    log_mut("baseline-runs-missing", lambda t: "\n".join(l for l in t.splitlines() if not l.startswith("- **Baseline runs**")) + "\n")
 
     hollow = log_text(sc, title="hollow fixture", rows=[], red=[], green=[],
                       refactor="Not applicable — nothing", final_focused="Not run — nothing", achieved="Green", cycle="complete")
