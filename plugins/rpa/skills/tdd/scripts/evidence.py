@@ -61,6 +61,7 @@ EXEC_WRAPPER = (
     "try:\n"
     "    os.execvp(sys.argv[2], sys.argv[2:])\n"
     "except OSError as e:\n"
+    "    open(sys.argv[1],'a').write('\\n" + EXEC_FAIL_MARKER + " %s' % e)\n"
     "    sys.stderr.write('" + EXEC_FAIL_MARKER + " %s\\n' % e)\n"
     "    sys.stderr.flush()\n"
     "    os._exit(127)\n"
@@ -219,8 +220,22 @@ def rel_to_root(path: Path) -> str:
 # values still exclude each other on the same checkout.
 
 
+def _refuse_symlink(path: Path, what: str) -> None:
+    if os.path.islink(path):
+        raise UsageError(f"{what} is a symlink; refusing to use it: {path}")
+    if path.exists() and Path(os.path.realpath(path)) != Path(os.path.realpath(path.parent)) / path.name:
+        raise UsageError(f"{what} resolves outside its parent; refusing to use it: {path}")
+
+
 def coord_root() -> Path:
-    return repo_root() / ".rpa" / "evidence"
+    """<repo>/.rpa/evidence — every ancestor under the repo root is verified
+    not to be a symlink before anything is created or written there."""
+    root = repo_root()
+    rpa = root / ".rpa"
+    coord = rpa / "evidence"
+    _refuse_symlink(rpa, "coordination root parent .rpa")
+    _refuse_symlink(coord, "coordination root .rpa/evidence")
+    return coord
 
 
 def store_root() -> Path:
@@ -253,6 +268,7 @@ def ensure_store_ignored() -> Path:
     store = store_root()
     if store != coord_root():
         store.mkdir(parents=True, exist_ok=True)
+    _refuse_symlink(store / "runs", "store runs directory")
     (store / "runs").mkdir(exist_ok=True)
     return store
 
@@ -265,7 +281,9 @@ def store_paths(run_id: str) -> dict:
     if not valid_run_id(run_id):
         raise UsageError(f"invalid run id: {run_id!r}")
     store = store_root()
+    _refuse_symlink(store / "runs", "store runs directory")
     run_dir = store / "runs" / run_id
+    _refuse_symlink(run_dir, "run directory")
     real = Path(os.path.realpath(run_dir))
     if not _is_relative_to(real, Path(os.path.realpath(store))):
         raise UsageError("run path escapes the store")
@@ -545,7 +563,29 @@ def controller_alive(pid) -> bool:
     return True
 
 
+def _group_members(pgid) -> list | None:
+    """(pid, stat) for every process in the group, via `ps`; None when `ps`
+    is unavailable (caller then assumes the group may be alive)."""
+    try:
+        out = subprocess.run(["ps", "-A", "-o", "pid=,pgid=,stat="], capture_output=True,
+                             text=True, timeout=5, check=False).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    members = []
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[1] == str(pgid):
+            try:
+                members.append((int(parts[0]), parts[2]))
+            except ValueError:
+                continue
+    return members
+
+
 def _group_alive(pgid) -> bool:
+    """True iff the group still has a NON-ZOMBIE member. Zombies adopted by a
+    non-reaping init keep `killpg(pgid, 0)` succeeding forever; they hold no
+    pipes and mutate nothing, so they do not count as alive."""
     if not isinstance(pgid, int) or pgid <= 0 or os.name == "nt":
         return False
     try:
@@ -553,8 +593,11 @@ def _group_alive(pgid) -> bool:
     except ProcessLookupError:
         return False
     except PermissionError:
+        pass
+    members = _group_members(pgid)
+    if members is None:
         return True
-    return True
+    return any(not stat.startswith("Z") for _, stat in members)
 
 
 def _signal_group(pgid, sig) -> None:
@@ -567,31 +610,39 @@ def _signal_group(pgid, sig) -> None:
 def _kill_group(pgid, grace: float = 0.5, reap=None) -> bool:
     """SIGTERM then SIGKILL the whole group, reaping the leader (`reap`, a Popen
     we own) between signals so a zombie leader never masks the rest of the
-    group. Returns True if anything was alive when we started."""
-    if not _group_alive(pgid):
-        return False
-    if os.name == "nt":  # pragma: no cover
+    group. Returns True if anything was alive when we started (on Windows:
+    True whenever a kill was attempted)."""
+    if os.name == "nt":  # pragma: no cover - Windows has no process groups
+        if not isinstance(pgid, int) or pgid <= 0:
+            return False
         subprocess.run(["taskkill", "/F", "/T", "/PID", str(pgid)],
                        capture_output=True, check=False)
+        if reap is not None:
+            with contextlib.suppress(Exception):
+                reap.kill()
+            with contextlib.suppress(Exception):
+                reap.wait(timeout=grace)
         return True
+    if not _group_alive(pgid):
+        return False
     _signal_group(pgid, signal.SIGTERM)
     deadline = time.monotonic() + grace
     while time.monotonic() < deadline:
         if reap is not None:
             with contextlib.suppress(Exception):
-                reap.wait(timeout=0.05)
+                reap.wait(timeout=0.1)
         if not _group_alive(pgid):
             return True
-        time.sleep(0.05)
+        time.sleep(0.1)
     _signal_group(pgid, signal.SIGKILL)
     deadline = time.monotonic() + grace
     while time.monotonic() < deadline:
         if reap is not None:
             with contextlib.suppress(Exception):
-                reap.wait(timeout=0.05)
+                reap.wait(timeout=0.1)
         if not _group_alive(pgid):
             break
-        time.sleep(0.05)
+        time.sleep(0.1)
     return True
 
 
@@ -602,7 +653,8 @@ def _lease_child_pid(lease: dict) -> int | None:
     pid_file = lease.get("child_pid_file")
     if pid_file and os.path.isfile(pid_file):
         with contextlib.suppress(ValueError, OSError):
-            return int(Path(pid_file).read_text(encoding="utf-8").strip() or "0") or None
+            first = Path(pid_file).read_text(encoding="utf-8").splitlines()[:1]
+            return int((first[0] if first else "0").strip() or "0") or None
     return None
 
 
@@ -982,13 +1034,17 @@ def grade(claim: Claim, ctx: dict) -> tuple[str, str]:
     if k == "path":
         before = ctx["path_before"].get(claim.arg)
         after = ctx["path_after"].get(claim.arg)
+        def desc(st):
+            return "absent" if st is None else st[0]
+        if after is not None and after[0] != "file":
+            return "SURPRISE", f"path is a {after[0]} after the run ({desc(before)} before); only regular files inside the repository count"
         if claim.value == "unchanged":
-            ok = before is not None and before == after
+            ok = before is not None and before[0] == "file" and before == after
         elif claim.value == "created":
             ok = before is None and after is not None
         else:
             ok = after is None
-        return ("PASS" if ok else "SURPRISE"), f"before={'present' if before else 'absent'} after={'present' if after else 'absent'}"
+        return ("PASS" if ok else "SURPRISE"), f"before={desc(before)} after={desc(after)}"
     if k in ("test_pass", "test_fail_with"):
         if ctx.get("report_error"):
             return "ERROR", ctx["report_error"]
@@ -1121,9 +1177,12 @@ def execute(argv: list, timeout: int, tail_bytes: int, literals: dict, lease: di
         res.stragglers = _kill_group(proc.pid, grace=2.0, reap=proc) or res.stragglers
     res.exit = proc.returncode
     res.finished_at = now_utc()
-    if res.exit == 127 and EXEC_FAIL_MARKER in res.err.tail_text():
-        line = next((l for l in res.err.tail_text().splitlines() if EXEC_FAIL_MARKER in l), "")
-        res.start_error = line.split(EXEC_FAIL_MARKER, 1)[1].strip() or "command could not start"
+    # Start-failure detection uses the pid sidecar the wrapper writes — never
+    # the bounded diagnostic tail, which may be too short to hold the marker.
+    with contextlib.suppress(OSError):
+        sidecar = pid_file.read_text(encoding="utf-8") if pid_file.is_file() else ""
+        if EXEC_FAIL_MARKER in sidecar:
+            res.start_error = sidecar.split(EXEC_FAIL_MARKER, 1)[1].strip() or "command could not start"
     return res
 
 
@@ -1162,6 +1221,53 @@ def _delete_owned_report(report_path: Path, bare: bool, run_id: str) -> None:
     if not _is_relative_to(real, base):
         raise UsageError(f"--report target escaped its root; refusing to delete: {report_path}")
     report_path.unlink()
+
+
+def report_contained(report_path: Path, bare: bool, run_id: str) -> str | None:
+    """Re-validate a report location: the root (the run-owned reports dir for
+    bare names, the repo root otherwise) must itself be a real directory, no
+    component between the root and the leaf may be a symlink, and the leaf's
+    realpath must still be inside the root. Returns an error string or None.
+    Called before AND after execution."""
+    if bare:
+        root = store_paths(run_id)["reports"]  # store_paths refuses symlinked runs/<id>
+        if os.path.islink(root):
+            return "reports directory is a symlink"
+        if root.exists() and not root.is_dir():
+            return "reports directory is not a directory"
+    else:
+        root = repo_root()
+    root_abs = Path(os.path.abspath(root))
+    try:
+        rel = Path(os.path.abspath(report_path)).relative_to(root_abs)
+    except ValueError:
+        return "report path is outside its root"
+    cur = root_abs
+    for part in rel.parts:
+        cur = cur / part
+        if os.path.islink(cur):
+            return f"report path component is a symlink: {part}"
+    real = Path(os.path.realpath(report_path))
+    if not _is_relative_to(real, Path(os.path.realpath(root_abs))):
+        return "report path escaped its root"
+    return None
+
+
+def path_state(rel: str):
+    """Post/pre-run state of a `path` claim target: None (absent),
+    ("file", sha256), ("symlink", target) or ("other", None). Regular files
+    only count as present; a symlink never certifies anything."""
+    p = repo_root() / rel
+    if os.path.islink(p):
+        return ("symlink", os.readlink(p))
+    if not os.path.lexists(p):
+        return None
+    if p.is_file():
+        real = Path(os.path.realpath(p))
+        if not _is_relative_to(real, repo_root()):
+            return ("other", "escapes repository")
+        return ("file", sha256_file(p))
+    return ("other", None)
 
 
 def substitute_report(argv: list, report: Path | None) -> list:
@@ -1551,11 +1657,13 @@ def cmd_run(args) -> int:
             rebuild_index(run_id)
             _print_result(term)
             return 3
-        path_before = {c.arg: (sha256_file(repo_root() / c.arg) if (repo_root() / c.arg).is_file() else None)
-                       for c in claims if c.kind == "path"}
+        path_before = {c.arg: path_state(c.arg) for c in claims if c.kind == "path"}
         if report_path is not None:
             _delete_owned_report(report_path, report_bare, run_id)
             report_path.parent.mkdir(parents=True, exist_ok=True)
+            problem = report_contained(report_path, report_bare, run_id)
+            if problem:
+                raise UsageError(f"--report: {problem}")
         with contextlib.suppress(FileNotFoundError):
             paths["child_pid"].unlink()
         append_record(run_id, intent)
@@ -1572,12 +1680,14 @@ def cmd_run(args) -> int:
     post_snap = worktree_snapshot()
     post_cur = current_state_triplet(meta)
     post_drift = check_envelope(envelope, meta)
-    path_after = {c.arg: (sha256_file(repo_root() / c.arg) if (repo_root() / c.arg).is_file() else None)
-                  for c in claims if c.kind == "path"}
+    path_after = {c.arg: path_state(c.arg) for c in claims if c.kind == "path"}
     changed = sorted(p for p in set(pre_snap) | set(post_snap) if pre_snap.get(p) != post_snap.get(p))
     junit, report_error, report_sha = [], None, None
     if report_path is not None:
-        if report_path.is_file() and not os.path.islink(report_path):
+        problem = report_contained(report_path, report_bare, run_id)
+        if problem:
+            report_error = f"report rejected after execution: {problem}"
+        elif report_path.is_file() and not os.path.islink(report_path):
             report_sha = sha256_file(report_path)
             try:
                 junit = parse_junit(report_path)

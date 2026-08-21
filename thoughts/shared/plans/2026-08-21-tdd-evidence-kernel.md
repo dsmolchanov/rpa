@@ -995,7 +995,7 @@ step to the `unit` job (after the hooks test step).
 
 #### Automated Verification
 
-- [x] `python3 plugins/rpa/skills/tdd/scripts/test_evidence.py` exits 0 with all EV-01…EV-34 cases passing (2026-08-21, after the Phase 1 review round: 34/34 in ~44 s).
+- [x] `python3 plugins/rpa/skills/tdd/scripts/test_evidence.py` exits 0 with all EV-01…EV-38 cases passing (2026-08-21, after the Phase 1 review round and the Codex round: 38/38 in ~50 s).
 - [x] `python3 scripts/validate_docs.py --root .` exits 0 (new markdown links resolve).
 - [x] `grep -n "shell=True\|os.system\|^import fcntl\|^from fcntl" plugins/rpa/skills/tdd/scripts/evidence.py` prints nothing.
 - [x] Smoke in this repo: `python3 plugins/rpa/skills/tdd/scripts/evidence.py begin --plan thoughts/shared/plans/2026-08-21-tdd-evidence-kernel.md` then
@@ -1005,7 +1005,7 @@ step to the `unit` job (after the hooks test step).
 
 #### Manual Verification
 
-- [ ] Not applicable — behavior is fully covered by EV-01…EV-34 and the smoke command.
+- [ ] Not applicable — behavior is fully covered by EV-01…EV-38 and the smoke command.
 
 ---
 
@@ -1423,6 +1423,22 @@ fields).
   (check (l)), and the contract: failed attempts stay in the ledger and must be
   cited in the log (check (i)), but they do not need a checkpoint after them.
   EV/VL suites unchanged and green (34/34, 30 cases).
+- **Codex review of PR #17 (2026-08-21), seven P1 blockers, all fixed in one
+  batch**: (1) exec-failure detection now reads the pid sidecar the wrapper
+  writes, never the bounded tail (EV-35); (2) `.rpa`, `.rpa/evidence`, the
+  store's `runs/` and the run directory are verified not to be symlinks
+  before any write (EV-36); (3) the Windows `taskkill /T` + `proc.kill()`
+  path is reachable (no POSIX liveness pre-check on `nt`); (4) group liveness
+  is zombie-aware — a group counts as alive only while it has a non-zombie
+  member (`ps -A -o pid=,pgid=,stat=`), so zombies under a non-reaping init
+  never masquerade as survivors; EV-16/EV-31 assert with the same predicate;
+  (5) the validator strips HTML comments that open inline and close on a later
+  line (fixture `inline-comment-hidden`, VL-31 → (i)); (6) `path` claims
+  snapshot with `lstat` and count only regular files inside the repository —
+  a symlink or an escaping target is `SURPRISE` (EV-37); (7) the report
+  location is re-validated after execution — the `reports/` root must be a
+  real directory, no component may be a symlink, realpath inside the root
+  (EV-38). Contract updated for each.
 - `SKILL.md` step numbering kept; the kernel wiring lives in steps 2, 5–11,
   13 and the verification profile; the `E-01` example in the test-plan contract
   shows the stand-in claim form.

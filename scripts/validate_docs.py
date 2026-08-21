@@ -84,7 +84,7 @@ SESSION_LOG_FIXTURE_CASES = (
     "valid", "valid-continuing", "missing-receipt", "unresolvable-receipt",
     "manual-as-green", "heading-order", "run-mismatch", "nonpass-disposition",
     "fenced-heading", "html-comment-heading", "broken-chain", "missing-checkpoint",
-    "hollow", "uncited-attempt", "standin-exit-only", "tampered-export",
+    "hollow", "uncited-attempt", "inline-comment-hidden", "standin-exit-only", "tampered-export",
     "trimmed-export", "intent-deleted", "duplicate-terminal", "ref-mismatch",
     "unsealed-complete", "achieved-mismatch", "partial-cases", "plan-mismatch",
     "export-traversal", "export-absolute", "export-symlink",

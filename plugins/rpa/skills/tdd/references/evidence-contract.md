@@ -25,9 +25,12 @@ directory.
 - **Coordination root** (always): `<repo root>/.rpa/evidence/`, created by
   `begin` with `.rpa/evidence/.gitignore` containing exactly `*` — inside the
   authority path, so the store is invisible to git without touching the
-  repository's `.gitignore` or anything else under `.rpa/`. An existing
-  `.gitignore` there with different content, or a symlink, is never
-  overwritten (`begin` exits 2). The lock and the execution lease live here
+  repository's `.gitignore` or anything else under `.rpa/`. Before anything is
+  created or written, `.rpa`, `.rpa/evidence`, the store's `runs/` directory,
+  and the run directory are each verified not to be symlinks (and to resolve
+  inside their parent); a pre-planted link anywhere on that path exits 2 with
+  nothing written. An existing `.gitignore` there with different content, or
+  a symlink, is never overwritten (`begin` exits 2). The lock and the execution lease live here
   and **only** here, so every process working on this checkout excludes every
   other one regardless of where payload is stored. Every status/scope/diff
   computation drops paths under the coordination root and the payload store.
@@ -80,17 +83,23 @@ directory.
   run does not own, is refused (exit 2). A missing report never confers
   ownership. Before execution a pre-existing run-owned report is deleted —
   after a fresh check that it is a regular file (not a symlink) still inside
-  its root; anything else is refused. A report missing afterwards grades
-  `test` claims `ERROR` ("report not produced by this run"); `report_sha256`
-  is recorded when produced.
+  its root; anything else is refused. The report location is re-validated
+  **before and after** the command: no component between the root (the
+  run-owned `reports/` directory for bare names, the repository root for
+  explicit paths) and the leaf may be a symlink and the realpath must still be
+  inside that root — a command that swaps `reports/` for a link elsewhere
+  gets `ERROR` ("report rejected after execution"). A report missing
+  afterwards grades `test` claims `ERROR` ("report not produced by this run");
+  `report_sha256` is recorded when produced.
 - **Execution**: the command is started as `python -c <wrapper> <child.pid>
   <argv…>` with `shell=False`, `cwd=<repo root>`, `stdin=DEVNULL`,
   `start_new_session=True`; the wrapper writes its own pid to `child.pid`
   and `execvp`s the command (same pid, same process group), so the process
   group is discoverable even if the controller dies between `Popen` and the
-  lease rewrite. If `execvp` fails the wrapper writes
-  `__evidence_exec_failed__: <error>` to stderr and exits 127, which the
-  kernel records as `ERROR` "command could not start". Two reader threads
+  lease rewrite. If `execvp` fails the wrapper appends
+  `__evidence_exec_failed__: <error>` to that same sidecar (and to stderr) and
+  exits 127; the kernel detects the failure from the **sidecar** — never from
+  the bounded tail — and records `ERROR` "command could not start". Two reader threads
   keep a streaming sha256, a byte count, a bounded ring tail (`--tail-bytes`,
   default 8192, 1…65536), and incremental `contains` matching over the
   **full** stream. `{report}` is the only substitution. One total deadline:
@@ -101,8 +110,11 @@ directory.
   (`stragglers_terminated: true` on the record); if something escaped the
   group and keeps the pipes open the run is recorded `TIMEOUT` with detail
   "escaped descendants held the pipes". Group kills send `SIGTERM`, reap the
-  leader, then `SIGKILL`. On Windows the fallback is `proc.kill()` (no
-  process groups) and `msvcrt` locking.
+  leader, then `SIGKILL`; a group is considered alive only while it has a
+  **non-zombie** member (checked via `ps`), so zombies adopted by a
+  non-reaping init never masquerade as survivors. On Windows (no process
+  groups) termination is `taskkill /T` plus `proc.kill()`, and locking is
+  `msvcrt`.
 - What a receipt proves: that the record is internally consistent and was
   produced by the tool on the checkout it names (raw-stream digests, report
   digest, pre/post worktree digests). It is not a remote attestation of who
@@ -252,7 +264,10 @@ directory.
     roots excluded); a path is changed when its hash differs or it appears/
     disappears — modifying an already-dirty file is detected. `within` passes
     when every changed path `fnmatch`es a glob against repo-relative paths.
-  - `path <repo-relative> unchanged|created|absent` — sha256 before/after.
+  - `path <repo-relative> unchanged|created|absent` — sha256 before/after
+    over **regular files inside the repository** only (lstat'd on both
+    sides): a path that is a symlink, a directory, or resolves outside the
+    repository after the run is `SURPRISE`, never `PASS`.
   - `test <selector> pass` · `test <selector> fail-with "<literal>"` —
     require `--report`; `<selector>` is a case-sensitive substring of
     `<classname>.<name>` and must match **exactly one** `<testcase>` (zero or

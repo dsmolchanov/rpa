@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Focused no-network tests for the TDD evidence kernel (EV-01 … EV-34).
+"""Focused no-network tests for the TDD evidence kernel (EV-01 … EV-38).
 
 Every test builds a throwaway git repository and drives evidence.py through
 subprocess exactly as an agent would. Mirrors hooks/test_run_gate.py style.
@@ -811,8 +811,7 @@ class EvidenceKernelTests(unittest.TestCase):
         self.assertLess(time.monotonic() - t0, 20)
         term = self.repo.last_terminal(run_id)
         time.sleep(0.5)
-        with self.assertRaises(ProcessLookupError):
-            os.killpg(term["child_pid"], 0)
+        self.assertFalse(evidence._group_alive(term["child_pid"]), "process group still has live members")
 
     def test_ev31_descendants_cannot_outlive_or_hang(self):
         run_id = self.baseline()
@@ -825,8 +824,7 @@ class EvidenceKernelTests(unittest.TestCase):
         term = self.repo.last_terminal(run_id)
         self.assertTrue(term["stragglers_terminated"])
         time.sleep(0.5)
-        with self.assertRaises(ProcessLookupError):
-            os.killpg(term["child_pid"], 0)
+        self.assertFalse(evidence._group_alive(term["child_pid"]), "process group still has live members")
         # controller death between Popen and lease rewrite: the pid file tracks the child
         sleeper = subprocess.Popen([PY, "-c", "import time;time.sleep(60)"], start_new_session=True)
         try:
@@ -921,6 +919,58 @@ class EvidenceKernelTests(unittest.TestCase):
             res = self.repo.ev("checkpoint", "--run", r_b, "baseline", env={"RPA_EVIDENCE_DIR": store_b})
             self.assertEqual(res.returncode, 0, res.stderr)
             self.assertTrue((Path(store_b) / "runs" / r_b / "events.jsonl").is_file())
+
+    # -- EV-35 … EV-38: Codex review round (PR #17) ---------------------------
+    def test_ev35_exec_failure_detected_independently_of_tail(self):
+        run_id = self.baseline()
+        res = self.repo.ev("run", "--phase", "baseline", "--tail-bytes", "1", "--expect", "exit == 127",
+                           "--", "does-not-exist-command-xyz")
+        self.assertEqual(res.returncode, 2, res.stdout + res.stderr)
+        self.assertIn("could not start", res.stdout)
+        term = self.repo.last_terminal(run_id)
+        self.assertEqual(term["kind"], "error")
+        self.assertEqual(term["outcome"], "ERROR")
+        self.assertNotIn("hunter", json.dumps(term))
+
+    def test_ev36_symlinked_coordination_root_is_refused(self):
+        with tempfile.TemporaryDirectory(prefix="ev-foreign-") as foreign:
+            # .rpa itself is a pre-planted symlink
+            os.symlink(foreign, self.repo.root / ".rpa")
+            res = self.repo.ev("begin", "--plan", "plan.md")
+            self.assertEqual(res.returncode, 2, res.stdout + res.stderr)
+            self.assertIn("symlink", res.stderr)
+            self.assertEqual(os.listdir(foreign), [])
+            os.unlink(self.repo.root / ".rpa")
+            # .rpa/evidence is a pre-planted symlink
+            (self.repo.root / ".rpa").mkdir()
+            os.symlink(foreign, self.repo.root / ".rpa" / "evidence")
+            res = self.repo.ev("begin", "--plan", "plan.md")
+            self.assertEqual(res.returncode, 2, res.stdout + res.stderr)
+            self.assertEqual(os.listdir(foreign), [])
+
+    def test_ev37_path_claim_never_certifies_a_symlink(self):
+        self.baseline()
+        res = self.repo.ev("run", "--phase", "baseline", "--expect", "path link created",
+                           "--", PY, "-c", "import os;os.symlink('/etc/passwd','link')")
+        self.assertEqual(res.returncode, 1, res.stdout + res.stderr)
+        self.assertIn("symlink", res.stdout)
+        res = self.repo.ev("run", "--phase", "baseline", "--expect", "path src/new.txt created",
+                           "--", PY, "-c", "open('src/new.txt','w').write('x')")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+
+    def test_ev38_report_ancestors_rechecked_after_execution(self):
+        run_id = self.baseline()
+        reports = self.repo.run_dir(run_id) / "reports"
+        with tempfile.TemporaryDirectory(prefix="ev-rep-") as outside:
+            swap = ("import os,shutil,subprocess,sys;shutil.rmtree(%r);os.symlink(%r,%r);"
+                    "sys.exit(subprocess.run([sys.executable,%r,'--out=%s','--case','sample.x','--outcome','pass']).returncode)"
+                    % (str(reports), outside, str(reports), str(STUB), "{report}"))
+            res = self.repo.ev("run", "--phase", "baseline", "--report", "r.xml", "--expect", "test sample.x pass",
+                               "--", PY, "-c", swap)
+            self.assertEqual(res.returncode, 2, res.stdout + res.stderr)
+            self.assertIn("rejected after execution", res.stdout)
+            os.unlink(reports)
+            reports.mkdir()
 
     # -- EV-23: relocatable package ------------------------------------------
     def test_ev23_relocatable_package(self):

@@ -63,11 +63,25 @@ def content_lines(text: str) -> list:
     in_html_block = False
     prev_nonblank = ""
     for idx, line in enumerate(lines, 1):
-        stripped = line.strip()
+        # HTML comments may open anywhere on a line and close lines later:
+        # strip every commented span (stateful), keep only the visible rest.
         if in_comment:
-            if "-->" in line:
-                in_comment = False
-            continue
+            end = line.find("-->")
+            if end < 0:
+                continue
+            line = line[end + 3:]
+            in_comment = False
+        while True:
+            start = line.find("<!--")
+            if start < 0:
+                break
+            end = line.find("-->", start + 4)
+            if end < 0:
+                line = line[:start]
+                in_comment = True
+                break
+            line = line[:start] + line[end + 3:]
+        stripped = line.strip()
         if in_fence is not None:
             if stripped.startswith(in_fence):
                 in_fence = None
@@ -76,13 +90,11 @@ def content_lines(text: str) -> list:
             if not stripped:
                 in_html_block = False
             continue
+        if not stripped and in_comment:
+            continue
         m = re.match(r"^\s{0,3}(```+|~~~+)", line)
         if m:
             in_fence = m.group(1)[0] * 3
-            continue
-        if stripped.startswith("<!--"):
-            if "-->" not in line[line.find("<!--") + 4:]:
-                in_comment = True
             continue
         if re.match(r"^\s{0,3}<(/?[A-Za-z][A-Za-z0-9-]*|!)", line):
             in_html_block = True

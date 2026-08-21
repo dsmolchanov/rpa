@@ -3,10 +3,10 @@
 **Date**: 2026-08-21T00:00:00+00:00
 **Test Plan**: `thoughts/shared/tests/2026-08-21-TEST-docs-positive.md`
 **Requested Phase**: `full`
-**Repository State**: `master 8975c57b0fb8`
+**Repository State**: `master 1a75450a7919`
 **Evidence schema**: `tdd/1`
-**Evidence run**: `tdd-20260821-162738-ee130fd6-29aeed`
-**Evidence export**: `receipts/tdd-20260821-162738-ee130fd6-29aeed.json`
+**Evidence run**: `tdd-20260821-165942-ee130fd6-7373e4`
+**Evidence export**: `receipts/tdd-20260821-165942-ee130fd6-7373e4.json`
 
 ## Baseline
 

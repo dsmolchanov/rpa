@@ -308,6 +308,11 @@ def main() -> int:
     log_mut("html-comment-heading", lambda t: t.replace(
         "## Refactor Phase\n", "<!-- ## Refactor Phase -->\n<div>\n## Refactor Phase\nreceipt abcdefabcdef\n</div>\n"))
     log_mut("uncited-attempt", lambda t: "\n".join(l for l in t.splitlines() if stale["receipt"] not in l) + "\n")
+    # the STALE attempt's bullet is hidden inside a comment that OPENS inline
+    log_mut("inline-comment-hidden", lambda t: "\n".join(
+        (f"- **Deviations**: None <!--" if False else l) for l in t.splitlines()).replace(
+        f"  - `receipt {stale['receipt']}`", f"  - visible prose <!--\n  - `receipt {stale['receipt']}`", 1).replace(
+        f"  - `receipt {g1['receipt']}`", f"  -->\n  - `receipt {g1['receipt']}`", 1))
     log_mut("achieved-mismatch", lambda t: t.replace("- **Achieved phase**: Green", "- **Achieved phase**: Refactored Green"))
     log_mut("partial-cases", lambda t: "\n".join(l for l in t.splitlines() if not l.startswith("| U-02 |")) + "\n")
     log_mut("export-traversal", lambda t: t.replace(f"`receipts/{sc.run_id}.json`", f"`../receipts/{sc.run_id}.json`"))
