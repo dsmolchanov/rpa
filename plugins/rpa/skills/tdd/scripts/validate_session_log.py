@@ -48,6 +48,12 @@ NOT_RUN_RE = re.compile(r"(Not run|Not applicable) — \S")
 NOT_RUN_ENTRY_RE = re.compile(r"^(?!.*\breceipt [0-9a-f]{12}\b)(Not run|Not applicable) — [^`→·\n]*\S$")
 
 
+# Case Dispositions Evidence cell: `receipt <hex12> — <salient assertion>`
+# (optionally containing the word stand-in) — same no-transcription rule.
+EVIDENCE_CELL_RE = re.compile(r"^receipt [0-9a-f]{12} — [^`→·\n]*\S$")
+REASON_CELL_RE = re.compile(r"^(?!.*\breceipt [0-9a-f]{12}\b)[^`→·\n]*\S$")
+
+
 def entry_ok(body: str) -> bool:
     """A receipt-only citation or an anchored not-run entry — nothing else."""
     return bool(CITATION_RE.match(body) or NOT_RUN_ENTRY_RE.match(body))
@@ -179,6 +185,10 @@ def table_rows(body: list) -> list:
             continue
         rows.append(cells)
     return rows
+
+
+def has_receipts_field(body: list) -> bool:
+    return any(re.match(r"^-\s*\*\*Receipts\*\*", line.strip()) for _, line in body)
 
 
 def commands_bullets(body: list) -> list:
@@ -405,6 +415,8 @@ def validate(log_path: Path) -> tuple[int, list]:
             elif active and re.match(r"^-\s", bs):
                 active = False
     for name in ("red", "green", "refactor"):
+        if not has_receipts_field(phase_sections[name]):
+            errors.add("g", f"{name} section lacks the mandatory `**Receipts**:` field")
         for no, bullet in commands_bullets(phase_sections[name]):
             body = re.sub(r"^-\s*", "", bullet)
             if not entry_ok(body):
@@ -456,15 +468,20 @@ def validate(log_path: Path) -> tuple[int, list]:
             errors.add("h", f"disposition Case ID {r[0]!r} is not U-/I-/E- shaped")
         if r[2] not in DISPOSITIONS:
             errors.add("h", f"{r[0]}: disposition {r[2]!r} not in {sorted(DISPOSITIONS)}")
-        if r[2] not in EVIDENCE_DISPOSITIONS and not r[3].strip():
-            errors.add("h", f"{r[0]}: {r[2]} needs a reason in the Evidence cell")
+        cell = r[3].strip()
+        if r[2] in EVIDENCE_DISPOSITIONS:
+            if not EVIDENCE_CELL_RE.match(cell):
+                errors.add("j", f"{r[0]}: Evidence cell must be `receipt <hex12> — <salient assertion>` with no transcribed command/exit (got {cell[:60]!r})")
+        elif not REASON_CELL_RE.match(cell):
+            errors.add("h", f"{r[0]}: {r[2]} needs a plain reason in the Evidence cell (no receipt tokens, commands or exits)")
     for name in ("red", "green", "refactor"):
-        body = phase_sections[name]
-        bullets = commands_bullets(body)
-        has_receipt = any(RECEIPT_RE.search(b) for _, b in bullets)
-        section_text = "\n".join(l for _, l in body)
-        if not has_receipt and not NOT_RUN_RE.search(section_text):
-            errors.add("h", f"{name} section has no receipt bullets under `**Receipts**:` and is not marked `Not run — …` / `Not applicable — …`")
+        bullets = [re.sub(r"^-\s*", "", b) for _, b in commands_bullets(phase_sections[name])]
+        has_receipt = any(CITATION_RE.match(b) for b in bullets)
+        # The skipped-phase alternative must be stated IN the Receipts bullets —
+        # text elsewhere in the section (e.g. Deviations) does not count.
+        marked_not_run = bool(bullets) and all(NOT_RUN_ENTRY_RE.match(b) for b in bullets)
+        if not has_receipt and not marked_not_run:
+            errors.add("h", f"{name} section has no receipt citations under `**Receipts**:` and its bullets are not all `Not run — …` / `Not applicable — …` entries")
 
     # (i) coverage: every attempt of phases red/green/refactor/final is cited
     for rec in terminals:

@@ -87,7 +87,12 @@ accepts no other layout.
   is mandatory and has the same shape; baseline receipts are cited there. **Every** attempt in the export is cited — a receipt that is `STALE`,
   `SURPRISE`, `TIMEOUT` or `INTERRUPTED` is evidence of a corrected belief,
   not something to omit.
-- Exactly one Case Dispositions row per case id in the test plan's §3 tables.
+- Exactly one Case Dispositions row per case id in the test plan's §3 tables;
+  an Evidence cell is `receipt <hex12> — <salient assertion>` (the word
+  `stand-in` may appear) or, for `already covered` / `blocked` /
+  `not_applicable`, a plain reason — never a transcribed command or exit.
+  Every phase section carries the `**Receipts**:` field; a skipped phase
+  states `Not run — <reason>` as that field's only bullet.
   `valid Red` cites a `red` receipt of that case with `outcome PASS` and a
   `test … fail-with` claim (or, marked `stand-in`, the pair `exit != 0` +
   `contains`); `Green` cites a `green` receipt of that case whose `--requires`

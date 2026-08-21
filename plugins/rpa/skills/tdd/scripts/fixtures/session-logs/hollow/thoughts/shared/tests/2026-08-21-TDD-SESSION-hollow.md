@@ -3,10 +3,10 @@
 **Date**: 2026-08-21T00:00:00+00:00
 **Test Plan**: `thoughts/shared/tests/2026-08-21-TEST-valid.md`
 **Requested Phase**: `full`
-**Repository State**: `master 313ad1401d15`
+**Repository State**: `master 9ae3172aa861`
 **Evidence schema**: `tdd/1`
-**Evidence run**: `tdd-20260821-214220-cb157441-be3dc3`
-**Evidence export**: `receipts/tdd-20260821-214220-cb157441-be3dc3.json`
+**Evidence run**: `tdd-20260821-214709-cb157441-0de4aa`
+**Evidence export**: `receipts/tdd-20260821-214709-cb157441-0de4aa.json`
 
 ## Baseline
 

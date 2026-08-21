@@ -321,6 +321,15 @@ def main() -> int:
     log_mut("trailing-transcription", lambda t: t.replace(
         f"  - `receipt {g1['receipt']}`: 1 passed", f"  - `receipt {g1['receipt']}`: 1 passed · `python3 junit_stub.py` → `0`", 1))
     log_mut("baseline-runs-missing", lambda t: "\n".join(l for l in t.splitlines() if not l.startswith("- **Baseline runs**")) + "\n")
+    # transcription inside a Case Dispositions Evidence cell
+    log_mut("disposition-transcription", lambda t: t.replace(
+        f"| U-01 | unit | Green | receipt {g1['receipt']} — sample.test_x passes |",
+        f"| U-01 | unit | Green | receipt {g1['receipt']} — `python3 test.py` → `0` |", 1))
+    # legacy field name with the not-run alternative smuggled into Deviations
+    log_mut("receipts-field-missing", lambda t: t.replace(
+        "## Red Phase\n\n- **Files changed**: tests/test_x.py\n- **Receipts**:",
+        "## Red Phase\n\n- **Files changed**: tests/test_x.py\n- **Commands and exits**:", 1).replace(
+        "- **Deviations**: None\n\n## Green Phase", "- **Deviations**: Not run — legacy layout\n\n## Green Phase", 1))
     # colon-prefixed transcription: a valid receipt citation whose summary is an argv/exit
     log_mut("colon-transcription", lambda t: t.replace(
         f"  - `receipt {g1['receipt']}`: 1 passed", f"  - `receipt {g1['receipt']}`: `python3 tests.py` → `0`", 1))
