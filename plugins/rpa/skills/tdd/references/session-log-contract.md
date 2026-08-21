@@ -91,8 +91,10 @@ accepts no other layout.
   an Evidence cell is `receipt <hex12> — <salient assertion>` (the word
   `stand-in` may appear) or, for `already covered` / `blocked` /
   `not_applicable`, a plain reason — never a transcribed command or exit.
-  Every phase section carries the `**Receipts**:` field; a skipped phase
-  states `Not run — <reason>` as that field's only bullet.
+  Rows have exactly four cells. Every phase section carries the
+  `**Receipts**:` field; a skipped phase states `Not run — <reason>` as that
+  field's **only** bullet — a phase that cites receipts may not also carry a
+  not-run bullet.
   `valid Red` cites a `red` receipt of that case with `outcome PASS` and a
   `test … fail-with` claim (or, marked `stand-in`, the pair `exit != 0` +
   `contains`); `Green` cites a `green` receipt of that case whose `--requires`

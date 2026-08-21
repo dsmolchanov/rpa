@@ -90,6 +90,7 @@ SESSION_LOG_FIXTURE_CASES = (
     "export-traversal", "export-absolute", "export-symlink",
     "trailing-transcription", "baseline-runs-missing", "not-run-with-transcription",
     "colon-transcription", "disposition-transcription", "receipts-field-missing",
+    "contradictory-not-run", "extra-disposition-cell",
     "attempt-after-checkpoint", "record-after-final",
 )
 

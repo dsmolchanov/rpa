@@ -293,7 +293,7 @@ def main() -> int:
 
     sc, text, export, refs = build_valid(out)
     write_case(out, "valid", sc, text, export)
-    g1, r1, r2, stale, f1 = refs["g1"], refs["r1"], refs["r2"], refs["stale"], refs["f1"]
+    g1, g2, r1, r2, stale, f1 = refs["g1"], refs["g2"], refs["r1"], refs["r2"], refs["stale"], refs["f1"]
 
     # --- log-only mutations of valid -------------------------------------------
     def log_mut(name, fn):
@@ -330,6 +330,13 @@ def main() -> int:
         "## Red Phase\n\n- **Files changed**: tests/test_x.py\n- **Receipts**:",
         "## Red Phase\n\n- **Files changed**: tests/test_x.py\n- **Commands and exits**:", 1).replace(
         "- **Deviations**: None\n\n## Green Phase", "- **Deviations**: Not run — legacy layout\n\n## Green Phase", 1))
+    # a not-run bullet next to receipt citations in the same Receipts field
+    log_mut("contradictory-not-run", lambda t: t.replace(
+        f"  - `receipt {g2['receipt']}`: 1 passed", f"  - `receipt {g2['receipt']}`: 1 passed\n  - Not run — claimed skipped", 1))
+    # a fifth disposition cell carrying a transcription
+    log_mut("extra-disposition-cell", lambda t: t.replace(
+        f"| U-01 | unit | Green | receipt {g1['receipt']} — sample.test_x passes |",
+        f"| U-01 | unit | Green | receipt {g1['receipt']} — sample.test_x passes | `python3 test.py` → `0` |", 1))
     # colon-prefixed transcription: a valid receipt citation whose summary is an argv/exit
     log_mut("colon-transcription", lambda t: t.replace(
         f"  - `receipt {g1['receipt']}`: 1 passed", f"  - `receipt {g1['receipt']}`: `python3 tests.py` → `0`", 1))

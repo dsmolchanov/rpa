@@ -461,8 +461,8 @@ def validate(log_path: Path) -> tuple[int, list]:
     if unplanned_ledger:
         errors.add("h", f"ledger has attempts for unplanned cases {unplanned_ledger}")
     for r in rows:
-        if len(r) < 4:
-            errors.add("h", f"disposition row {r[:1]} has fewer than 4 cells")
+        if len(r) != 4:
+            errors.add("h", f"disposition row {r[:1]} must have exactly 4 cells (Case ID | Layer | Disposition | Evidence); got {len(r)}")
             continue
         if not re.fullmatch(r"[UIE]-\d+", r[0]):
             errors.add("h", f"disposition Case ID {r[0]!r} is not U-/I-/E- shaped")
@@ -482,6 +482,10 @@ def validate(log_path: Path) -> tuple[int, list]:
         marked_not_run = bool(bullets) and all(NOT_RUN_ENTRY_RE.match(b) for b in bullets)
         if not has_receipt and not marked_not_run:
             errors.add("h", f"{name} section has no receipt citations under `**Receipts**:` and its bullets are not all `Not run — …` / `Not applicable — …` entries")
+        # The skipped-phase alternative is exclusive: a phase that cites receipts
+        # cannot also claim it was not run.
+        if has_receipt and any(NOT_RUN_ENTRY_RE.match(b) for b in bullets):
+            errors.add("h", f"{name} section mixes receipt citations with `Not run — …` / `Not applicable — …` bullets; a skipped phase uses the not-run entry as its only bullet")
 
     # (i) coverage: every attempt of phases red/green/refactor/final is cited
     for rec in terminals:
