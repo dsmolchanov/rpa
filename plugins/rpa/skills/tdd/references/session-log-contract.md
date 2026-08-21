@@ -96,9 +96,9 @@ accepts no other layout.
   field's **only** bullet — a phase that cites receipts may not also carry a
   not-run bullet. Field labels are matched **exactly** (`- **Label**:`, colon
   immediately after the emphasis) and each mandatory field appears exactly
-  once: `**Test configuration**:` (configuration file paths only — path
-  tokens such as `pyproject.toml`, `package.json`, `Makefile`, or `Not
-  applicable — <reason>`; no commands, exits, or receipts),
+  once: `**Test configuration**:` (existing repo-relative configuration
+  files only — e.g. `pyproject.toml`, `package.json`, `Makefile` — or `Not
+  applicable — <reason>`; no absolute paths, commands, exits, or receipts),
   `**Baseline runs**:`, `**Receipts**:` per phase, `**Focused suite**:` and
   `**Relevant surrounding suite**:`. A citation resolves to an attempt of the
   section it sits in (`**Baseline runs**` → `baseline` receipts, a phase's
@@ -106,7 +106,10 @@ accepts no other layout.
   appear **only** in
   those citation fields and in Evidence cells — never in Deviations, Files
   changed, Summary, or prose — and attempt coverage is computed from those
-  fields alone.
+  fields alone. Prose fields may not carry transcription shapes either: no
+  exit-code phrases (`exit 0`, `exited 1`), no `→`, no backticked commands
+  (a backticked span with whitespace), no shell flags, no runner + script
+  tokens (`python3 x.py`, `npx jest …`).
   `valid Red` cites a `red` receipt of that case with `outcome PASS` and a
   `test … fail-with` claim (or, marked `stand-in`, the pair `exit != 0` +
   `contains`); `Green` cites a `green` receipt of that case whose `--requires`

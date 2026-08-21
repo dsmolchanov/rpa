@@ -61,7 +61,10 @@ PATH_TOKEN_RE = re.compile(r"^[A-Za-z0-9_@+./-]+$")
 NOT_APPLICABLE_ENTRY_RE = re.compile(r"^(?!.*\breceipt [0-9a-f]{12}\b)Not applicable — [^`→·\n]*\S$")
 
 
-def test_configuration_ok(value: str) -> bool:
+def test_configuration_ok(value: str, root: Path | None = None) -> bool:
+    """Configuration file paths only: repo-relative (no absolute, no `..`),
+    path-shaped, and — when `root` is given — existing regular files under it.
+    `Not applicable — <reason>` is the only alternative."""
     if NOT_APPLICABLE_ENTRY_RE.match(value):
         return True
     if RECEIPT_RE.search(value) or "→" in value or "·" in value:
@@ -69,7 +72,30 @@ def test_configuration_ok(value: str) -> bool:
     tokens = [t.strip().strip("`") for t in re.split(r"[,\s]+", value) if t.strip()]
     if not tokens:
         return False
-    return all(PATH_TOKEN_RE.match(t) and ("/" in t or "." in t) for t in tokens)
+    for t in tokens:
+        if not PATH_TOKEN_RE.match(t) or ("/" not in t and "." not in t):
+            return False
+        if t.startswith("/") or t.startswith("~") or ".." in Path(t).parts:
+            return False
+        if root is not None and not (root / t).is_file():
+            return False
+    return True
+
+
+# Prohibited transcription shapes in PROSE (outside citation fields): exit-code
+# phrases, exit arrows, backticked spans containing whitespace (commands),
+# shell flags, and runner + script-file tokens.
+PROSE_TRANSCRIPTION_RES = [
+    re.compile(r"\bexit(?:ed|s)?\s*(?:code\s*)?(?:=|:)?\s*\d+\b", re.I),
+    re.compile(r"→\s*`?\d+`?"),
+    re.compile(r"`[^`\n]*\s[^`\n]*`"),
+    re.compile(r"(?<![\w/])--?[A-Za-z][\w-]*(?:=\S+)?(?=\s|$)"),
+    re.compile(r"\b(?:python3?|node|npx|npm|pnpm|yarn|pytest|go|cargo|make|bash|sh|ruby|java|dotnet)\s+\S+\.(?:py|js|ts|sh|rb|go|rs|java|cs)\b"),
+]
+
+
+def prose_transcription(line: str) -> bool:
+    return any(r.search(line) for r in PROSE_TRANSCRIPTION_RES)
 
 
 def entry_ok(body: str) -> bool:
@@ -424,8 +450,8 @@ def validate(log_path: Path) -> tuple[int, list]:
     for no, val in tc:
         if not val:
             errors.add("g", f"line {no}: `**Test configuration**` is empty")
-        elif not test_configuration_ok(val):
-            errors.add("g", f"line {no}: `**Test configuration**` must list configuration file paths (path tokens only, e.g. `pyproject.toml`, `package.json`) or `Not applicable — <reason>`; commands, exits, and receipts are rejected (got {val[:60]!r})")
+        elif not test_configuration_ok(val, root):
+            errors.add("g", f"line {no}: `**Test configuration**` must list existing repo-relative configuration files (e.g. `pyproject.toml`, `package.json`) or `Not applicable — <reason>`; absolute paths, commands, exits, and receipts are rejected (got {val[:60]!r})")
     # `**Baseline runs**:` — exactly once, every occurrence entry-shaped
     runs = field_lines(baseline, "Baseline runs")
     if len(runs) != 1:
@@ -492,10 +518,17 @@ def validate(log_path: Path) -> tuple[int, list]:
             cells = [c.strip() for c in s_.strip("|").split("|")]
             if len(cells) == 4 and EVIDENCE_CELL_RE.match(cells[3]):
                 cited.update(RECEIPT_RE.findall(cells[3]))
-    # Receipt tokens anywhere outside a validated citation entry are rejected
+    # Receipt tokens anywhere outside a validated citation entry are rejected,
+    # and so are prohibited transcription shapes in prose (Deviations, Files
+    # changed, Summary, …): commands and exits live only in the export.
     for no, line in lines:
-        if no not in citation_lines and RECEIPT_RE.search(line):
+        if no in citation_lines or re.match(r"^#{1,2} ", line):
+            continue
+        if RECEIPT_RE.search(line):
             errors.add("g", f"line {no}: receipt token outside a citation field (Receipts bullets, Baseline runs, Final lines, Evidence cells) — transcriptions cannot hide in Deviations or prose")
+        elif prose_transcription(line) and not re.match(r"^-\s*\*\*(Test configuration|Test Plan|Evidence export|Evidence run|Evidence schema)\*\*", line.strip()) \
+                and not line.strip().startswith("**"):
+            errors.add("g", f"line {no}: command/exit transcription shape in prose (exit codes, `→`, backticked commands, flags, runner + script) — commands and exits live only in the export")
 
     # A citation in a section must be an attempt of that section's phase
     for rc, phase, no in phase_citations:

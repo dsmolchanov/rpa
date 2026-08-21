@@ -150,7 +150,7 @@ def log_text(sc: Scenario, *, title, rows, red, green, refactor, final_focused, 
         "",
         "- **Pre-existing worktree changes**: None",
         "- **Relevant implementation state**: absent (synthetic fixture)",
-        "- **Test configuration**: `fixtures/junit_stub.py`",
+        f"- **Test configuration**: `{sc.plan_rel}`",
         "- **Baseline runs**: Not run — synthetic fixture",
         "- **Pre-existing relevant failures**: None observed",
         "",
@@ -341,11 +341,17 @@ def main() -> int:
     log_mut("receipts-label-hybrid", lambda t: t.replace("- **Receipts**:", "- **Receipts** and exits:"))
     # legacy command-string field instead of Test configuration
     log_mut("test-configuration-command", lambda t: t.replace(
-        "- **Test configuration**: `fixtures/junit_stub.py`",
+        f"- **Test configuration**: `{sc.plan_rel}`",
         "- **Test command(s)**: `python3 junit_stub.py` → `0`", 1))
+    # absolute executable + script in Test configuration
+    log_mut("test-configuration-absolute", lambda t: t.replace(
+        f"- **Test configuration**: `{sc.plan_rel}`", "- **Test configuration**: /usr/bin/python3 tests/test_x.py", 1))
+    # bare (unquoted) command/exit transcription in a prose field
+    log_mut("bare-transcription-in-prose", lambda t: t.replace(
+        "- **Deviations**: None\n\n## Green Phase", "- **Deviations**: python3 test.py exited 0\n\n## Green Phase", 1))
     # Test configuration with the phase-style "Not run" fallback (only Not applicable is allowed)
     log_mut("test-configuration-not-run", lambda t: t.replace(
-        "- **Test configuration**: `fixtures/junit_stub.py`", "- **Test configuration**: Not run — no configuration", 1))
+        f"- **Test configuration**: `{sc.plan_rel}`", "- **Test configuration**: Not run — no configuration", 1))
     # Baseline runs citing a red receipt as baseline evidence
     log_mut("baseline-cites-red", lambda t: t.replace(
         "- **Baseline runs**: Not run — synthetic fixture", f"- **Baseline runs**: `receipt {r1['receipt']}`: baseline ok", 1))
@@ -354,7 +360,7 @@ def main() -> int:
         f"  - `receipt {r2['receipt']}`: AssertionError: missing behavior", f"  - `receipt {g2['receipt']}`: AssertionError: missing behavior", 1))
     # unquoted command in the exact Test configuration field
     log_mut("test-configuration-unquoted-command", lambda t: t.replace(
-        "- **Test configuration**: `fixtures/junit_stub.py`",
+        f"- **Test configuration**: `{sc.plan_rel}`",
         "- **Test configuration**: python3 junit_stub.py --case sample.test_x", 1))
     # a receipt moved out of the Receipts bullets into Deviations
     log_mut("receipt-outside-citation", lambda t: t.replace(
