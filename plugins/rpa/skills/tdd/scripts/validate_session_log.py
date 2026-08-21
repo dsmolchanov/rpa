@@ -77,8 +77,15 @@ def test_configuration_ok(value: str, root: Path | None = None) -> bool:
             return False
         if t.startswith("/") or t.startswith("~") or ".." in Path(t).parts:
             return False
-        if root is not None and not (root / t).is_file():
-            return False
+        if root is not None:
+            p = root / t
+            if os.path.islink(p) or not p.is_file():
+                return False
+            real = Path(os.path.realpath(p))
+            try:
+                real.relative_to(Path(os.path.realpath(root)))
+            except ValueError:
+                return False
     return True
 
 
@@ -88,19 +95,26 @@ def test_configuration_ok(value: str, root: Path | None = None) -> bool:
 PROSE_TRANSCRIPTION_RES = [
     re.compile(r"\bexit(?:ed|s)?\s*(?:code\s*)?(?:=|:)?\s*\d+\b", re.I),
     re.compile(r"→\s*`?\d+`?"),
-    re.compile(r"`[^`\n]*\s[^`\n]*`"),
     re.compile(r"(?<![\w/])--?[A-Za-z][\w-]*(?:=\S+)?(?=\s|$)"),
     re.compile(r"\b(?:python3?|node|npx|npm|pnpm|yarn|pytest|go|cargo|make|bash|sh|ruby|java|dotnet)\s+\S+\.(?:py|js|ts|sh|rb|go|rs|java|cs)\b"),
 ]
 
 
 def prose_transcription(line: str) -> bool:
+    # backticked spans are paired left-to-right; a span containing whitespace
+    # is a command, a single token (path, sha, branch) is not
+    if any(re.search(r"\s", span) for span in re.findall(r"`([^`\n]*)`", line)):
+        return True
     return any(r.search(line) for r in PROSE_TRANSCRIPTION_RES)
 
 
 def entry_ok(body: str) -> bool:
-    """A receipt-only citation or an anchored not-run entry — nothing else."""
-    return bool(CITATION_RE.match(body) or NOT_RUN_ENTRY_RE.match(body))
+    """A receipt-only citation or an anchored not-run entry — nothing else;
+    the free-text part may not carry a transcription shape either."""
+    if not (CITATION_RE.match(body) or NOT_RUN_ENTRY_RE.match(body)):
+        return False
+    summary = re.sub(r"^`receipt [0-9a-f]{12}`:\s*", "", body)
+    return not prose_transcription(summary)
 PHASE_RANK = {"baseline": 0, "red": 1, "green": 2, "refactor": 3, "final": 4}
 TERMINAL_KINDS = ("finished", "error", "interrupted", "timeout")
 INTENT_FIELDS = ("ref", "n", "run", "workflow", "phase", "case", "because", "risk", "argv", "cwd",
@@ -526,9 +540,8 @@ def validate(log_path: Path) -> tuple[int, list]:
             continue
         if RECEIPT_RE.search(line):
             errors.add("g", f"line {no}: receipt token outside a citation field (Receipts bullets, Baseline runs, Final lines, Evidence cells) — transcriptions cannot hide in Deviations or prose")
-        elif prose_transcription(line) and not re.match(r"^-\s*\*\*(Test configuration|Test Plan|Evidence export|Evidence run|Evidence schema)\*\*", line.strip()) \
-                and not line.strip().startswith("**"):
-            errors.add("g", f"line {no}: command/exit transcription shape in prose (exit codes, `→`, backticked commands, flags, runner + script) — commands and exits live only in the export")
+        elif prose_transcription(line) and not re.match(r"^-\s*\*\*Test configuration\*\*:", line.strip()):
+            errors.add("g", f"line {no}: command/exit transcription shape in prose or metadata (exit codes, `→`, backticked commands, flags, runner + script) — commands and exits live only in the export")
 
     # A citation in a section must be an attempt of that section's phase
     for rc, phase, no in phase_citations:
@@ -583,10 +596,13 @@ def validate(log_path: Path) -> tuple[int, list]:
             errors.add("h", f"{r[0]}: disposition {r[2]!r} not in {sorted(DISPOSITIONS)}")
         cell = r[3].strip()
         if r[2] in EVIDENCE_DISPOSITIONS:
-            if not EVIDENCE_CELL_RE.match(cell):
+            if not EVIDENCE_CELL_RE.match(cell) or prose_transcription(re.sub(r"^receipt [0-9a-f]{12} — ", "", cell)):
                 errors.add("j", f"{r[0]}: Evidence cell must be `receipt <hex12> — <salient assertion>` with no transcribed command/exit (got {cell[:60]!r})")
-        elif not REASON_CELL_RE.match(cell):
+        elif not REASON_CELL_RE.match(cell) or prose_transcription(cell):
             errors.add("h", f"{r[0]}: {r[2]} needs a plain reason in the Evidence cell (no receipt tokens, commands or exits)")
+        for extra in r[:3]:
+            if prose_transcription(extra):
+                errors.add("h", f"{r[0]}: transcription shape in a disposition cell ({extra[:40]!r})")
     for name in ("red", "green", "refactor"):
         bullets = [re.sub(r"^-\s*", "", b) for _, b in commands_bullets(phase_sections[name])]
         has_receipt = any(CITATION_RE.match(b) for b in bullets)

@@ -3,10 +3,10 @@
 **Date**: 2026-08-21T00:00:00+00:00
 **Test Plan**: `thoughts/shared/tests/2026-08-21-TEST-valid.md`
 **Requested Phase**: `full`
-**Repository State**: `master 3242d4798cb1`
+**Repository State**: `master` at `cb7f5a97a1cf`
 **Evidence schema**: `tdd/1`
-**Evidence run**: `tdd-20260821-222526-cb157441-1c968e`
-**Evidence export**: `receipts/tdd-20260821-222526-cb157441-1c968e.json`
+**Evidence run**: `tdd-20260821-223129-cb157441-d85be6`
+**Evidence export**: `receipts/tdd-20260821-223129-cb157441-d85be6.json`
 
 ## Baseline
 
@@ -20,24 +20,24 @@
 
 | Case ID | Layer | Disposition | Evidence |
 |---|---|---|---|
-| U-01 | unit | Green | receipt fdcbb8beb9e5 — sample.test_x passes |
-| U-02 | unit | Green | receipt b648655a1e46 — sample.test_y passes |
+| U-01 | unit | Green | receipt 220ca9960b72 — sample.test_x passes |
+| U-02 | unit | Green | receipt fa3eecda2be6 — sample.test_y passes |
 
 ## Red Phase
 
 - **Files changed**: tests/test_x.py
 - **Receipts**:
-  - `receipt 0b4d545aff31`: AssertionError: missing behavior
-  - `receipt d83ee42c9706`: AssertionError: missing behavior
+  - `receipt 975eaa6f4466`: AssertionError: missing behavior
+  - `receipt f48475e8d57d`: AssertionError: missing behavior
 - **Deviations**: None
 
 ## Green Phase
 
 - **Files changed**: src/x.py
 - **Receipts**:
-  - `receipt dee1b0015349`: red inputs changed during Green; restored and re-ran
-  - `receipt fdcbb8beb9e5`: 1 passed
-- **Deviations**: receipt b648655a1e46 · `python3 junit_stub.py` → `0`
+  - `receipt 3af8b04e68a8`: red inputs changed during Green; restored and re-ran
+  - `receipt 220ca9960b72`: 1 passed
+- **Deviations**: receipt fa3eecda2be6 · `python3 junit_stub.py` → `0`
 
 ## Refactor Phase
 
@@ -47,7 +47,7 @@
 
 ## Final Verification
 
-- **Focused suite**: `receipt 7ef8d2224468`: ok
+- **Focused suite**: `receipt 1c89acf0d812`: ok
 - **Relevant surrounding suite**: Not applicable — synthetic fixture
 - **Coverage policy**: Not applicable — no threshold defined
 - **Manual verification**: Not applicable — no manual cases

@@ -141,7 +141,7 @@ def log_text(sc: Scenario, *, title, rows, red, green, refactor, final_focused, 
         f"**Date**: {DATE}T00:00:00+00:00",
         f"**Test Plan**: `{sc.plan_rel}`",
         "**Requested Phase**: `full`",
-        f"**Repository State**: `master {sc.head[:12]}`",
+        f"**Repository State**: `master` at `{sc.head[:12]}`",
         "**Evidence schema**: `tdd/1`",
         f"**Evidence run**: `{sc.run_id}`",
         f"**Evidence export**: `receipts/{sc.run_id}.json`",
@@ -343,6 +343,16 @@ def main() -> int:
     log_mut("test-configuration-command", lambda t: t.replace(
         f"- **Test configuration**: `{sc.plan_rel}`",
         "- **Test command(s)**: `python3 junit_stub.py` → `0`", 1))
+    # unquoted transcription inside a citation summary
+    log_mut("citation-unquoted-transcription", lambda t: t.replace(
+        f"  - `receipt {g1['receipt']}`: 1 passed", f"  - `receipt {g1['receipt']}`: python3 test.py exited 0", 1))
+    # bare transcription inside a disposition Evidence cell
+    log_mut("disposition-bare-transcription", lambda t: t.replace(
+        f"| U-01 | unit | Green | receipt {g1['receipt']} — sample.test_x passes |",
+        f"| U-01 | unit | Green | receipt {g1['receipt']} — python3 test.py exited 0 |", 1))
+    # transcription in a bold metadata line
+    log_mut("metadata-transcription", lambda t: t.replace(
+        f"**Repository State**: `master` at `{sc.head[:12]}`", "**Repository State**: python3 test.py exited 0", 1))
     # absolute executable + script in Test configuration
     log_mut("test-configuration-absolute", lambda t: t.replace(
         f"- **Test configuration**: `{sc.plan_rel}`", "- **Test configuration**: /usr/bin/python3 tests/test_x.py", 1))
@@ -388,6 +398,12 @@ def main() -> int:
     other_plan = PLAN_TEMPLATE.format(title="other", date=DATE) + "\n<!-- different content -->\n"
     write_case(out, "plan-mismatch", sc, text.replace(sc.plan_rel, f"thoughts/shared/tests/{DATE}-TEST-other.md"), export,
                extra_files={f"{DATE}-TEST-other.md": other_plan})
+
+    # test-configuration-symlink: the named configuration file is a symlink outside the repo
+    case = write_case(out, "test-configuration-symlink", sc,
+                      text.replace(f"- **Test configuration**: `{sc.plan_rel}`",
+                                   "- **Test configuration**: `thoughts/shared/tests/cfg.toml`", 1), export)
+    os.symlink("/etc/hosts", case / "thoughts" / "shared" / "tests" / "cfg.toml")
 
     # export-symlink: the export path is a symlink to the real file elsewhere
     case = write_case(out, "export-symlink", sc, text, export)

@@ -18,7 +18,7 @@ accepts no other layout.
 **Date**: [ISO date/time with timezone]
 **Test Plan**: `[repo-relative path — binding: the export's plan_path and plan sha must match]`
 **Requested Phase**: `[red | green | refactor | full]`
-**Repository State**: `[branch and commit at start]`
+**Repository State**: `[branch]` at `[commit]`
 **Evidence schema**: `tdd/1`
 **Evidence run**: `[run id from evidence.py begin]`
 **Evidence export**: `receipts/<run-id>.json`
@@ -109,7 +109,11 @@ accepts no other layout.
   fields alone. Prose fields may not carry transcription shapes either: no
   exit-code phrases (`exit 0`, `exited 1`), no `→`, no backticked commands
   (a backticked span with whitespace), no shell flags, no runner + script
-  tokens (`python3 x.py`, `npx jest …`).
+  tokens (`python3 x.py`, `npx jest …`). The same shapes are rejected inside
+  citation summaries, Evidence/reason cells, and the bold metadata lines
+  (`**Repository State**` is two single tokens: `` `branch` at `commit` ``).
+  Configuration files named in `**Test configuration**` must be regular
+  files (not symlinks) resolving inside the repository.
   `valid Red` cites a `red` receipt of that case with `outcome PASS` and a
   `test … fail-with` claim (or, marked `stand-in`, the pair `exit != 0` +
   `contains`); `Green` cites a `green` receipt of that case whose `--requires`
