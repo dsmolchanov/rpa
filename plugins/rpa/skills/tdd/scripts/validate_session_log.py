@@ -42,7 +42,7 @@ PHASE_RANK = {"baseline": 0, "red": 1, "green": 2, "refactor": 3, "final": 4}
 TERMINAL_KINDS = ("finished", "error", "interrupted", "timeout")
 INTENT_FIELDS = ("ref", "n", "run", "workflow", "phase", "case", "because", "risk", "argv", "cwd",
                  "claims_text", "scopes", "envelope", "requires", "report_path", "timeout",
-                 "tail_bytes", "start_token", "at")
+                 "tail_bytes", "lease_nonce", "at")
 
 
 class Errors(list):

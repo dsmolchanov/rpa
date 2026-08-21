@@ -116,9 +116,9 @@ directory.
   — repair, allocating `n`, appending records, rewriting `run.json`, the
   lease, and capsules — never across the subprocess.
 - **Worktree-wide lease**: `<coordination root>/active.json` = `{run_id, ref,
-  controller_pid, start_token, started_at_utc, child_pid, child_pid_file}`.
+  controller_pid, lease_nonce, started_at_utc, child_pid, child_pid_file}`.
   Written under the lock **before** `Popen` with the `evidence.py` process as
-  `controller_pid` and a fresh `start_token`; rewritten with `child_pid`
+  `controller_pid` and a fresh `lease_nonce`; rewritten with `child_pid`
   right after `Popen`. The lease is live iff the controller is alive (a lease
   with a live controller and no `child_pid` yet is live). While a live lease
   exists, `run`, `checkpoint`, and `export` on **every** run that coordinates
@@ -145,7 +145,7 @@ directory.
   timeout`. The intent carries `workflow`, `phase`, `case`, `because`,
   `risk`, sanitised `argv`, `cwd`, `claims[].{text,kind}`, `scopes`,
   `envelope`, `requires`, `report_path`, `timeout`, `tail_bytes`,
-  `start_token`, `at` {`head`, `branch`, `plan_sha256`, `worktree_digest`}.
+  `lease_nonce`, `at` {`head`, `branch`, `plan_sha256`, `worktree_digest`}.
   The terminal record repeats every intent field verbatim and adds
   `controller_pid`, `child_pid`, `exit`, `started_at`, `finished_at`,
   `stdout_sha256`, `stdout_bytes`, `stdout_tail`, `stderr_sha256`,

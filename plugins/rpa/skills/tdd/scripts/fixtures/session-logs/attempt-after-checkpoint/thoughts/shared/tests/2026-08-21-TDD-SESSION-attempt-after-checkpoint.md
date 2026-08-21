@@ -3,10 +3,10 @@
 **Date**: 2026-08-21T00:00:00+00:00
 **Test Plan**: `thoughts/shared/tests/2026-08-21-TEST-attempt-after-checkpoint.md`
 **Requested Phase**: `full`
-**Repository State**: `master a82918cdc140`
+**Repository State**: `master 6c33f6072446`
 **Evidence schema**: `tdd/1`
-**Evidence run**: `tdd-20260821-162223-2b98673d-88eb5e`
-**Evidence export**: `receipts/tdd-20260821-162223-2b98673d-88eb5e.json`
+**Evidence run**: `tdd-20260821-162737-2b98673d-75dc1e`
+**Evidence export**: `receipts/tdd-20260821-162737-2b98673d-75dc1e.json`
 
 ## Baseline
 
@@ -19,15 +19,15 @@
 
 | Case ID | Layer | Disposition | Evidence |
 |---|---|---|---|
-| U-01 | unit | valid Red | receipt 80e2a5872b67 — AssertionError at the assertion |
-| U-02 | unit | valid Red | receipt ec64acb52011 — AssertionError at the assertion |
+| U-01 | unit | valid Red | receipt 2ec17626ba78 — AssertionError at the assertion |
+| U-02 | unit | valid Red | receipt 961f73783be8 — AssertionError at the assertion |
 
 ## Red Phase
 
 - **Files changed**: tests/test_x.py
 - **Commands and exits**:
-  - `receipt 80e2a5872b67` · `python3 /Users/dmitrymolchanov/Programs/rpa/plugins/rpa/skills/tdd/scripts/fixtures/junit_stub.py --out={report} --case sample.test_x --outcome failure --message AssertionError: missing behavior` → `1`: AssertionError: missing behavior
-  - `receipt ec64acb52011` · `python3 /Users/dmitrymolchanov/Programs/rpa/plugins/rpa/skills/tdd/scripts/fixtures/junit_stub.py --out={report} --case sample.test_y --outcome failure --message AssertionError: missing behavior` → `1`: AssertionError: missing behavior
+  - `receipt 2ec17626ba78` · `python3 /Users/dmitrymolchanov/Programs/rpa/plugins/rpa/skills/tdd/scripts/fixtures/junit_stub.py --out={report} --case sample.test_x --outcome failure --message AssertionError: missing behavior` → `1`: AssertionError: missing behavior
+  - `receipt 961f73783be8` · `python3 /Users/dmitrymolchanov/Programs/rpa/plugins/rpa/skills/tdd/scripts/fixtures/junit_stub.py --out={report} --case sample.test_y --outcome failure --message AssertionError: missing behavior` → `1`: AssertionError: missing behavior
 - **Deviations**: None
 
 ## Green Phase

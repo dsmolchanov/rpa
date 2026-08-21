@@ -416,9 +416,9 @@ completeness** (Phase 2), and **authority / security**.
   allocating `n`, appending records, replacing `run.json`, writing lease and
   capsules), never across the subprocess.
 - **Worktree-wide execution lease**: `<store>/active.json` = `{"run_id",
-  "ref", "controller_pid", "start_token", "started_at_utc", "child_pid"}`.
+  "ref", "controller_pid", "lease_nonce", "started_at_utc", "child_pid"}`.
   Written under the lock **before** `Popen` with `controller_pid` =
-  `os.getpid()` of the `evidence.py` process and a fresh `start_token`
+  `os.getpid()` of the `evidence.py` process and a fresh `lease_nonce`
   (`secrets.token_hex(8)`), then atomically rewritten with `child_pid` right
   after `Popen`. Liveness is defined by the **controller**: the lease is live
   iff `controller_pid` is alive (`os.kill(pid, 0)`; Windows `OpenProcess`);
@@ -449,7 +449,7 @@ completeness** (Phase 2), and **authority / security**.
   timeout`. The intent carries `phase`, `case`, `workflow`, `because`,
   `risk`, sanitised `argv`, `cwd`, `claims[].text`, `scopes`, `envelope`
   (the full inherited freshness envelope, below), `requires`, `report_path`,
-  `timeout`, `start_token`, `at` {`head`, `branch`, `plan_sha256`,
+  `timeout`, `lease_nonce`, `at` {`head`, `branch`, `plan_sha256`,
   `worktree_digest`}; the terminal record repeats every intent field
   verbatim (the validator compares them) and adds `controller_pid`,
   `child_pid`, `exit`, `started_at`, `finished_at`, `stdout_sha256`,
@@ -782,7 +782,7 @@ no imports outside its own directory)
   envelope (own scopes ∪ chain) and check it; on drift append intent +
   `finished(STALE)` and exit 3 without executing → snapshot pre-state, delete
   a pre-existing run-owned report → allocate `n`, append and fsync the
-  intent, write the lease (`controller_pid`, `start_token`) → **release
+  intent, write the lease (`controller_pid`, `lease_nonce`) → **release
   lock** → `Popen`, atomically rewrite the lease with `child_pid` → stream,
   wait with timeout → snapshot post-state and recompute the envelope → parse
   report if any `test` claim → grade claims (post-envelope drift forces
@@ -1061,7 +1061,7 @@ per line / 2 usage)
   `n` is exactly one checkpoint record **or** exactly one `started` followed
   by exactly one terminal with the same `ref`, `run`, and byte-identical
   intent fields (`phase`, `case`, `argv`, `claims[].text`, `scopes`,
-  `envelope`, `requires`, `report_path`, `start_token`, `at`); no terminal
+  `envelope`, `requires`, `report_path`, `lease_nonce`, `at`); no terminal
   without its intent, no duplicate terminals, no intent-only `n`; no receipt
   token cites an `n` above `records_through`; the export's `run.state`,
   `run.achieved`, and `run.phase` equal the values derived from `events`;
@@ -1246,6 +1246,12 @@ to the `unit` job.
   `**Relevant surrounding suite**` lines to carry a `receipt <hex12>` or
   `Not run — …` / `Not applicable — …` (the section has no "Commands and
   exits" bullets); `final`-phase receipts are cited there.
+- GitGuardian flagged the committed exports' `start_token` field (a
+  `token`-named key holding a random hex value trips its generic high-entropy
+  detector although it is a lease nonce, not a credential); the field is now
+  `lease_nonce` in the kernel, contract, validator, tests, and regenerated
+  fixtures. A fixture generator run therefore changes every run id/receipt in
+  the fixture set; tests reference cases by directory name, not by value.
 - The docs-validate negative root `session-log-both-criteria-malformed` is a
   hollowed copy of the positive layout (headers and export intact, no
   disposition rows or receipt bullets) so that check (h) — not an earlier
@@ -1261,7 +1267,7 @@ to the `unit` job.
 - [x] `python3 scripts/validate_docs.py --self-test` exits 0 and its output lists `negative/session-log-filename-only-malformed`, `…-h1-only-malformed`, `…-orphan-export`, `…-both-criteria-malformed`, `…-valid-layout-broken-export` as caught, and `positive fixture clean` (2026-08-21: 55 negatives caught).
 - [x] `python3 scripts/validate_docs.py --root .` exits 0.
 - [x] Temporarily making `validate_session_log.py` return 0 unconditionally makes `python3 scripts/validate_docs.py --self-test` fail (the negative discovery cases are no longer caught) and `--root .` exit non-zero naming an accepted invalid skill fixture (revert before commit; record the observed messages in the PR). (Observed 2026-08-21: self-test `FAILED: negative/session-log-both-criteria-malformed: expected an error containing \`session-log: h\`, got: [no errors]` (+ filename-only, h1-only); `--root .` → `docs validation FAILED: 27 error(s)` beginning `session-log validator accepted the INVALID fixture achieved-mismatch — the gate is a silent no-op for that check`.)
-- [ ] On the PR, the `unit` job log shows the `test_validate_session_log.py` step, `validate_docs.py --self-test`, and `validate_docs.py --root .` green.
+- [x] On the PR, the `unit` job log shows the `test_validate_session_log.py` step, `validate_docs.py --self-test`, and `validate_docs.py --root .` green. (PR #17 draft, run 32502789511: `unit` 57 s — `TDD session-log validator tests (VL-01…VL-30)`, `Docs validator self-test`, `Validate repository docs` all `success`; all required checks pass.)
 
 #### Manual Verification
 

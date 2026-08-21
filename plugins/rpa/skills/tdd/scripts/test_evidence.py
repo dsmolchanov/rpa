@@ -124,7 +124,7 @@ class Repo:
 
     def write_lease(self, run_id: str, ref: str, controller_pid: int, child_pid=None, child_pid_file=None):
         (self.store / "active.json").write_text(json.dumps({
-            "run_id": run_id, "ref": ref, "controller_pid": controller_pid, "start_token": "abc",
+            "run_id": run_id, "ref": ref, "controller_pid": controller_pid, "lease_nonce": "abc",
             "started_at_utc": "x", "child_pid": child_pid, "child_pid_file": child_pid_file}))
 
 

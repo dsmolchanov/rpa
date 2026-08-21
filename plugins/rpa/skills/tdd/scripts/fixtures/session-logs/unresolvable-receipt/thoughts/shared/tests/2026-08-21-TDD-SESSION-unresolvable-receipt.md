@@ -3,10 +3,10 @@
 **Date**: 2026-08-21T00:00:00+00:00
 **Test Plan**: `thoughts/shared/tests/2026-08-21-TEST-valid.md`
 **Requested Phase**: `full`
-**Repository State**: `master 22d746eac940`
+**Repository State**: `master 4b6238c2fbdc`
 **Evidence schema**: `tdd/1`
-**Evidence run**: `tdd-20260821-162219-cb157441-5a8dd5`
-**Evidence export**: `receipts/tdd-20260821-162219-cb157441-5a8dd5.json`
+**Evidence run**: `tdd-20260821-162734-cb157441-1700e5`
+**Evidence export**: `receipts/tdd-20260821-162734-cb157441-1700e5.json`
 
 ## Baseline
 
@@ -19,24 +19,24 @@
 
 | Case ID | Layer | Disposition | Evidence |
 |---|---|---|---|
-| U-01 | unit | Green | receipt f46661b08fbe — sample.test_x passes |
-| U-02 | unit | Green | receipt 8f2a7f470ba1 — sample.test_y passes |
+| U-01 | unit | Green | receipt 8c0c4aead082 — sample.test_x passes |
+| U-02 | unit | Green | receipt 3da5485aab47 — sample.test_y passes |
 
 ## Red Phase
 
 - **Files changed**: tests/test_x.py
 - **Commands and exits**:
   - `receipt deadbeef0000` · `python3 /Users/dmitrymolchanov/Programs/rpa/plugins/rpa/skills/tdd/scripts/fixtures/junit_stub.py --out={report} --case sample.test_x --outcome failure --message AssertionError: missing behavior` → `1`: AssertionError: missing behavior
-  - `receipt 9c29a6035464` · `python3 /Users/dmitrymolchanov/Programs/rpa/plugins/rpa/skills/tdd/scripts/fixtures/junit_stub.py --out={report} --case sample.test_y --outcome failure --message AssertionError: missing behavior` → `1`: AssertionError: missing behavior
+  - `receipt 04e0b05a85ae` · `python3 /Users/dmitrymolchanov/Programs/rpa/plugins/rpa/skills/tdd/scripts/fixtures/junit_stub.py --out={report} --case sample.test_y --outcome failure --message AssertionError: missing behavior` → `1`: AssertionError: missing behavior
 - **Deviations**: None
 
 ## Green Phase
 
 - **Files changed**: src/x.py
 - **Commands and exits**:
-  - `receipt b52d71bf5a48` · `python3 /Users/dmitrymolchanov/Programs/rpa/plugins/rpa/skills/tdd/scripts/fixtures/junit_stub.py --out={report} --case sample.test_x --outcome pass` → `STALE`: red inputs changed during Green; restored and re-ran
-  - `receipt f46661b08fbe` · `python3 /Users/dmitrymolchanov/Programs/rpa/plugins/rpa/skills/tdd/scripts/fixtures/junit_stub.py --out={report} --case sample.test_x --outcome pass` → `0`: 1 passed
-  - `receipt 8f2a7f470ba1` · `python3 /Users/dmitrymolchanov/Programs/rpa/plugins/rpa/skills/tdd/scripts/fixtures/junit_stub.py --out={report} --case sample.test_y --outcome pass` → `0`: 1 passed
+  - `receipt f7d9d1e5ecec` · `python3 /Users/dmitrymolchanov/Programs/rpa/plugins/rpa/skills/tdd/scripts/fixtures/junit_stub.py --out={report} --case sample.test_x --outcome pass` → `STALE`: red inputs changed during Green; restored and re-ran
+  - `receipt 8c0c4aead082` · `python3 /Users/dmitrymolchanov/Programs/rpa/plugins/rpa/skills/tdd/scripts/fixtures/junit_stub.py --out={report} --case sample.test_x --outcome pass` → `0`: 1 passed
+  - `receipt 3da5485aab47` · `python3 /Users/dmitrymolchanov/Programs/rpa/plugins/rpa/skills/tdd/scripts/fixtures/junit_stub.py --out={report} --case sample.test_y --outcome pass` → `0`: 1 passed
 - **Deviations**: None
 
 ## Refactor Phase
@@ -47,7 +47,7 @@
 
 ## Final Verification
 
-- **Focused suite**: `receipt 7dc375078bf2` · `python3 -c print(ok)` → `0`: ok
+- **Focused suite**: `receipt 8f5244f57588` · `python3 -c print(ok)` → `0`: ok
 - **Relevant surrounding suite**: Not applicable — synthetic fixture
 - **Coverage policy**: Not applicable — no threshold defined
 - **Manual verification**: Not applicable — no manual cases

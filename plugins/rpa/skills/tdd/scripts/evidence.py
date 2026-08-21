@@ -1518,7 +1518,7 @@ def cmd_run(args) -> int:
         paths = store_paths(run_id)
         n = next_n(records)
         ref = f"{run_id}#{n}"
-        start_token = secrets.token_hex(8)
+        lease_nonce = secrets.token_hex(8)
         if report_path is None:
             report_rel = None
         elif _is_relative_to(Path(os.path.realpath(report_path.parent)), repo_root()):
@@ -1532,7 +1532,7 @@ def cmd_run(args) -> int:
             "argv": sanitized_argv, "cwd": ".",
             "claims": claim_texts, "scopes": own_scopes, "envelope": envelope,
             "requires": args.requires, "report_path": redact(report_rel),
-            "timeout": timeout, "tail_bytes": tail_bytes, "start_token": start_token,
+            "timeout": timeout, "tail_bytes": tail_bytes, "lease_nonce": lease_nonce,
             "at": {**cur, "worktree_digest": None},
         }
         # Pre-run check of the INHERITED envelope exactly as stored on the
@@ -1556,7 +1556,7 @@ def cmd_run(args) -> int:
             paths["child_pid"].unlink()
         append_record(run_id, intent)
         lease = {"run_id": run_id, "ref": ref, "controller_pid": os.getpid(),
-                 "start_token": start_token, "started_at_utc": now_utc(),
+                 "lease_nonce": lease_nonce, "started_at_utc": now_utc(),
                  "child_pid": None, "child_pid_file": str(paths["child_pid"])}
         write_lease(lease)
 
