@@ -31,6 +31,11 @@ Hooks run with the user's environment and can execute project commands.
 Review them before enabling. Sensitive-path protection belongs in Claude
 Code `permissions.deny`, not in a post-hoc hook.
 
+Test-run evidence for the TDD workflow is produced by
+`skills/tdd/scripts/evidence.py`, not by a hook: the loop is closed at the
+artifact gate (`skills/tdd/scripts/validate_session_log.py`, bound in CI by
+`scripts/validate_docs.py`), so no hook needs to intercept test commands.
+
 Run the focused smoke tests with:
 
 ```bash

@@ -67,6 +67,29 @@ EXCLUDED_PARTS = {".git", "node_modules"}
 FIXTURES_REL = Path("tests/fixtures/docs-validate")
 # The plugin subtree in the real repo; fixture repos keep components at root.
 PLUGIN_REL = Path("plugins/rpa")
+# The TDD session-log validator is resolved from the REAL repository that owns
+# this script (not from the root being validated), so the docs-validate fixture
+# roots exercise the production binding with the production validator.
+SESSION_LOG_VALIDATOR = (
+    Path(__file__).resolve().parents[1]
+    / "plugins" / "rpa" / "skills" / "tdd" / "scripts" / "validate_session_log.py"
+)
+# Session logs are discovered by the contract's mandatory file name shape
+# (skills/tdd/references/session-log-contract.md) AND by their H1.
+SESSION_LOG_NAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-TDD-SESSION-.+\.md$")
+SESSION_LOG_H1 = "# TDD Session:"
+# Fixture cases the session-log validator must be proven against (one
+# directory each under skills/tdd/scripts/fixtures/session-logs/).
+SESSION_LOG_FIXTURE_CASES = (
+    "valid", "valid-continuing", "missing-receipt", "unresolvable-receipt",
+    "manual-as-green", "heading-order", "run-mismatch", "nonpass-disposition",
+    "fenced-heading", "html-comment-heading", "broken-chain", "missing-checkpoint",
+    "hollow", "uncited-attempt", "inline-comment-hidden", "standin-exit-only", "tampered-export",
+    "trimmed-export", "intent-deleted", "duplicate-terminal", "ref-mismatch",
+    "unsealed-complete", "achieved-mismatch", "partial-cases", "plan-mismatch",
+    "export-traversal", "export-absolute", "export-symlink",
+    "attempt-after-checkpoint", "record-after-final",
+)
 
 
 def plugin_root(root):
@@ -602,6 +625,115 @@ def check_artifact_validator(root, errors):
             "metadata block — contiguity is not enforced")
 
 
+def _first_h1(path):
+    """First `# ` heading outside fenced code and HTML comments, or ""."""
+    in_fence = None
+    in_comment = False
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if in_comment:
+            if "-->" in line:
+                in_comment = False
+            continue
+        if in_fence is not None:
+            if stripped.startswith(in_fence):
+                in_fence = None
+            continue
+        m = re.match(r"^\s{0,3}(```+|~~~+)", line)
+        if m:
+            in_fence = m.group(1)[0] * 3
+            continue
+        if stripped.startswith("<!--") and "-->" not in stripped[4:]:
+            in_comment = True
+            continue
+        if re.match(r"^# \S", line):
+            return stripped
+    return ""
+
+
+def _run_session_log_validator(log):
+    import subprocess as _sp
+    import sys as _sys
+    return _sp.run([_sys.executable, str(SESSION_LOG_VALIDATOR), str(log)],
+                   capture_output=True, text=True)
+
+
+def check_session_log_validator(root, errors):
+    """The TDD session-log contract is bound as an executable gate: the
+    validator must accept every `valid*` fixture case and reject every other
+    case (conventions §4). A missing case is itself an error."""
+    skill_root = plugin_root(root) / "skills" / "tdd"
+    if not skill_root.is_dir():
+        # not_applicable: the tdd skill package is absent from this root
+        # (e.g. the self-test fixture repos).
+        return
+    validator = skill_root / "scripts" / "validate_session_log.py"
+    fixtures = skill_root / "scripts" / "fixtures" / "session-logs"
+    if not validator.is_file() or not fixtures.is_dir():
+        errors.append("session-log validator or its fixtures missing under "
+                      "skills/tdd/scripts/")
+        return
+    cases = {d.name: d for d in fixtures.iterdir()
+             if d.is_dir() and not d.name.startswith((".", "_"))}
+    for name in SESSION_LOG_FIXTURE_CASES:
+        if name not in cases:
+            errors.append(f"session-log fixture case missing: {name}")
+    for name, case in sorted(cases.items()):
+        logs = sorted((case / "thoughts" / "shared" / "tests").glob("*-TDD-SESSION-*.md"))
+        if len(logs) != 1:
+            errors.append(f"session-log fixture {name}: expected exactly one log, found {len(logs)}")
+            continue
+        res = _run_session_log_validator(logs[0])
+        if name.startswith("valid"):
+            if res.returncode != 0:
+                errors.append(f"session-log validator rejects the VALID fixture {name}: "
+                              f"{(res.stdout + res.stderr)[:200]}")
+        elif res.returncode == 0:
+            errors.append(f"session-log validator accepted the INVALID fixture {name} — "
+                          "the gate is a silent no-op for that check")
+        elif res.returncode != 1:
+            errors.append(f"session-log validator crashed on fixture {name}: "
+                          f"{(res.stdout + res.stderr)[:200]}")
+
+
+def check_session_logs(root, errors):
+    """Every committed TDD session log validates and every committed receipt
+    export is cited by one. Discovery = contract file name ∪ H1 (de-duplicated
+    by path); the validator, not discovery, checks the H1 and layout."""
+    tests_dir = root / "thoughts" / "shared" / "tests"
+    if not tests_dir.is_dir():
+        return  # not_applicable: nothing to validate
+    logs = {}
+    for path in sorted(tests_dir.glob("*.md")):
+        if SESSION_LOG_NAME_RE.match(path.name) or _first_h1(path).startswith(SESSION_LOG_H1):
+            logs[path.resolve()] = path
+    receipts_dir = tests_dir / "receipts"
+    receipts = sorted(receipts_dir.glob("*.json")) if receipts_dir.is_dir() else []
+    if not logs and not receipts:
+        return  # not_applicable
+    if not SESSION_LOG_VALIDATOR.is_file():
+        errors.append(f"session-log validator missing: {SESSION_LOG_VALIDATOR}")
+        return
+    cited = set()
+    for _, log in sorted(logs.items()):
+        rel = log.relative_to(root)
+        res = _run_session_log_validator(log)
+        if res.returncode != 0:
+            lines = [l for l in (res.stdout + res.stderr).splitlines() if l.strip()] or ["rejected"]
+            for line in lines:
+                errors.append(f"{rel}: {line}")
+        m = re.search(r"\*\*Evidence export\*\*:\s*`?([^`\s]+)", log.read_text(encoding="utf-8"))
+        if m:
+            cited.add((log.parent / m.group(1)).resolve())
+    for rcpt in receipts:
+        if rcpt.resolve() not in cited:
+            errors.append(f"{rcpt.relative_to(root)}: orphan export — no session log cites it")
+
+
 def validate(root, exclude_fixtures=True):
     errors = []
     check_commands(root, errors)
@@ -609,6 +741,8 @@ def validate(root, exclude_fixtures=True):
     check_skills(root, errors)
     check_json_manifests(root, errors)
     check_artifact_validator(root, errors)
+    check_session_log_validator(root, errors)
+    check_session_logs(root, errors)
     check_links(root, errors, exclude_fixtures=exclude_fixtures)
     return errors
 
