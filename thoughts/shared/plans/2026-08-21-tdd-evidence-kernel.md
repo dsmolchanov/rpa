@@ -1001,7 +1001,7 @@ step to the `unit` job (after the hooks test step).
 - [x] Smoke in this repo: `python3 plugins/rpa/skills/tdd/scripts/evidence.py begin --plan thoughts/shared/plans/2026-08-21-tdd-evidence-kernel.md` then
       `python3 plugins/rpa/skills/tdd/scripts/evidence.py run --phase baseline --because "smoke" --expect 'exit == 0' --expect 'diff none' -- python3 plugins/rpa/hooks/test_run_gate.py`
       prints `outcome=PASS`, exits 0, and `git status --porcelain` shows no new files (`.rpa/evidence/` self-ignored, `.rpa/.gitignore` absent).
-- [ ] On the PR, the `unit` job log shows the `test_evidence.py` step executed and green.
+- [x] On the PR, the `unit` job log shows the `test_evidence.py` step executed and green. (PR #17 draft, run 32500765670: `unit` 54 s, step `TDD evidence kernel tests (EV-01…EV-34)` success; `integration` 1 m 8 s; all required checks pass.)
 
 #### Manual Verification
 
