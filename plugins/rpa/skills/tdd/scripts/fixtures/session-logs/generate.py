@@ -343,6 +343,15 @@ def main() -> int:
     log_mut("test-configuration-command", lambda t: t.replace(
         "- **Test configuration**: `fixtures/junit_stub.py`",
         "- **Test command(s)**: `python3 junit_stub.py` → `0`", 1))
+    # Test configuration with the phase-style "Not run" fallback (only Not applicable is allowed)
+    log_mut("test-configuration-not-run", lambda t: t.replace(
+        "- **Test configuration**: `fixtures/junit_stub.py`", "- **Test configuration**: Not run — no configuration", 1))
+    # Baseline runs citing a red receipt as baseline evidence
+    log_mut("baseline-cites-red", lambda t: t.replace(
+        "- **Baseline runs**: Not run — synthetic fixture", f"- **Baseline runs**: `receipt {r1['receipt']}`: baseline ok", 1))
+    # a phase section citing another phase's receipt (Red citing the Green receipt)
+    log_mut("phase-cites-other-phase", lambda t: t.replace(
+        f"  - `receipt {r2['receipt']}`: AssertionError: missing behavior", f"  - `receipt {g2['receipt']}`: AssertionError: missing behavior", 1))
     # unquoted command in the exact Test configuration field
     log_mut("test-configuration-unquoted-command", lambda t: t.replace(
         "- **Test configuration**: `fixtures/junit_stub.py`",
@@ -444,6 +453,9 @@ def main() -> int:
     sc2, text2, export2, refs2 = build_continuing(out)
     write_case(out, "valid-continuing", sc2, text2, export2)
     write_case(out, "unsealed-complete", sc2, text2.replace("- **Cycle state**: `continuing`", "- **Cycle state**: `complete`"), export2)
+    # two not-run bullets in a skipped phase (exactly one is required)
+    write_case(out, "two-not-run-bullets", sc2, text2.replace(
+        "  - Not run — phase red requested\n", "  - Not run — phase red requested\n  - Not applicable — also skipped\n", 1), export2)
     r1b = refs2["r1"]
     e, old, new = edit_pair(export2, r1b["ref"], lambda r: r.update(claims=[
         {"text": "exit != 0", "kind": "exit_ne0"} if r["kind"] == "started"

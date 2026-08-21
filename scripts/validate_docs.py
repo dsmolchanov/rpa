@@ -93,6 +93,7 @@ SESSION_LOG_FIXTURE_CASES = (
     "contradictory-not-run", "extra-disposition-cell",
     "receipts-label-hybrid", "test-configuration-command", "duplicate-baseline-runs",
     "test-configuration-unquoted-command", "receipt-outside-citation",
+    "test-configuration-not-run", "baseline-cites-red", "phase-cites-other-phase", "two-not-run-bullets",
     "attempt-after-checkpoint", "record-after-final",
 )
 

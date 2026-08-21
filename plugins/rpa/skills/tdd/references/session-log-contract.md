@@ -100,7 +100,10 @@ accepts no other layout.
   tokens such as `pyproject.toml`, `package.json`, `Makefile`, or `Not
   applicable — <reason>`; no commands, exits, or receipts),
   `**Baseline runs**:`, `**Receipts**:` per phase, `**Focused suite**:` and
-  `**Relevant surrounding suite**:`. Receipt tokens may appear **only** in
+  `**Relevant surrounding suite**:`. A citation resolves to an attempt of the
+  section it sits in (`**Baseline runs**` → `baseline` receipts, a phase's
+  `**Receipts**` → that phase, Final lines → `final`). Receipt tokens may
+  appear **only** in
   those citation fields and in Evidence cells — never in Deviations, Files
   changed, Summary, or prose — and attempt coverage is computed from those
   fields alone.

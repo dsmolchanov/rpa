@@ -58,8 +58,11 @@ REASON_CELL_RE = re.compile(r"^(?!.*\breceipt [0-9a-f]{12}\b)[^`→·\n]*\S$")
 PATH_TOKEN_RE = re.compile(r"^[A-Za-z0-9_@+./-]+$")
 
 
+NOT_APPLICABLE_ENTRY_RE = re.compile(r"^(?!.*\breceipt [0-9a-f]{12}\b)Not applicable — [^`→·\n]*\S$")
+
+
 def test_configuration_ok(value: str) -> bool:
-    if NOT_RUN_ENTRY_RE.match(value):
+    if NOT_APPLICABLE_ENTRY_RE.match(value):
         return True
     if RECEIPT_RE.search(value) or "→" in value or "·" in value:
         return False
@@ -386,6 +389,9 @@ def validate(log_path: Path) -> tuple[int, list]:
     # check g / the Evidence cells); receipt tokens anywhere else are rejected.
     cited = set()
     citation_lines = set()
+    # (receipt, section phase, lineno) for every validated citation — each must
+    # resolve to an attempt of THAT phase (checked once by_receipt is known)
+    phase_citations = []
     by_receipt = {r.get("receipt"): r for r in events if r.get("kind") in TERMINAL_KINDS + ("checkpoint",)}
 
     # (f) recomputation and checkpoint binding
@@ -431,7 +437,9 @@ def validate(log_path: Path) -> tuple[int, list]:
         elif not entry_ok(body):
             errors.add("g", f"line {no}: `**Baseline runs**` must be `` `receipt <hex12>`: <summary> `` or `Not run — <reason>` (entire entry)")
         else:
-            cited.update(RECEIPT_RE.findall(body))
+            for rc in RECEIPT_RE.findall(body):
+                cited.add(rc)
+                phase_citations.append((rc, "baseline", no))
     active = False
     for bno, bline in baseline:
         bs = bline.strip()
@@ -444,7 +452,9 @@ def validate(log_path: Path) -> tuple[int, list]:
             if not entry_ok(b):
                 errors.add("g", f"line {bno}: baseline receipt bullet must be receipt-only or `Not run — <reason>` (entire entry)")
             else:
-                cited.update(RECEIPT_RE.findall(b))
+                for rc in RECEIPT_RE.findall(b):
+                    cited.add(rc)
+                    phase_citations.append((rc, "baseline", bno))
         elif active and re.match(r"^-\s", bs):
             active = False
     for name in ("red", "green", "refactor"):
@@ -458,7 +468,9 @@ def validate(log_path: Path) -> tuple[int, list]:
                 errors.add("g", f"line {no}: receipt bullet must be receipt-only — `` `receipt <hex12>`: <salient result> `` "
                                 f"or an entire `Not run — <reason>` / `Not applicable — <reason>` entry; argv and exits live in the export")
             else:
-                cited.update(RECEIPT_RE.findall(body))
+                for rc in RECEIPT_RE.findall(body):
+                    cited.add(rc)
+                    phase_citations.append((rc, name, no))
     for key in ("Focused suite", "Relevant surrounding suite"):
         found = field_lines(phase_sections["final"], key)
         if len(found) != 1:
@@ -468,7 +480,9 @@ def validate(log_path: Path) -> tuple[int, list]:
             if not entry_ok(body):
                 errors.add("g", f"line {no}: `**{key}**` must be `` `receipt <hex12>`: <summary> `` or an entire `Not run — <reason>` / `Not applicable — <reason>` entry")
             else:
-                cited.update(RECEIPT_RE.findall(body))
+                for rc in RECEIPT_RE.findall(body):
+                    cited.add(rc)
+                    phase_citations.append((rc, "final", no))
     # Evidence cells are citation locations too (validated in check j below)
     disp_body = find_section(secs, "## Case Dispositions")
     for no, line in disp_body:
@@ -482,6 +496,14 @@ def validate(log_path: Path) -> tuple[int, list]:
     for no, line in lines:
         if no not in citation_lines and RECEIPT_RE.search(line):
             errors.add("g", f"line {no}: receipt token outside a citation field (Receipts bullets, Baseline runs, Final lines, Evidence cells) — transcriptions cannot hide in Deviations or prose")
+
+    # A citation in a section must be an attempt of that section's phase
+    for rc, phase, no in phase_citations:
+        rec = by_receipt.get(rc)
+        if rec is None:
+            continue  # reported by (e)
+        if rec.get("kind") == "checkpoint" or rec.get("phase") != phase:
+            errors.add("g", f"line {no}: receipt {rc} is a {rec.get('kind')} record of phase {rec.get('phase')!r}, cited as {phase} evidence")
 
     # (d, tail) no citation may point beyond records_through; (e) receipts resolve
     for rc in sorted(cited):
@@ -537,9 +559,9 @@ def validate(log_path: Path) -> tuple[int, list]:
         has_receipt = any(CITATION_RE.match(b) for b in bullets)
         # The skipped-phase alternative must be stated IN the Receipts bullets —
         # text elsewhere in the section (e.g. Deviations) does not count.
-        marked_not_run = bool(bullets) and all(NOT_RUN_ENTRY_RE.match(b) for b in bullets)
+        marked_not_run = len(bullets) == 1 and bool(NOT_RUN_ENTRY_RE.match(bullets[0]))
         if not has_receipt and not marked_not_run:
-            errors.add("h", f"{name} section has no receipt citations under `**Receipts**:` and its bullets are not all `Not run — …` / `Not applicable — …` entries")
+            errors.add("h", f"{name} section has no receipt citations under `**Receipts**:` and is not a single `Not run — …` / `Not applicable — …` bullet")
         # The skipped-phase alternative is exclusive: a phase that cites receipts
         # cannot also claim it was not run.
         if has_receipt and any(NOT_RUN_ENTRY_RE.match(b) for b in bullets):
