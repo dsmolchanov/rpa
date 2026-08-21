@@ -337,6 +337,16 @@ def main() -> int:
     log_mut("extra-disposition-cell", lambda t: t.replace(
         f"| U-01 | unit | Green | receipt {g1['receipt']} — sample.test_x passes |",
         f"| U-01 | unit | Green | receipt {g1['receipt']} — sample.test_x passes | `python3 test.py` → `0` |", 1))
+    # hybrid/renamed field label
+    log_mut("receipts-label-hybrid", lambda t: t.replace("- **Receipts**:", "- **Receipts** and exits:"))
+    # legacy command-string field instead of Test configuration
+    log_mut("test-configuration-command", lambda t: t.replace(
+        "- **Test configuration**: fixtures/junit_stub.py (synthetic; no runner config)",
+        "- **Test command(s)**: `python3 junit_stub.py` → `0`", 1))
+    # an earlier duplicate Baseline runs line smuggling a transcription
+    log_mut("duplicate-baseline-runs", lambda t: t.replace(
+        "- **Baseline runs**: Not run — synthetic fixture",
+        f"- **Baseline runs**: `receipt {f1['receipt']}`: ok · `python3 test.py` → `0`\n- **Baseline runs**: Not run — synthetic fixture", 1))
     # colon-prefixed transcription: a valid receipt citation whose summary is an argv/exit
     log_mut("colon-transcription", lambda t: t.replace(
         f"  - `receipt {g1['receipt']}`: 1 passed", f"  - `receipt {g1['receipt']}`: `python3 tests.py` → `0`", 1))

@@ -91,6 +91,7 @@ SESSION_LOG_FIXTURE_CASES = (
     "trailing-transcription", "baseline-runs-missing", "not-run-with-transcription",
     "colon-transcription", "disposition-transcription", "receipts-field-missing",
     "contradictory-not-run", "extra-disposition-cell",
+    "receipts-label-hybrid", "test-configuration-command", "duplicate-baseline-runs",
     "attempt-after-checkpoint", "record-after-final",
 )
 

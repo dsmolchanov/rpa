@@ -94,7 +94,11 @@ accepts no other layout.
   Rows have exactly four cells. Every phase section carries the
   `**Receipts**:` field; a skipped phase states `Not run — <reason>` as that
   field's **only** bullet — a phase that cites receipts may not also carry a
-  not-run bullet.
+  not-run bullet. Field labels are matched **exactly** (`- **Label**:`, colon
+  immediately after the emphasis) and each mandatory field appears exactly
+  once: `**Test configuration**:` (paths only — no commands, exits, or
+  receipts), `**Baseline runs**:`, `**Receipts**:` per phase, `**Focused
+  suite**:` and `**Relevant surrounding suite**:`.
   `valid Red` cites a `red` receipt of that case with `outcome PASS` and a
   `test … fail-with` claim (or, marked `stand-in`, the pair `exit != 0` +
   `contains`); `Green` cites a `green` receipt of that case whose `--requires`

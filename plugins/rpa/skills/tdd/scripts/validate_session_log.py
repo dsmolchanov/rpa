@@ -187,16 +187,28 @@ def table_rows(body: list) -> list:
     return rows
 
 
+def field_lines(body: list, label: str) -> list:
+    """(lineno, value) for every top-level `- **<label>**:` line — the label is
+    matched EXACTLY (colon immediately after the closing emphasis)."""
+    pat = re.compile(r"^-\s*\*\*" + re.escape(label) + r"\*\*:\s*(.*)$")
+    out = []
+    for no, line in body:
+        m = pat.match(line.strip())
+        if m:
+            out.append((no, m.group(1).strip()))
+    return out
+
+
 def has_receipts_field(body: list) -> bool:
-    return any(re.match(r"^-\s*\*\*Receipts\*\*", line.strip()) for _, line in body)
+    return len(field_lines(body, "Receipts")) == 1
 
 
 def commands_bullets(body: list) -> list:
-    """Nested bullets under a `**Receipts**:` line."""
+    """Nested bullets under the exact `**Receipts**:` line."""
     out, active = [], False
     for no, line in body:
         s = line.strip()
-        if re.match(r"^-\s*\*\*Receipts\*\*", s):
+        if re.match(r"^-\s*\*\*Receipts\*\*:", s):
             active = True
             continue
         if active:
@@ -388,51 +400,56 @@ def validate(log_path: Path) -> tuple[int, list]:
     phase_sections = {"red": find_section(secs, "## Red Phase"), "green": find_section(secs, "## Green Phase"),
                       "refactor": find_section(secs, "## Refactor Phase"), "final": find_section(secs, "## Final Verification")}
     baseline = find_section(secs, "## Baseline")
-    baseline_runs = None
+    # `**Test configuration**:` — exactly once, paths only (no command shapes)
     for no, line in baseline:
-        s_ = line.strip().lstrip("- ").strip()
-        if s_.startswith("**Baseline runs**"):
-            baseline_runs = (no, s_[len("**Baseline runs**"):].lstrip(": ").strip())
-    if baseline_runs is None:
-        errors.add("g", "Baseline lacks `**Baseline runs**` (receipt-only citation or `Not run — …`)")
-    else:
-        no, body = baseline_runs
+        if re.match(r"^-\s*\*\*Test command\(s\)\*\*", line.strip()):
+            errors.add("g", f"line {no}: legacy `**Test command(s)**` field — record `**Test configuration**:` (paths only); commands are not transcribed")
+    tc = field_lines(baseline, "Test configuration")
+    if len(tc) != 1:
+        errors.add("g", f"Baseline must carry exactly one `**Test configuration**:` line (found {len(tc)})")
+    for no, val in tc:
+        spans = re.findall(r"`([^`]*)`", val)
+        if not val:
+            errors.add("g", f"line {no}: `**Test configuration**` is empty")
+        elif RECEIPT_RE.search(val) or "→" in val or "·" in val or any(re.search(r"\s", sp) for sp in spans):
+            errors.add("g", f"line {no}: `**Test configuration**` lists configuration file paths only — no commands, exits, or receipts")
+    # `**Baseline runs**:` — exactly once, every occurrence entry-shaped
+    runs = field_lines(baseline, "Baseline runs")
+    if len(runs) != 1:
+        errors.add("g", f"Baseline must carry exactly one `**Baseline runs**:` line (found {len(runs)})")
+    for no, body in runs:
         if not body:
             errors.add("g", f"line {no}: `**Baseline runs**` is empty")
         elif not entry_ok(body):
             errors.add("g", f"line {no}: `**Baseline runs**` must be `` `receipt <hex12>`: <summary> `` or `Not run — <reason>` (entire entry)")
-        # nested bullets under Baseline runs carry the same shape
-        active = False
-        for bno, bline in baseline:
-            bs = bline.strip()
-            if bs.lstrip("- ").startswith("**Baseline runs**"):
-                active = True
-                continue
-            if active and re.match(r"^\s{2,}-\s", bline):
-                b = re.sub(r"^-\s*", "", bs)
-                if not entry_ok(b):
-                    errors.add("g", f"line {bno}: baseline receipt bullet must be receipt-only or `Not run — <reason>` (entire entry)")
-            elif active and re.match(r"^-\s", bs):
-                active = False
+    active = False
+    for bno, bline in baseline:
+        bs = bline.strip()
+        if re.match(r"^-\s*\*\*Baseline runs\*\*:", bs):
+            active = True
+            continue
+        if active and re.match(r"^\s{2,}-\s", bline):
+            b = re.sub(r"^-\s*", "", bs)
+            if not entry_ok(b):
+                errors.add("g", f"line {bno}: baseline receipt bullet must be receipt-only or `Not run — <reason>` (entire entry)")
+        elif active and re.match(r"^-\s", bs):
+            active = False
     for name in ("red", "green", "refactor"):
-        if not has_receipts_field(phase_sections[name]):
-            errors.add("g", f"{name} section lacks the mandatory `**Receipts**:` field")
+        n_fields = len(field_lines(phase_sections[name], "Receipts"))
+        if n_fields != 1:
+            errors.add("g", f"{name} section must carry exactly one `**Receipts**:` field (found {n_fields}; the label is matched exactly)")
         for no, bullet in commands_bullets(phase_sections[name]):
             body = re.sub(r"^-\s*", "", bullet)
             if not entry_ok(body):
                 errors.add("g", f"line {no}: receipt bullet must be receipt-only — `` `receipt <hex12>`: <salient result> `` "
                                 f"or an entire `Not run — <reason>` / `Not applicable — <reason>` entry; argv and exits live in the export")
     for key in ("Focused suite", "Relevant surrounding suite"):
-        val = None
-        for no, line in phase_sections["final"]:
-            s = line.strip().lstrip("- ").strip()
-            if s.startswith(f"**{key}**"):
-                val = s
-                body = s[len(f"**{key}**"):].lstrip(": ").strip()
-                if not entry_ok(body):
-                    errors.add("g", f"line {no}: `**{key}**` must be `` `receipt <hex12>`: <summary> `` or an entire `Not run — <reason>` / `Not applicable — <reason>` entry")
-        if val is None:
-            errors.add("g", f"Final Verification lacks `**{key}**`")
+        found = field_lines(phase_sections["final"], key)
+        if len(found) != 1:
+            errors.add("g", f"Final Verification must carry exactly one `**{key}**:` line (found {len(found)})")
+        for no, body in found:
+            if not entry_ok(body):
+                errors.add("g", f"line {no}: `**{key}**` must be `` `receipt <hex12>`: <summary> `` or an entire `Not run — <reason>` / `Not applicable — <reason>` entry")
 
     # (h) case completeness
     planned: list = []
