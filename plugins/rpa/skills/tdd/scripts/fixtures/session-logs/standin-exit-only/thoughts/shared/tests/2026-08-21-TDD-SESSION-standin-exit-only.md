@@ -3,44 +3,45 @@
 **Date**: 2026-08-21T00:00:00+00:00
 **Test Plan**: `thoughts/shared/tests/2026-08-21-TEST-valid-continuing.md`
 **Requested Phase**: `full`
-**Repository State**: `master 9997b2e92c22`
+**Repository State**: `master de4981ea27c5`
 **Evidence schema**: `tdd/1`
-**Evidence run**: `tdd-20260821-165937-9b05d2c1-71f430`
-**Evidence export**: `receipts/tdd-20260821-165937-9b05d2c1-71f430.json`
+**Evidence run**: `tdd-20260821-213008-9b05d2c1-8d92fc`
+**Evidence export**: `receipts/tdd-20260821-213008-9b05d2c1-8d92fc.json`
 
 ## Baseline
 
 - **Pre-existing worktree changes**: None
 - **Relevant implementation state**: absent (synthetic fixture)
 - **Test command(s)**: `python3 junit_stub.py --out={report} --case <case> --outcome <outcome>`
+- **Baseline runs**: Not run — synthetic fixture
 - **Pre-existing relevant failures**: None observed
 
 ## Case Dispositions
 
 | Case ID | Layer | Disposition | Evidence |
 |---|---|---|---|
-| U-01 | unit | valid Red | receipt 25c46d8251ef — stand-in: non-zero exit |
-| U-02 | unit | valid Red | receipt affc0a3613a6 — AssertionError at the assertion |
+| U-01 | unit | valid Red | receipt 2378af3dace5 — stand-in: non-zero exit |
+| U-02 | unit | valid Red | receipt 7eda10e8839e — AssertionError at the assertion |
 
 ## Red Phase
 
 - **Files changed**: tests/test_x.py
-- **Commands and exits**:
-  - `receipt 25c46d8251ef` · `python3 /Users/dmitrymolchanov/Programs/rpa/plugins/rpa/skills/tdd/scripts/fixtures/junit_stub.py --out={report} --case sample.test_x --outcome failure --message AssertionError: missing behavior` → `1`: AssertionError: missing behavior
-  - `receipt affc0a3613a6` · `python3 /Users/dmitrymolchanov/Programs/rpa/plugins/rpa/skills/tdd/scripts/fixtures/junit_stub.py --out={report} --case sample.test_y --outcome failure --message AssertionError: missing behavior` → `1`: AssertionError: missing behavior
+- **Receipts**:
+  - `receipt 2378af3dace5`: AssertionError: missing behavior
+  - `receipt 7eda10e8839e`: AssertionError: missing behavior
 - **Deviations**: None
 
 ## Green Phase
 
 - **Files changed**: None
-- **Commands and exits**:
+- **Receipts**:
   - Not run — phase red requested
 - **Deviations**: Not run — phase red requested
 
 ## Refactor Phase
 
 - **Refactorings applied**: Not run — phase red requested
-- **Commands and exits**:
+- **Receipts**:
   - Not run — phase red requested
 
 ## Final Verification

@@ -27,7 +27,8 @@ accepts no other layout.
 
 - **Pre-existing worktree changes**: [paths, or None]
 - **Relevant implementation state**: [existing/partial/absent with evidence]
-- **Test command(s)**: `[exact commands discovered in repo]`
+- **Test command(s)**: `[commands as discovered in repository config — what the repo defines, not what was run]`
+- **Baseline runs**: `receipt <hex12>`: [salient result] (or Not run — reason)
 - **Pre-existing relevant failures**: [evidence, or None observed]
 
 ## Case Dispositions
@@ -39,27 +40,27 @@ accepts no other layout.
 ## Red Phase
 
 - **Files changed**: [paths]
-- **Commands and exits**:
-  - `receipt <hex12>` · `[argv]` → `[exit]`: [expected failure signal]
+- **Receipts**:
+  - `receipt <hex12>`: [expected failure signal]
 - **Deviations**: [plan drift/duplicate/blocked case, or None]
 
 ## Green Phase
 
 - **Files changed**: [paths]
-- **Commands and exits**:
-  - `receipt <hex12>` · `[argv]` → `[exit]`: [test summary]
+- **Receipts**:
+  - `receipt <hex12>`: [test summary]
 - **Deviations**: [or Not run — reason]
 
 ## Refactor Phase
 
 - **Refactorings applied**: [behavior-preserving changes, or Not applicable — reason]
-- **Commands and exits**:
-  - `receipt <hex12>` · `[argv]` → `[exit]`: [test summary] (or Not run — reason / Not applicable — reason)
+- **Receipts**:
+  - `receipt <hex12>`: [test summary] (or Not run — reason / Not applicable — reason)
 
 ## Final Verification
 
-- **Focused suite**: `receipt <hex12>` · `[argv]` → `[exit]`: [summary] (or Not run — reason)
-- **Relevant surrounding suite**: `receipt <hex12>` · `[argv]` → `[exit]`: [summary] (or Not applicable — reason)
+- **Focused suite**: `receipt <hex12>`: [summary] (or Not run — reason)
+- **Relevant surrounding suite**: `receipt <hex12>`: [summary] (or Not applicable — reason)
 - **Coverage policy**: [measured result and configured threshold, or Not applicable — reason]
 - **Manual verification**: [outcome, pending authority, or Not applicable — reason]
 
@@ -76,9 +77,12 @@ accepts no other layout.
 
 - Every executed verification is a receipt from `scripts/evidence.py`, run
   with the phase and case it belongs to; the log cites the receipt and the
-  exported receipt file. **Every** attempt in the export is cited — a receipt
-  that is `STALE`, `SURPRISE`, `TIMEOUT` or `INTERRUPTED` is evidence of a
-  corrected belief, not something to omit. Concise salient output is enough.
+  exported receipt file. Citations are **receipt-only**: `` `receipt <hex12>`:
+  <salient result> `` — the argv, exit status, outputs, and timestamps are
+  persisted by the kernel in the export and are never transcribed into the
+  log. **Every** attempt in the export is cited — a receipt that is `STALE`,
+  `SURPRISE`, `TIMEOUT` or `INTERRUPTED` is evidence of a corrected belief,
+  not something to omit.
 - Exactly one Case Dispositions row per case id in the test plan's §3 tables.
   `valid Red` cites a `red` receipt of that case with `outcome PASS` and a
   `test … fail-with` claim (or, marked `stand-in`, the pair `exit != 0` +

@@ -3,51 +3,52 @@
 **Date**: 2026-08-21T00:00:00+00:00
 **Test Plan**: `thoughts/shared/tests/2026-08-21-TEST-valid.md`
 **Requested Phase**: `full`
-**Repository State**: `master 7e865ad47ec6`
+**Repository State**: `master 00aaee4ccd12`
 **Evidence schema**: `tdd/1`
-**Evidence run**: `tdd-20260821-165934-cb157441-e61be9`
-**Evidence export**: `receipts/tdd-20260821-165934-cb157441-e61be9.json`
+**Evidence run**: `tdd-20260821-213006-cb157441-0f6d9a`
+**Evidence export**: `receipts/tdd-20260821-213006-cb157441-0f6d9a.json`
 
 ## Baseline
 
 - **Pre-existing worktree changes**: None
 - **Relevant implementation state**: absent (synthetic fixture)
 - **Test command(s)**: `python3 junit_stub.py --out={report} --case <case> --outcome <outcome>`
+- **Baseline runs**: Not run — synthetic fixture
 - **Pre-existing relevant failures**: None observed
 
 ## Case Dispositions
 
 | Case ID | Layer | Disposition | Evidence |
 |---|---|---|---|
-| U-01 | unit | Green | receipt 7a0757cdf067 — sample.test_x passes |
-| U-02 | unit | Green | receipt cbabd3d0e2f1 — sample.test_y passes |
+| U-01 | unit | Green | receipt b82705360fc9 — sample.test_x passes |
+| U-02 | unit | Green | receipt 28741c60a7d8 — sample.test_y passes |
 
 ## Red Phase
 
 - **Files changed**: tests/test_x.py
-- **Commands and exits**:
-  - `receipt ef00fa28bc1a` · `python3 /Users/dmitrymolchanov/Programs/rpa/plugins/rpa/skills/tdd/scripts/fixtures/junit_stub.py --out={report} --case sample.test_x --outcome failure --message AssertionError: missing behavior` → `1`: AssertionError: missing behavior
-  - `receipt 149f3981cbd5` · `python3 /Users/dmitrymolchanov/Programs/rpa/plugins/rpa/skills/tdd/scripts/fixtures/junit_stub.py --out={report} --case sample.test_y --outcome failure --message AssertionError: missing behavior` → `1`: AssertionError: missing behavior
+- **Receipts**:
+  - `receipt cd72f1607a91`: AssertionError: missing behavior
+  - `receipt 00924bf36260`: AssertionError: missing behavior
 - **Deviations**: None
 
 ## Green Phase
 
 - **Files changed**: src/x.py
-- **Commands and exits**:
-  - `receipt 6d35692435d1` · `python3 /Users/dmitrymolchanov/Programs/rpa/plugins/rpa/skills/tdd/scripts/fixtures/junit_stub.py --out={report} --case sample.test_x --outcome pass` → `STALE`: red inputs changed during Green; restored and re-ran
-  - `python3 /Users/dmitrymolchanov/Programs/rpa/plugins/rpa/skills/tdd/scripts/fixtures/junit_stub.py --out={report} --case sample.test_x --outcome pass` → `0`: 1 passed
-  - `receipt cbabd3d0e2f1` · `python3 /Users/dmitrymolchanov/Programs/rpa/plugins/rpa/skills/tdd/scripts/fixtures/junit_stub.py --out={report} --case sample.test_y --outcome pass` → `0`: 1 passed
+- **Receipts**:
+  - `receipt ec4df44a9fe8`: red inputs changed during Green; restored and re-ran
+  - 1 passed
+  - `receipt 28741c60a7d8`: 1 passed
 - **Deviations**: None
 
 ## Refactor Phase
 
 - **Refactorings applied**: Not applicable — Green code is already minimal
-- **Commands and exits**:
+- **Receipts**:
   - Not applicable — Green code is already minimal
 
 ## Final Verification
 
-- **Focused suite**: `receipt a2911d26f853` · `python3 -c print(ok)` → `0`: ok
+- **Focused suite**: `receipt 0faa604d22d2`: ok
 - **Relevant surrounding suite**: Not applicable — synthetic fixture
 - **Coverage policy**: Not applicable — no threshold defined
 - **Manual verification**: Not applicable — no manual cases

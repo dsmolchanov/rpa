@@ -36,6 +36,8 @@ EVIDENCE_DISPOSITIONS = {"valid Red", "Green", "refactored-green"}
 ACHIEVED_MAP = {"Red": "red", "Green": "green", "Refactored Green": "refactored-green", "Blocked": "blocked"}
 STATE_TO_ACHIEVED_PHASE = {"red": "Red", "green": "Green", "refactor": "Refactored Green"}
 RECEIPT_RE = re.compile(r"\breceipt ([0-9a-f]{12})\b")
+# Receipt-only citation shape: the argv/exit live in the export, never in the log.
+CITATION_RE = re.compile(r"^`receipt [0-9a-f]{12}`:\s*\S")
 CASE_ROW_RE = re.compile(r"^\|\s*([UIE]-\d+)\s*\|")
 NOT_RUN_RE = re.compile(r"(Not run|Not applicable) — \S")
 PHASE_RANK = {"baseline": 0, "red": 1, "green": 2, "refactor": 3, "final": 4}
@@ -169,11 +171,11 @@ def table_rows(body: list) -> list:
 
 
 def commands_bullets(body: list) -> list:
-    """Nested bullets under a `**Commands and exits**:` line."""
+    """Nested bullets under a `**Receipts**:` line."""
     out, active = [], False
     for no, line in body:
         s = line.strip()
-        if re.match(r"^-\s*\*\*Commands and exits\*\*", s):
+        if re.match(r"^-\s*\*\*Receipts\*\*", s):
             active = True
             continue
         if active:
@@ -366,16 +368,21 @@ def validate(log_path: Path) -> tuple[int, list]:
                       "refactor": find_section(secs, "## Refactor Phase"), "final": find_section(secs, "## Final Verification")}
     for name in ("red", "green", "refactor"):
         for no, bullet in commands_bullets(phase_sections[name]):
-            if not RECEIPT_RE.search(bullet) and not NOT_RUN_RE.search(bullet):
-                errors.add("g", f"line {no}: commands bullet without `receipt <hex12>` / `Not run — …` / `Not applicable — …`")
+            body = re.sub(r"^-\s*", "", bullet)
+            if NOT_RUN_RE.search(body):
+                continue
+            if not CITATION_RE.match(body):
+                errors.add("g", f"line {no}: receipt bullet must be receipt-only — `` `receipt <hex12>`: <salient result> `` "
+                                f"(or `Not run — …` / `Not applicable — …`); argv and exits live in the export")
     for key in ("Focused suite", "Relevant surrounding suite"):
         val = None
         for no, line in phase_sections["final"]:
             s = line.strip().lstrip("- ").strip()
             if s.startswith(f"**{key}**"):
                 val = s
-                if not RECEIPT_RE.search(s) and not NOT_RUN_RE.search(s):
-                    errors.add("g", f"line {no}: `**{key}**` needs `receipt <hex12>` / `Not run — …` / `Not applicable — …`")
+                body = s[len(f"**{key}**"):].lstrip(": ").strip()
+                if not NOT_RUN_RE.search(body) and not CITATION_RE.match(body):
+                    errors.add("g", f"line {no}: `**{key}**` must be `` `receipt <hex12>`: <summary> `` (or `Not run — …` / `Not applicable — …`)")
         if val is None:
             errors.add("g", f"Final Verification lacks `**{key}**`")
 
@@ -421,7 +428,7 @@ def validate(log_path: Path) -> tuple[int, list]:
         has_receipt = any(RECEIPT_RE.search(b) for _, b in bullets)
         section_text = "\n".join(l for _, l in body)
         if not has_receipt and not NOT_RUN_RE.search(section_text):
-            errors.add("h", f"{name} section has no receipt bullets and is not marked `Not run — …` / `Not applicable — …`")
+            errors.add("h", f"{name} section has no receipt bullets under `**Receipts**:` and is not marked `Not run — …` / `Not applicable — …`")
 
     # (i) coverage: every attempt of phases red/green/refactor/final is cited
     for rec in terminals:

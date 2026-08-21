@@ -3,44 +3,45 @@
 **Date**: 2026-08-21T00:00:00+00:00
 **Test Plan**: `thoughts/shared/tests/2026-08-21-TEST-missing-checkpoint.md`
 **Requested Phase**: `full`
-**Repository State**: `master 13cbb9bf0bc5`
+**Repository State**: `master b09b8f74cfe7`
 **Evidence schema**: `tdd/1`
-**Evidence run**: `tdd-20260821-165939-6db91041-1676ae`
-**Evidence export**: `receipts/tdd-20260821-165939-6db91041-1676ae.json`
+**Evidence run**: `tdd-20260821-213009-6db91041-8b4d04`
+**Evidence export**: `receipts/tdd-20260821-213009-6db91041-8b4d04.json`
 
 ## Baseline
 
 - **Pre-existing worktree changes**: None
 - **Relevant implementation state**: absent (synthetic fixture)
 - **Test command(s)**: `python3 junit_stub.py --out={report} --case <case> --outcome <outcome>`
+- **Baseline runs**: Not run — synthetic fixture
 - **Pre-existing relevant failures**: None observed
 
 ## Case Dispositions
 
 | Case ID | Layer | Disposition | Evidence |
 |---|---|---|---|
-| U-01 | unit | valid Red | receipt dce527b35c0e — AssertionError at the assertion |
-| U-02 | unit | valid Red | receipt d0e85b294dc9 — AssertionError at the assertion |
+| U-01 | unit | valid Red | receipt fcf4825c8c1e — AssertionError at the assertion |
+| U-02 | unit | valid Red | receipt ec6613942d62 — AssertionError at the assertion |
 
 ## Red Phase
 
 - **Files changed**: tests/test_x.py
-- **Commands and exits**:
-  - `receipt dce527b35c0e` · `python3 /Users/dmitrymolchanov/Programs/rpa/plugins/rpa/skills/tdd/scripts/fixtures/junit_stub.py --out={report} --case sample.test_x --outcome failure --message AssertionError: missing behavior` → `1`: AssertionError: missing behavior
-  - `receipt d0e85b294dc9` · `python3 /Users/dmitrymolchanov/Programs/rpa/plugins/rpa/skills/tdd/scripts/fixtures/junit_stub.py --out={report} --case sample.test_y --outcome failure --message AssertionError: missing behavior` → `1`: AssertionError: missing behavior
+- **Receipts**:
+  - `receipt fcf4825c8c1e`: AssertionError: missing behavior
+  - `receipt ec6613942d62`: AssertionError: missing behavior
 - **Deviations**: None
 
 ## Green Phase
 
 - **Files changed**: None
-- **Commands and exits**:
+- **Receipts**:
   - Not run — phase red requested
 - **Deviations**: Not run — phase red requested
 
 ## Refactor Phase
 
 - **Refactorings applied**: Not run — phase red requested
-- **Commands and exits**:
+- **Receipts**:
   - Not run — phase red requested
 
 ## Final Verification

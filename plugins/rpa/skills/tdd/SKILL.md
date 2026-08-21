@@ -159,8 +159,10 @@ The requested TDD scope is complete when:
 5. Only plan-scoped files, the session log, and its receipt export are
    changed; the local evidence store is not committed; pre-existing user
    changes remain intact.
-6. Commands, exit statuses, and salient outcomes are recorded exactly as
-   receipts; counts, coverage, duration, and LOC are never guessed.
+6. Commands, exit statuses, and outputs are persisted by the kernel in the
+   receipt export — never transcribed into the log; the log cites receipts
+   and salient outcomes; counts, coverage, duration, and LOC are never
+   guessed.
 7. The final response links the session log and states the achieved phase,
    verification results, deviations, and blockers.
 

@@ -129,9 +129,8 @@ class Scenario:
 
 
 def bullet(rec, summary):
-    argv = " ".join(Path(a).name if i == 0 else a for i, a in enumerate(rec["argv"]))
-    exit_str = "STALE" if rec["outcome"] == "STALE" else str(rec["exit"])
-    return f"  - `receipt {rec['receipt']}` · `{argv}` → `{exit_str}`: {summary}"
+    # Receipt-only: argv/exit live in the export, never in the log.
+    return f"  - `receipt {rec['receipt']}`: {summary}"
 
 
 def log_text(sc: Scenario, *, title, rows, red, green, refactor, final_focused, achieved, cycle,
@@ -152,6 +151,7 @@ def log_text(sc: Scenario, *, title, rows, red, green, refactor, final_focused, 
         "- **Pre-existing worktree changes**: None",
         "- **Relevant implementation state**: absent (synthetic fixture)",
         "- **Test command(s)**: `python3 junit_stub.py --out={report} --case <case> --outcome <outcome>`",
+        "- **Baseline runs**: Not run — synthetic fixture",
         "- **Pre-existing relevant failures**: None observed",
         "",
         "## Case Dispositions",
@@ -163,7 +163,7 @@ def log_text(sc: Scenario, *, title, rows, red, green, refactor, final_focused, 
         "## Red Phase",
         "",
         f"- **Files changed**: {files_red}",
-        "- **Commands and exits**:",
+        "- **Receipts**:",
         *red,
         "- **Deviations**: None",
         "",
@@ -171,12 +171,12 @@ def log_text(sc: Scenario, *, title, rows, red, green, refactor, final_focused, 
         "",
     ]
     if green:
-        lines += [f"- **Files changed**: {files_green}", "- **Commands and exits**:", *green, "- **Deviations**: None"]
+        lines += [f"- **Files changed**: {files_green}", "- **Receipts**:", *green, "- **Deviations**: None"]
     else:
-        lines += ["- **Files changed**: None", "- **Commands and exits**:",
+        lines += ["- **Files changed**: None", "- **Receipts**:",
                   "  - Not run — phase red requested", "- **Deviations**: Not run — phase red requested"]
     lines += ["", "## Refactor Phase", "", f"- **Refactorings applied**: {refactor}",
-              "- **Commands and exits**:", f"  - {refactor}", "", "## Final Verification", "",
+              "- **Receipts**:", f"  - {refactor}", "", "## Final Verification", "",
               f"- **Focused suite**: {final_focused}",
               "- **Relevant surrounding suite**: Not applicable — synthetic fixture",
               "- **Coverage policy**: Not applicable — no threshold defined",
@@ -234,7 +234,7 @@ def build_valid(out: Path, name: str = "valid"):
              bullet(g1, "1 passed"), bullet(g2, "1 passed")]
     text = log_text(sc, title=f"{name} fixture", rows=rows, red=red, green=green,
                     refactor="Not applicable — Green code is already minimal",
-                    final_focused=f"`receipt {f1['receipt']}` · `python3 -c print(ok)` → `0`: ok",
+                    final_focused=f"`receipt {f1['receipt']}`: ok",
                     achieved="Green", cycle="complete")
     return sc, text, export, {"r1": r1, "r2": r2, "stale": stale, "g1": g1, "g2": g2, "f1": f1}
 
@@ -299,7 +299,7 @@ def main() -> int:
     def log_mut(name, fn):
         write_case(out, name, sc, fn(text), export)
 
-    log_mut("missing-receipt", lambda t: t.replace(f"  - `receipt {g1['receipt']}` · ", "  - ", 1))
+    log_mut("missing-receipt", lambda t: t.replace(f"  - `receipt {g1['receipt']}`: ", "  - ", 1))
     log_mut("unresolvable-receipt", lambda t: t.replace(f"receipt {r1['receipt']}", "receipt deadbeef0000"))
     log_mut("heading-order", lambda t: t.replace("## Red Phase", "@@G@@").replace("## Green Phase", "## Red Phase").replace("@@G@@", "## Green Phase"))
     log_mut("nonpass-disposition", lambda t: t.replace(
