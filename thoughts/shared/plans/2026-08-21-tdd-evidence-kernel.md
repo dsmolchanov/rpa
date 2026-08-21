@@ -1213,14 +1213,54 @@ record-after-final (l); `VL-30` a log copied outside the
 **Changes**: add `python3 plugins/rpa/skills/tdd/scripts/test_validate_session_log.py`
 to the `unit` job.
 
+#### 6. Discovered during implementation (2026-08-21)
+
+- Fixtures are produced by a checked-in generator,
+  `scripts/fixtures/session-logs/generate.py`, which drives `evidence.py` in
+  throwaway repositories for the four real runs (`valid`, `valid-continuing`,
+  `missing-checkpoint` = red attempts with no `checkpoint red`,
+  `attempt-after-checkpoint` = a red attempt newer than the last `checkpoint
+  red`) and derives every other case by exactly one mutation; `--docs-positive
+  <root>` also writes the docs-validate positive layout. Fixture content is
+  committed; the generator exists so the set can be regenerated when the
+  kernel's record shape changes.
+- VL numbering as implemented (one `subTest` per case plus guards): VL-01
+  valid, VL-02 valid-continuing, VL-03 missing-receipt (g), VL-04
+  unresolvable-receipt (e), VL-05 manual-as-green (k), VL-06 heading-order (a),
+  VL-07 run-mismatch (c), VL-08 nonpass-disposition (j), VL-09 fenced-heading
+  (a), VL-10 html-comment-heading (a), VL-11 broken-chain (j), VL-12
+  missing-checkpoint (l), VL-13 hollow (h), VL-14 uncited-attempt (i), VL-15
+  standin-exit-only (j), VL-16 tampered-export (f), VL-17 trimmed-export (d),
+  VL-18 intent-deleted (d), VL-19 duplicate-terminal (d), VL-20 ref-mismatch
+  (d), VL-21 unsealed-complete (m), VL-22 achieved-mismatch (m), VL-23
+  partial-cases (h), VL-24 plan-mismatch (c), VL-25 export-traversal (b),
+  VL-26 export-absolute (b), VL-27 export-symlink (c), VL-28
+  attempt-after-checkpoint (l), VL-29 record-after-final (l), VL-30 log
+  outside the layout → exit 2; plus a guard that every fixture directory is
+  classified (valid* accepted, all others rejected) and that the valid export
+  is complete (contiguous, sealed, contains a `STALE` attempt).
+- A record mutated in an export (broken-chain, manual-as-green, ref-mismatch,
+  standin-exit-only) also trips check (f) through the checkpoints'
+  `ledger_sha256` — expected: a tampered record breaks the ledger hash chain.
+- Final Verification: the validator requires `**Focused suite**` and
+  `**Relevant surrounding suite**` lines to carry a `receipt <hex12>` or
+  `Not run — …` / `Not applicable — …` (the section has no "Commands and
+  exits" bullets); `final`-phase receipts are cited there.
+- The docs-validate negative root `session-log-both-criteria-malformed` is a
+  hollowed copy of the positive layout (headers and export intact, no
+  disposition rows or receipt bullets) so that check (h) — not an earlier
+  header check — is what fires; the H1-only root fires (b), the
+  filename-only root (a), the broken-export root (c), the orphan root the
+  orphan-export rule.
+
 ### Success Criteria
 
 #### Automated Verification
 
-- [ ] `python3 plugins/rpa/skills/tdd/scripts/test_validate_session_log.py` exits 0 (VL-01…VL-30).
-- [ ] `python3 scripts/validate_docs.py --self-test` exits 0 and its output lists `negative/session-log-filename-only-malformed`, `…-h1-only-malformed`, `…-orphan-export`, `…-both-criteria-malformed`, `…-valid-layout-broken-export` as caught, and `positive fixture clean`.
-- [ ] `python3 scripts/validate_docs.py --root .` exits 0.
-- [ ] Temporarily making `validate_session_log.py` return 0 unconditionally makes `python3 scripts/validate_docs.py --self-test` fail (the negative discovery cases are no longer caught) and `--root .` exit non-zero naming an accepted invalid skill fixture (revert before commit; record the observed messages in the PR).
+- [x] `python3 plugins/rpa/skills/tdd/scripts/test_validate_session_log.py` exits 0 (VL-01…VL-30; 2026-08-21: 4 tests / 30 subcases, ~4 s).
+- [x] `python3 scripts/validate_docs.py --self-test` exits 0 and its output lists `negative/session-log-filename-only-malformed`, `…-h1-only-malformed`, `…-orphan-export`, `…-both-criteria-malformed`, `…-valid-layout-broken-export` as caught, and `positive fixture clean` (2026-08-21: 55 negatives caught).
+- [x] `python3 scripts/validate_docs.py --root .` exits 0.
+- [x] Temporarily making `validate_session_log.py` return 0 unconditionally makes `python3 scripts/validate_docs.py --self-test` fail (the negative discovery cases are no longer caught) and `--root .` exit non-zero naming an accepted invalid skill fixture (revert before commit; record the observed messages in the PR). (Observed 2026-08-21: self-test `FAILED: negative/session-log-both-criteria-malformed: expected an error containing \`session-log: h\`, got: [no errors]` (+ filename-only, h1-only); `--root .` → `docs validation FAILED: 27 error(s)` beginning `session-log validator accepted the INVALID fixture achieved-mismatch — the gate is a silent no-op for that check`.)
 - [ ] On the PR, the `unit` job log shows the `test_validate_session_log.py` step, `validate_docs.py --self-test`, and `validate_docs.py --root .` green.
 
 #### Manual Verification
