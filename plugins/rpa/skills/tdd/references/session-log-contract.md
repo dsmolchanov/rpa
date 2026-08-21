@@ -27,7 +27,7 @@ accepts no other layout.
 
 - **Pre-existing worktree changes**: [paths, or None]
 - **Relevant implementation state**: [existing/partial/absent with evidence]
-- **Test command(s)**: `[commands as discovered in repository config — what the repo defines, not what was run]`
+- **Test configuration**: [repository files that define the test commands, e.g. `pyproject.toml`, `package.json` scripts, `Makefile` — paths only, no command strings]
 - **Baseline runs**: `receipt <hex12>`: [salient result] (or Not run — reason)
 - **Pre-existing relevant failures**: [evidence, or None observed]
 

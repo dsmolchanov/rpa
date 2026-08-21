@@ -89,6 +89,7 @@ SESSION_LOG_FIXTURE_CASES = (
     "unsealed-complete", "achieved-mismatch", "partial-cases", "plan-mismatch",
     "export-traversal", "export-absolute", "export-symlink",
     "trailing-transcription", "baseline-runs-missing", "not-run-with-transcription",
+    "colon-transcription",
     "attempt-after-checkpoint", "record-after-final",
 )
 

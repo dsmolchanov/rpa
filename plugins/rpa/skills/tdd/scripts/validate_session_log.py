@@ -39,7 +39,7 @@ RECEIPT_RE = re.compile(r"\breceipt ([0-9a-f]{12})\b")
 # Receipt-only citation shape, anchored over the WHOLE entry: the argv/exit
 # live in the export, never in the log — a summary may not carry backticked
 # commands, `→` exit arrows, or ` · ` separators.
-CITATION_RE = re.compile(r"^`receipt [0-9a-f]{12}`:\s*[^`→\n]*\S[^`→\n]*$")
+CITATION_RE = re.compile(r"^`receipt [0-9a-f]{12}`:\s*[^`→·\n]*\S[^`→·\n]*$")
 CASE_ROW_RE = re.compile(r"^\|\s*([UIE]-\d+)\s*\|")
 NOT_RUN_RE = re.compile(r"(Not run|Not applicable) — \S")
 # The not-run alternative is an ENTIRE entry too: `Not run — <reason>` /

@@ -51,7 +51,7 @@ jobs:
         run: python3 plugins/rpa/hooks/test_run_gate.py
       - name: TDD evidence kernel tests (EV-01…EV-38)
         run: python3 plugins/rpa/skills/tdd/scripts/test_evidence.py
-      - name: TDD session-log validator tests (VL-01…VL-34)
+      - name: TDD session-log validator tests (VL-01…VL-35)
         run: python3 plugins/rpa/skills/tdd/scripts/test_validate_session_log.py
       - name: Docs validator self-test
         run: python3 scripts/validate_docs.py --self-test

@@ -150,7 +150,7 @@ def log_text(sc: Scenario, *, title, rows, red, green, refactor, final_focused, 
         "",
         "- **Pre-existing worktree changes**: None",
         "- **Relevant implementation state**: absent (synthetic fixture)",
-        "- **Test command(s)**: `python3 junit_stub.py --out={report} --case <case> --outcome <outcome>`",
+        "- **Test configuration**: fixtures/junit_stub.py (synthetic; no runner config)",
         "- **Baseline runs**: Not run — synthetic fixture",
         "- **Pre-existing relevant failures**: None observed",
         "",
@@ -321,6 +321,9 @@ def main() -> int:
     log_mut("trailing-transcription", lambda t: t.replace(
         f"  - `receipt {g1['receipt']}`: 1 passed", f"  - `receipt {g1['receipt']}`: 1 passed · `python3 junit_stub.py` → `0`", 1))
     log_mut("baseline-runs-missing", lambda t: "\n".join(l for l in t.splitlines() if not l.startswith("- **Baseline runs**")) + "\n")
+    # colon-prefixed transcription: a valid receipt citation whose summary is an argv/exit
+    log_mut("colon-transcription", lambda t: t.replace(
+        f"  - `receipt {g1['receipt']}`: 1 passed", f"  - `receipt {g1['receipt']}`: `python3 tests.py` → `0`", 1))
     # a "Not run" entry that smuggles a receipt and a transcription after the reason
     log_mut("not-run-with-transcription", lambda t: t.replace(
         f"  - `receipt {g1['receipt']}`: 1 passed",
