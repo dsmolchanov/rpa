@@ -81,9 +81,10 @@ accepts no other layout.
   <salient result> `` — the whole entry; the summary carries no backticked
   commands, no `→` exit arrows, no ` · ` separators — because the argv, exit
   status, outputs, and timestamps are persisted by the kernel in the export
-  and are never transcribed into the log. `**Baseline runs**` is mandatory
-  and has the same shape (or `Not run — reason`); baseline receipts are cited
-  there. **Every** attempt in the export is cited — a receipt that is `STALE`,
+  and are never transcribed into the log. The alternative is likewise an
+  entire entry — `Not run — <reason>` / `Not applicable — <reason>` with no
+  receipt tokens, backticks or arrows after the reason. `**Baseline runs**`
+  is mandatory and has the same shape; baseline receipts are cited there. **Every** attempt in the export is cited — a receipt that is `STALE`,
   `SURPRISE`, `TIMEOUT` or `INTERRUPTED` is evidence of a corrected belief,
   not something to omit.
 - Exactly one Case Dispositions row per case id in the test plan's §3 tables.

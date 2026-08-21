@@ -321,6 +321,10 @@ def main() -> int:
     log_mut("trailing-transcription", lambda t: t.replace(
         f"  - `receipt {g1['receipt']}`: 1 passed", f"  - `receipt {g1['receipt']}`: 1 passed · `python3 junit_stub.py` → `0`", 1))
     log_mut("baseline-runs-missing", lambda t: "\n".join(l for l in t.splitlines() if not l.startswith("- **Baseline runs**")) + "\n")
+    # a "Not run" entry that smuggles a receipt and a transcription after the reason
+    log_mut("not-run-with-transcription", lambda t: t.replace(
+        f"  - `receipt {g1['receipt']}`: 1 passed",
+        f"  - Not run — claimed no run · receipt {g1['receipt']} · `python3 old.py` → `0`", 1))
 
     hollow = log_text(sc, title="hollow fixture", rows=[], red=[], green=[],
                       refactor="Not applicable — nothing", final_focused="Not run — nothing", achieved="Green", cycle="complete")

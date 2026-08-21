@@ -88,7 +88,7 @@ SESSION_LOG_FIXTURE_CASES = (
     "trimmed-export", "intent-deleted", "duplicate-terminal", "ref-mismatch",
     "unsealed-complete", "achieved-mismatch", "partial-cases", "plan-mismatch",
     "export-traversal", "export-absolute", "export-symlink",
-    "trailing-transcription", "baseline-runs-missing",
+    "trailing-transcription", "baseline-runs-missing", "not-run-with-transcription",
     "attempt-after-checkpoint", "record-after-final",
 )
 

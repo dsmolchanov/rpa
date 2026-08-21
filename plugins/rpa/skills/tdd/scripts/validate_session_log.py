@@ -42,6 +42,15 @@ RECEIPT_RE = re.compile(r"\breceipt ([0-9a-f]{12})\b")
 CITATION_RE = re.compile(r"^`receipt [0-9a-f]{12}`:\s*[^`→\n]*\S[^`→\n]*$")
 CASE_ROW_RE = re.compile(r"^\|\s*([UIE]-\d+)\s*\|")
 NOT_RUN_RE = re.compile(r"(Not run|Not applicable) — \S")
+# The not-run alternative is an ENTIRE entry too: `Not run — <reason>` /
+# `Not applicable — <reason>` with no backticks, exit arrows, separators, or
+# receipt tokens smuggled after the reason.
+NOT_RUN_ENTRY_RE = re.compile(r"^(?!.*\breceipt [0-9a-f]{12}\b)(Not run|Not applicable) — [^`→·\n]*\S$")
+
+
+def entry_ok(body: str) -> bool:
+    """A receipt-only citation or an anchored not-run entry — nothing else."""
+    return bool(CITATION_RE.match(body) or NOT_RUN_ENTRY_RE.match(body))
 PHASE_RANK = {"baseline": 0, "red": 1, "green": 2, "refactor": 3, "final": 4}
 TERMINAL_KINDS = ("finished", "error", "interrupted", "timeout")
 INTENT_FIELDS = ("ref", "n", "run", "workflow", "phase", "case", "because", "risk", "argv", "cwd",
@@ -380,8 +389,8 @@ def validate(log_path: Path) -> tuple[int, list]:
         no, body = baseline_runs
         if not body:
             errors.add("g", f"line {no}: `**Baseline runs**` is empty")
-        elif not NOT_RUN_RE.search(body) and not CITATION_RE.match(body):
-            errors.add("g", f"line {no}: `**Baseline runs**` must be `` `receipt <hex12>`: <summary> `` or `Not run — …`")
+        elif not entry_ok(body):
+            errors.add("g", f"line {no}: `**Baseline runs**` must be `` `receipt <hex12>`: <summary> `` or `Not run — <reason>` (entire entry)")
         # nested bullets under Baseline runs carry the same shape
         active = False
         for bno, bline in baseline:
@@ -391,18 +400,16 @@ def validate(log_path: Path) -> tuple[int, list]:
                 continue
             if active and re.match(r"^\s{2,}-\s", bline):
                 b = re.sub(r"^-\s*", "", bs)
-                if not NOT_RUN_RE.search(b) and not CITATION_RE.match(b):
-                    errors.add("g", f"line {bno}: baseline receipt bullet must be receipt-only")
+                if not entry_ok(b):
+                    errors.add("g", f"line {bno}: baseline receipt bullet must be receipt-only or `Not run — <reason>` (entire entry)")
             elif active and re.match(r"^-\s", bs):
                 active = False
     for name in ("red", "green", "refactor"):
         for no, bullet in commands_bullets(phase_sections[name]):
             body = re.sub(r"^-\s*", "", bullet)
-            if NOT_RUN_RE.search(body):
-                continue
-            if not CITATION_RE.match(body):
+            if not entry_ok(body):
                 errors.add("g", f"line {no}: receipt bullet must be receipt-only — `` `receipt <hex12>`: <salient result> `` "
-                                f"(or `Not run — …` / `Not applicable — …`); argv and exits live in the export")
+                                f"or an entire `Not run — <reason>` / `Not applicable — <reason>` entry; argv and exits live in the export")
     for key in ("Focused suite", "Relevant surrounding suite"):
         val = None
         for no, line in phase_sections["final"]:
@@ -410,8 +417,8 @@ def validate(log_path: Path) -> tuple[int, list]:
             if s.startswith(f"**{key}**"):
                 val = s
                 body = s[len(f"**{key}**"):].lstrip(": ").strip()
-                if not NOT_RUN_RE.search(body) and not CITATION_RE.match(body):
-                    errors.add("g", f"line {no}: `**{key}**` must be `` `receipt <hex12>`: <summary> `` (or `Not run — …` / `Not applicable — …`)")
+                if not entry_ok(body):
+                    errors.add("g", f"line {no}: `**{key}**` must be `` `receipt <hex12>`: <summary> `` or an entire `Not run — <reason>` / `Not applicable — <reason>` entry")
         if val is None:
             errors.add("g", f"Final Verification lacks `**{key}**`")
 
