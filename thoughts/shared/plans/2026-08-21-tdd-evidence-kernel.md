@@ -818,6 +818,39 @@ no imports outside its own directory)
   Green with Refactor not applicable or as `blocked`; (4) `run --phase final`
   is admitted from states `red|green|refactor` so Final-Verification runs can
   precede `checkpoint final`, which closes them.
+- **Phase 1 review round (2026-08-21), all accepted and implemented** —
+  output handling: durable writes go through `mkstemp` + fsync + rename +
+  directory fsync and refuse symlinked targets/parents; only a *produced*
+  report (`report_sha256` set) confers ownership, and a run-owned report is
+  deleted only after a fresh regular-file/containment check; `export`
+  fails closed on foreign JSON, a symlink target, a different run's export,
+  a missing or hash-mismatched capsule. False certification: phase-aware
+  claims (`red` needs `test … fail-with` or the stand-in pair — a lone
+  `exit != 0` is refused; `green|refactor` need a pass claim **and**
+  `--requires`), empty literals refused, `checkpoint red|green|refactor`
+  and `--achieved …` require a `PASS` receipt of that phase. Freshness: an
+  inherited scope is never replaced by a same-named child scope (kept as
+  `name@<ref>` unless value-identical) and the pre-run check reads the
+  required record's envelope verbatim. Isolation: one total deadline with
+  reader joins, group verified gone after every run (`stragglers_terminated`),
+  leader reaped between SIGTERM/SIGKILL (macOS `EPERM` on zombie groups),
+  child started through a pid-file wrapper so a controller death between
+  `Popen` and the lease rewrite leaves no untracked mutator, and the
+  lock/lease live in a canonical coordination root (`<repo>/.rpa/evidence/`)
+  independent of `RPA_EVIDENCE_DIR`. Recovery: the lease-owning run is
+  reconciled (torn tail truncated) before any append; checkpoint capsules
+  describe the state **after** the checkpoint. Bounds/sanitisation:
+  `--tail-bytes` 1…65536, `--timeout` 1…86400, capsule items ≤ 512 B with a
+  hard cap, `--because` required, `workflow`/`report_path`/start-error
+  details redacted. Contract text now states the precedence: run-level
+  invariants (sealed, branch, plan) refuse with exit 2; envelope drift
+  (inherited scopes, HEAD) is recorded `STALE`. New cases: EV-28
+  phase-aware claims + required inputs; EV-29 inherited-scope bypass;
+  EV-30 export fail-closed; EV-31 descendants/controller death; EV-32
+  store override shares the worktree lease; EV-33 cross-run torn-ledger
+  repair; EV-34 bounds. Revised: EV-11 inspects the live intent, EV-13 covers
+  stale-report deletion and symlink swap, EV-25 asserts the active ref and
+  the pre-`Popen` lease shape, EV-26 covers final admission paths.
 
 #### 3. Fixtures shared by tests and the dry run
 
@@ -962,7 +995,7 @@ step to the `unit` job (after the hooks test step).
 
 #### Automated Verification
 
-- [x] `python3 plugins/rpa/skills/tdd/scripts/test_evidence.py` exits 0 with all EV-01…EV-27 cases passing (2026-08-21: 27/27 in ~20 s).
+- [x] `python3 plugins/rpa/skills/tdd/scripts/test_evidence.py` exits 0 with all EV-01…EV-34 cases passing (2026-08-21, after the Phase 1 review round: 34/34 in ~44 s).
 - [x] `python3 scripts/validate_docs.py --root .` exits 0 (new markdown links resolve).
 - [x] `grep -n "shell=True\|os.system\|^import fcntl\|^from fcntl" plugins/rpa/skills/tdd/scripts/evidence.py` prints nothing.
 - [x] Smoke in this repo: `python3 plugins/rpa/skills/tdd/scripts/evidence.py begin --plan thoughts/shared/plans/2026-08-21-tdd-evidence-kernel.md` then
@@ -972,7 +1005,7 @@ step to the `unit` job (after the hooks test step).
 
 #### Manual Verification
 
-- [ ] Not applicable — behavior is fully covered by EV-01…EV-27 and the smoke command.
+- [ ] Not applicable — behavior is fully covered by EV-01…EV-34 and the smoke command.
 
 ---
 

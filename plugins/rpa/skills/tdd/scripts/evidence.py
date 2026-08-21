@@ -23,6 +23,7 @@ import secrets
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -30,22 +31,40 @@ from pathlib import Path
 
 SCHEMA = 1
 WORKFLOW_DEFAULT = "tdd"
+WORKFLOW_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 RUN_ID_RE = re.compile(r"^tdd-\d{8}-\d{6}-[0-9a-f]{8}-[0-9a-f]{6}$")
 REF_RE = re.compile(r"^(tdd-\d{8}-\d{6}-[0-9a-f]{8}-[0-9a-f]{6})#([1-9]\d*)$")
 PHASES = ("baseline", "red", "green", "refactor", "final")
 PHASE_RANK = {p: i for i, p in enumerate(PHASES)}
 CASE_PHASES = ("red", "green", "refactor")
 ACHIEVED_VALUES = ("red", "green", "refactored-green", "blocked")
+ACHIEVED_NEEDS = {"red": "red", "green": "green", "refactored-green": "refactor"}
 OUTCOMES = ("PASS", "PENDING", "SURPRISE", "STALE", "ERROR", "TIMEOUT", "INTERRUPTED")
 OUTCOME_RANK = {o: i for i, o in enumerate(OUTCOMES)}
 EXIT_FOR_OUTCOME = {"PASS": 0, "PENDING": 0, "SURPRISE": 1, "ERROR": 2,
                     "STALE": 3, "TIMEOUT": 4, "INTERRUPTED": 130}
 DEFAULT_TAIL_BYTES = 8192
+MAX_TAIL_BYTES = 65536
 DEFAULT_TIMEOUT = 900
-LEASE_GRACE_SECONDS = 60
+MAX_TIMEOUT = 86400
 CAPSULE_MAX_LINES = 120
 CAPSULE_MAX_BYTES = 16 * 1024
+CAPSULE_ITEM_MAX_BYTES = 512
 REPORT_TOKEN = "{report}"
+EXEC_FAIL_MARKER = "__evidence_exec_failed__:"
+# The child is started through this wrapper so its pid is on disk BEFORE it
+# can do anything: if the controller dies between Popen and the lease rewrite,
+# repair still finds the process group to terminate.
+EXEC_WRAPPER = (
+    "import os,sys\n"
+    "open(sys.argv[1],'w').write(str(os.getpid()))\n"
+    "try:\n"
+    "    os.execvp(sys.argv[2], sys.argv[2:])\n"
+    "except OSError as e:\n"
+    "    sys.stderr.write('" + EXEC_FAIL_MARKER + " %s\\n' % e)\n"
+    "    sys.stderr.flush()\n"
+    "    os._exit(127)\n"
+)
 
 # --------------------------------------------------------------------------
 # errors / output helpers
@@ -193,6 +212,15 @@ def rel_to_root(path: Path) -> str:
 
 # --------------------------------------------------------------------------
 # store layout
+#
+# Execution coordination (lock, lease) is anchored at ONE canonical location
+# per worktree — <repo>/.rpa/evidence/ — regardless of where the payload
+# (runs/, current) lives, so two operators with different RPA_EVIDENCE_DIR
+# values still exclude each other on the same checkout.
+
+
+def coord_root() -> Path:
+    return repo_root() / ".rpa" / "evidence"
 
 
 def store_root() -> Path:
@@ -205,19 +233,27 @@ def store_root() -> Path:
                 "RPA_EVIDENCE_DIR must resolve outside the repository "
                 "(not the root, an ancestor, or a descendant)")
         return real
-    return root / ".rpa" / "evidence"
+    return coord_root()
 
 
-def ensure_store_ignored() -> Path:
-    store = store_root()
-    store.mkdir(parents=True, exist_ok=True)
-    (store / "runs").mkdir(exist_ok=True)
-    ignore = store / ".gitignore"
+def _ensure_self_ignored(directory: Path) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    ignore = directory / ".gitignore"
+    if os.path.islink(ignore):
+        raise UsageError(f"{ignore} is a symlink; refusing to touch it")
     if ignore.exists():
         if ignore.read_text(encoding="utf-8") != "*\n":
             raise UsageError(f"{ignore} exists with foreign content; refusing to overwrite")
     else:
         ignore.write_text("*\n", encoding="utf-8")
+
+
+def ensure_store_ignored() -> Path:
+    _ensure_self_ignored(coord_root())
+    store = store_root()
+    if store != coord_root():
+        store.mkdir(parents=True, exist_ok=True)
+    (store / "runs").mkdir(exist_ok=True)
     return store
 
 
@@ -241,8 +277,9 @@ def store_paths(run_id: str) -> dict:
         "meta": run_dir / "run.meta.json",
         "reports": run_dir / "reports",
         "capsules": run_dir / "capsules",
-        "lease": store / "active.json",
-        "lock": store / "lock",
+        "child_pid": run_dir / "child.pid",
+        "lease": coord_root() / "active.json",
+        "lock": coord_root() / "lock",
         "current": store / "current",
     }
 
@@ -259,7 +296,7 @@ def current_run_id() -> str:
 
 @contextlib.contextmanager
 def store_lock():
-    path = store_root() / "lock"
+    path = coord_root() / "lock"
     path.parent.mkdir(parents=True, exist_ok=True)
     fh = open(path, "a+b")
     try:
@@ -289,13 +326,44 @@ def store_lock():
             fh.close()
 
 
+def _fsync_dir(directory: Path) -> None:
+    if os.name == "nt":  # pragma: no cover
+        return
+    try:
+        fd = os.open(str(directory), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def _atomic_write(path: Path, data: str) -> None:
-    tmp = path.with_name(path.name + ".tmp")
-    with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(data)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, path)
+    """Exclusive random temp file in the target directory, fsync, rename,
+    fsync the directory. Never follows a symlink at the target or its parent."""
+    parent = path.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    if os.path.islink(parent) or not parent.is_dir():
+        raise UsageError(f"refusing to write under a symlinked or non-directory parent: {parent}")
+    if os.path.islink(path):
+        raise UsageError(f"refusing to replace a symlink: {path}")
+    if path.exists() and not path.is_file():
+        raise UsageError(f"refusing to replace a non-regular file: {path}")
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+    _fsync_dir(parent)
 
 
 # --------------------------------------------------------------------------
@@ -325,6 +393,8 @@ def load_records(run_id: str) -> tuple[list, str | None]:
 def append_record(run_id: str, record: dict) -> None:
     paths = store_paths(run_id)
     paths["run"].mkdir(parents=True, exist_ok=True)
+    if os.path.islink(paths["events"]):
+        raise UsageError(f"ledger is a symlink; refusing: {paths['events']}")
     line = canonical_json(record) + "\n"
     with open(paths["events"], "ab") as fh:
         fh.write(line.encode("utf-8"))
@@ -332,18 +402,22 @@ def append_record(run_id: str, record: dict) -> None:
         os.fsync(fh.fileno())
 
 
-def _truncate_partial(run_id: str) -> None:
+def _truncate_partial(run_id: str) -> bool:
+    """Drop a torn trailing record (with or without its newline)."""
     paths = store_paths(run_id)
     if not paths["events"].is_file():
-        return
+        return False
+    _, partial = load_records(run_id)
+    if partial is None:
+        return False
     raw = paths["events"].read_bytes()
-    if not raw or raw.endswith(b"\n"):
-        return
-    cut = raw.rfind(b"\n")
+    body = raw.rstrip(b"\n")
+    cut = body.rfind(b"\n")
     with open(paths["events"], "wb") as fh:
-        fh.write(raw[:cut + 1] if cut >= 0 else b"")
+        fh.write(body[:cut + 1] if cut >= 0 else b"")
         fh.flush()
         os.fsync(fh.fileno())
+    return True
 
 
 def pair_records(records: list) -> dict:
@@ -403,8 +477,10 @@ def derive_index(meta: dict, records: list) -> dict:
     for rec in records:
         if rec.get("kind") == "checkpoint" and rec.get("phase") == "final":
             final = rec
+    # Only a report that was actually PRODUCED by an execution of this run
+    # confers ownership (a missing report never does).
     reports = sorted({r.get("report_path") for r in terminal_records(records)
-                      if r.get("report_path")})
+                      if r.get("report_path") and r.get("report_sha256")})
     return {
         **meta,
         "reports": reports,
@@ -427,26 +503,27 @@ def rebuild_index(run_id: str, records: list | None = None) -> dict:
 
 
 # --------------------------------------------------------------------------
-# lease
+# lease (coordination root)
 
 
 def read_lease() -> dict | None:
-    lease = store_root() / "active.json"
+    lease = coord_root() / "active.json"
     if not lease.is_file():
         return None
     try:
-        return json.loads(lease.read_text(encoding="utf-8"))
+        data = json.loads(lease.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {"corrupt": True}
     except ValueError:
         return {"corrupt": True}
 
 
 def write_lease(lease: dict) -> None:
-    _atomic_write(store_root() / "active.json", canonical_json(lease) + "\n")
+    _atomic_write(coord_root() / "active.json", canonical_json(lease) + "\n")
 
 
 def clear_lease() -> None:
     with contextlib.suppress(FileNotFoundError):
-        (store_root() / "active.json").unlink()
+        (coord_root() / "active.json").unlink()
 
 
 def controller_alive(pid) -> bool:
@@ -468,20 +545,65 @@ def controller_alive(pid) -> bool:
     return True
 
 
-def _kill_group(pid) -> None:
-    if not isinstance(pid, int) or pid <= 0:
-        return
+def _group_alive(pgid) -> bool:
+    if not isinstance(pgid, int) or pgid <= 0 or os.name == "nt":
+        return False
     try:
-        if os.name == "nt":  # pragma: no cover
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
-                           capture_output=True, check=False)
-            return
-        os.killpg(pid, signal.SIGTERM)
-        time.sleep(0.2)
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(pid, signal.SIGKILL)
+        os.killpg(pgid, 0)
     except ProcessLookupError:
-        pass
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _signal_group(pgid, sig) -> None:
+    # macOS reports EPERM (not ESRCH) for a group whose only member is a
+    # zombie; neither error means there is anything left to do.
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(pgid, sig)
+
+
+def _kill_group(pgid, grace: float = 0.5, reap=None) -> bool:
+    """SIGTERM then SIGKILL the whole group, reaping the leader (`reap`, a Popen
+    we own) between signals so a zombie leader never masks the rest of the
+    group. Returns True if anything was alive when we started."""
+    if not _group_alive(pgid):
+        return False
+    if os.name == "nt":  # pragma: no cover
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pgid)],
+                       capture_output=True, check=False)
+        return True
+    _signal_group(pgid, signal.SIGTERM)
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline:
+        if reap is not None:
+            with contextlib.suppress(Exception):
+                reap.wait(timeout=0.05)
+        if not _group_alive(pgid):
+            return True
+        time.sleep(0.05)
+    _signal_group(pgid, signal.SIGKILL)
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline:
+        if reap is not None:
+            with contextlib.suppress(Exception):
+                reap.wait(timeout=0.05)
+        if not _group_alive(pgid):
+            break
+        time.sleep(0.05)
+    return True
+
+
+def _lease_child_pid(lease: dict) -> int | None:
+    pid = lease.get("child_pid")
+    if isinstance(pid, int) and pid > 0:
+        return pid
+    pid_file = lease.get("child_pid_file")
+    if pid_file and os.path.isfile(pid_file):
+        with contextlib.suppress(ValueError, OSError):
+            return int(Path(pid_file).read_text(encoding="utf-8").strip() or "0") or None
+    return None
 
 
 # --------------------------------------------------------------------------
@@ -502,6 +624,7 @@ def _interrupted_record(intent: dict, command: str) -> dict:
         "stderr_sha256": None, "stderr_bytes": 0, "stderr_tail": "",
         "report_sha256": None,
         "post_at": None,
+        "stragglers_terminated": False,
         "claims": [{"text": c["text"], "kind": c.get("kind"), "outcome": "INTERRUPTED",
                     "detail": "recovered by repair"} for c in intent.get("claims", [])],
         "outcome": "INTERRUPTED",
@@ -511,10 +634,31 @@ def _interrupted_record(intent: dict, command: str) -> dict:
     return rec
 
 
+def _recover_run_intents(target_run: str, lease: dict | None, command: str, report: dict) -> None:
+    """Close dangling intents of one run (truncating its torn tail first)."""
+    if _truncate_partial(target_run):
+        report["partial_truncated"].append(target_run)
+    records, _ = load_records(target_run)
+    pairs = pair_records(records)
+    lease_ref = (lease or {}).get("ref")
+    for n in sorted(k for k in pairs if k is not None):
+        slot = pairs[n]
+        if slot.get("intent") and not slot.get("terminal") and "checkpoint" not in slot:
+            if lease is not None and slot["intent"].get("ref") == lease_ref:
+                _kill_group(_lease_child_pid(lease))
+            rec = _interrupted_record(slot["intent"], command)
+            append_record(target_run, rec)
+            report["recovered"].append(rec["ref"])
+    with contextlib.suppress(UsageError):
+        rebuild_index(target_run)
+    with contextlib.suppress(OSError, UsageError):
+        store_paths(target_run)["child_pid"].unlink()
+
+
 def repair(run_id: str, command: str) -> dict:
     """Reconcile the store. Raises UsageError when a live lease exists."""
     report = {"recovered": [], "lease_cleared": False, "snapshots_removed": [],
-              "partial_truncated": False}
+              "partial_truncated": []}
     paths = store_paths(run_id)
     lease = read_lease()
     if lease is not None:
@@ -524,56 +668,20 @@ def repair(run_id: str, command: str) -> dict:
             lease = None
         elif controller_alive(lease.get("controller_pid")):
             raise UsageError(f"execution in progress: {lease.get('ref')}")
-    _, partial = load_records(run_id)
-    if partial is not None:
-        _truncate_partial(run_id)
-        report["partial_truncated"] = True
-    records, _ = load_records(run_id)
-    pairs = pair_records(records)
-    # Dead lease for this run, or for another run in the same store.
     if lease is not None:
         lease_run = lease.get("run_id")
-        lease_ref = lease.get("ref")
-        if lease_run == run_id:
-            m = REF_RE.match(lease_ref or "")
-            n = int(m.group(2)) if m else None
-            slot = pairs.get(n, {})
-            if slot.get("intent") and not slot.get("terminal"):
-                _kill_group(lease.get("child_pid"))
-                rec = _interrupted_record(slot["intent"], command)
-                append_record(run_id, rec)
-                report["recovered"].append(rec["ref"])
-            clear_lease()
-            report["lease_cleared"] = True
-        elif valid_run_id(lease_run or "") and (store_paths(lease_run)["events"]).is_file():
-            other, _ = load_records(lease_run)
-            o_pairs = pair_records(other)
-            m = REF_RE.match(lease_ref or "")
-            n = int(m.group(2)) if m else None
-            slot = o_pairs.get(n, {})
-            if slot.get("intent") and not slot.get("terminal"):
-                _kill_group(lease.get("child_pid"))
-                rec = _interrupted_record(slot["intent"], command)
-                append_record(lease_run, rec)
-                report["recovered"].append(rec["ref"])
-                with contextlib.suppress(UsageError):
-                    rebuild_index(lease_run)
-            clear_lease()
-            report["lease_cleared"] = True
+        if valid_run_id(lease_run or "") and store_paths(lease_run)["meta"].is_file():
+            # Reconcile the lease-owning run FIRST (truncate its torn tail,
+            # then close its intent), whether or not it is the requested run.
+            _recover_run_intents(lease_run, lease, command, report)
         else:
-            clear_lease()
-            report["lease_cleared"] = True
-        records, _ = load_records(run_id)
-        pairs = pair_records(records)
-    # Dangling intents without a lease.
-    for n in sorted(k for k in pairs if k is not None):
-        slot = pairs[n]
-        if slot.get("intent") and not slot.get("terminal") and "checkpoint" not in slot:
-            rec = _interrupted_record(slot["intent"], command)
-            append_record(run_id, rec)
-            report["recovered"].append(rec["ref"])
+            _kill_group(_lease_child_pid(lease))
+        clear_lease()
+        report["lease_cleared"] = True
+    # The requested run: torn tail, dangling intents without a lease.
+    _recover_run_intents(run_id, None, command, report)
     records, _ = load_records(run_id)
-    # Orphan snapshots.
+    # Orphan snapshots / temp files.
     named = {r.get("capsule_path") for r in records if r.get("kind") == "checkpoint"}
     if paths["capsules"].is_dir():
         for snap in sorted(paths["capsules"].glob("*.md")):
@@ -627,12 +735,14 @@ def _status_paths() -> list:
 
 
 def _under_store(rel: str) -> bool:
-    store = store_root()
     root = repo_root()
-    if not _is_relative_to(store, root):
-        return False
-    prefix = store.relative_to(root).as_posix().rstrip("/") + "/"
-    return rel.startswith(prefix) or rel == prefix.rstrip("/")
+    for base in {coord_root(), store_root()}:
+        if not _is_relative_to(base, root):
+            continue
+        prefix = base.relative_to(root).as_posix().rstrip("/") + "/"
+        if rel.startswith(prefix) or rel == prefix.rstrip("/"):
+            return True
+    return False
 
 
 def worktree_snapshot() -> dict:
@@ -642,10 +752,10 @@ def worktree_snapshot() -> dict:
         if _under_store(rel):
             continue
         p = root / rel
-        if p.is_file():
-            snap[rel] = sha256_file(p)
-        elif p.is_symlink():
+        if p.is_symlink():
             snap[rel] = "symlink:" + sha256_bytes(os.readlink(p).encode())
+        elif p.is_file():
+            snap[rel] = sha256_file(p)
         else:
             snap[rel] = "deleted"
     return snap
@@ -695,6 +805,8 @@ def compute_scopes(scope_args: list) -> dict:
         name = name.strip()
         if not re.match(r"^[A-Za-z0-9_.-]+$", name):
             raise UsageError(f"invalid scope name: {name!r}")
+        if name in scopes:
+            raise UsageError(f"duplicate scope name: {name!r}")
         globs = normalize_globs(spec)
         if not globs:
             raise UsageError(f"empty scope: {item}")
@@ -715,19 +827,23 @@ def current_state_triplet(meta: dict) -> dict:
 
 
 def envelope_of(own_scopes: dict, required: dict | None) -> dict:
-    """Own scopes ∪ the required record's stored envelope (never narrowed)."""
+    """Own scopes ∪ the required record's stored envelope. An inherited entry
+    is NEVER replaced by the child's freshly computed one: when the child
+    declares the same name, the inherited entry is kept under `name@<ref>`
+    unless it is value-identical (globs, paths, digest)."""
     env = {"scopes": dict(own_scopes)}
     if required is not None:
         inherited = (required.get("envelope") or {}).get("scopes", {})
         for name, spec in inherited.items():
-            key = name
-            if key in env["scopes"] and env["scopes"][key].get("globs") != spec.get("globs"):
-                key = f"{name}@{required['ref']}"
-            env["scopes"].setdefault(key, spec)
-        env["head"] = (required.get("envelope") or {}).get("head", required.get("at", {}).get("head"))
-        env["branch"] = (required.get("envelope") or {}).get("branch", required.get("at", {}).get("branch"))
-        env["plan_sha256"] = (required.get("envelope") or {}).get(
-            "plan_sha256", required.get("at", {}).get("plan_sha256"))
+            if name in env["scopes"] and env["scopes"][name] == spec:
+                continue
+            key = name if name not in env["scopes"] else f"{name}@{required['ref']}"
+            env["scopes"][key] = spec
+        r_env = required.get("envelope") or {}
+        r_at = required.get("at") or {}
+        env["head"] = r_env.get("head", r_at.get("head"))
+        env["branch"] = r_env.get("branch", r_at.get("branch"))
+        env["plan_sha256"] = r_env.get("plan_sha256", r_at.get("plan_sha256"))
     return env
 
 
@@ -766,6 +882,12 @@ def _unq(s: str) -> str:
     return bytes(s, "utf-8").decode("unicode_escape") if "\\" in s else s
 
 
+def _nonempty(lit: str, text: str) -> str:
+    if not lit.strip():
+        raise UsageError(f"empty literal in claim: {text!r}")
+    return lit
+
+
 def parse_claim(text: str) -> Claim:
     t = text.strip()
     m = re.fullmatch(r"exit\s*==\s*(\d+)", t)
@@ -775,7 +897,7 @@ def parse_claim(text: str) -> Claim:
         return Claim(t, "exit_ne0")
     m = re.fullmatch(r"(stdout|stderr)\s+contains\s+" + _QUOTED, t)
     if m:
-        return Claim(t, "contains", arg=m.group(1), value=_unq(m.group(2)))
+        return Claim(t, "contains", arg=m.group(1), value=_nonempty(_unq(m.group(2)), t))
     if re.fullmatch(r"diff\s+none", t):
         return Claim(t, "diff_none")
     m = re.fullmatch(r"diff\s+within\s+(\S+)", t)
@@ -791,18 +913,34 @@ def parse_claim(text: str) -> Claim:
         return Claim(t, "test_pass", arg=m.group(1))
     m = re.fullmatch(r"test\s+(\S+)\s+fail-with\s+" + _QUOTED, t)
     if m:
-        return Claim(t, "test_fail_with", arg=m.group(1), value=_unq(m.group(2)))
+        return Claim(t, "test_fail_with", arg=m.group(1), value=_nonempty(_unq(m.group(2)), t))
     m = re.fullmatch(r"manual\s+" + _QUOTED, t)
     if m:
-        return Claim(t, "manual", value=_unq(m.group(1)))
+        return Claim(t, "manual", value=_nonempty(_unq(m.group(1)), t))
     raise UsageError(f"unparseable claim: {text!r}")
+
+
+def validate_phase_claims(phase: str, claims: list) -> None:
+    """Phase-aware claim requirements (wrong-cause Red can never PASS)."""
+    kinds = [c.kind for c in claims]
+    if phase == "red":
+        has_fail = "test_fail_with" in kinds
+        standin = "exit_ne0" in kinds and "contains" in kinds
+        if not (has_fail or standin):
+            raise UsageError(
+                "--phase red requires a `test <selector> fail-with \"<literal>\"` claim "
+                "or the stand-in pair `exit != 0` + `stdout|stderr contains \"<cause>\"`")
+    if phase in ("green", "refactor"):
+        has_pass = "test_pass" in kinds or any(c.kind == "exit_eq" and c.value == 0 for c in claims)
+        if not has_pass:
+            raise UsageError(f"--phase {phase} requires a `test <selector> pass` claim or `exit == 0`")
 
 
 def parse_junit(path: Path) -> list:
     try:
         tree = ET.parse(path)
     except (ET.ParseError, OSError) as exc:
-        raise UsageError(f"cannot parse JUnit report {path}: {exc}")
+        raise UsageError(f"cannot parse JUnit report: {exc}")
     cases = []
     for tc in tree.getroot().iter("testcase"):
         classname = tc.get("classname") or ""
@@ -885,24 +1023,28 @@ class StreamReader(threading.Thread):
                          for lit in literals}
 
     def run(self):
-        while True:
-            chunk = self.stream.read(65536)
-            if not chunk:
-                break
-            self.hash.update(chunk)
-            self.count += len(chunk)
-            self.tail.extend(chunk)
-            if len(self.tail) > self.tail_bytes:
-                del self.tail[:-self.tail_bytes]
-            for state in self.literals.values():
-                if state["found"]:
-                    continue
-                window = state["carry"] + chunk
-                if state["bytes"] in window:
-                    state["found"] = True
-                keep = len(state["bytes"]) - 1
-                state["carry"] = window[-keep:] if keep > 0 else b""
-        self.stream.close()
+        try:
+            while True:
+                chunk = self.stream.read(65536)
+                if not chunk:
+                    break
+                self.hash.update(chunk)
+                self.count += len(chunk)
+                self.tail.extend(chunk)
+                if len(self.tail) > self.tail_bytes:
+                    del self.tail[:-self.tail_bytes]
+                for state in self.literals.values():
+                    if state["found"]:
+                        continue
+                    window = state["carry"] + chunk
+                    if state["bytes"] in window:
+                        state["found"] = True
+                    keep = len(state["bytes"]) - 1
+                    state["carry"] = window[-keep:] if keep > 0 else b""
+        except (OSError, ValueError):
+            pass
+        with contextlib.suppress(Exception):
+            self.stream.close()
 
     def tail_text(self) -> str:
         return bytes(self.tail).decode("utf-8", "replace")
@@ -919,17 +1061,22 @@ class ExecResult:
         self.out = None
         self.err = None
         self.start_error = None
+        self.stragglers = False
+        self.readers_stuck = False
 
 
-def execute(argv: list, timeout: int, tail_bytes: int, literals: dict, lease: dict) -> ExecResult:
+def execute(argv: list, timeout: int, tail_bytes: int, literals: dict, lease: dict,
+            pid_file: Path) -> ExecResult:
     res = ExecResult()
     res.started_at = now_utc()
+    wrapped = [sys.executable, "-c", EXEC_WRAPPER, str(pid_file), *argv]
     popen_kwargs = dict(cwd=str(repo_root()), env=os.environ.copy(), stdin=subprocess.DEVNULL,
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if os.name != "nt":
         popen_kwargs["start_new_session"] = True
+    deadline = time.monotonic() + timeout
     try:
-        proc = subprocess.Popen(argv, **popen_kwargs)
+        proc = subprocess.Popen(wrapped, **popen_kwargs)
     except (OSError, ValueError) as exc:
         res.start_error = str(exc)
         res.finished_at = now_utc()
@@ -946,32 +1093,38 @@ def execute(argv: list, timeout: int, tail_bytes: int, literals: dict, lease: di
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             res.timed_out = True
-            _terminate(proc)
+            _kill_group(proc.pid, grace=5.0, reap=proc)
+            with contextlib.suppress(Exception):
+                proc.wait(timeout=5)
     except KeyboardInterrupt:
         res.interrupted = True
-        _terminate(proc)
-    res.out.join()
-    res.err.join()
+        _kill_group(proc.pid, grace=2.0, reap=proc)
+        with contextlib.suppress(Exception):
+            proc.wait(timeout=5)
+    # One total deadline: readers get whatever is left (plus a short drain
+    # grace); descendants still holding the pipes after that are killed with
+    # the group, and if something escaped the group we stop waiting.
+    remaining = max(0.0, deadline - time.monotonic()) + 2.0
+    res.out.join(remaining)
+    res.err.join(remaining)
+    if res.out.is_alive() or res.err.is_alive():
+        res.stragglers = _kill_group(proc.pid, grace=2.0, reap=proc) or res.stragglers
+        res.out.join(2.0)
+        res.err.join(2.0)
+        if res.out.is_alive() or res.err.is_alive():
+            res.readers_stuck = True
+            res.timed_out = True
+    # Always verify the group is gone; terminate anything that outlived the leader.
+    with contextlib.suppress(Exception):
+        proc.wait(timeout=0.05)  # reap the leader before judging the group
+    if _group_alive(proc.pid):
+        res.stragglers = _kill_group(proc.pid, grace=2.0, reap=proc) or res.stragglers
     res.exit = proc.returncode
     res.finished_at = now_utc()
+    if res.exit == 127 and EXEC_FAIL_MARKER in res.err.tail_text():
+        line = next((l for l in res.err.tail_text().splitlines() if EXEC_FAIL_MARKER in l), "")
+        res.start_error = line.split(EXEC_FAIL_MARKER, 1)[1].strip() or "command could not start"
     return res
-
-
-def _terminate(proc: subprocess.Popen) -> None:
-    try:
-        if os.name == "nt":  # pragma: no cover
-            proc.kill()
-        else:
-            os.killpg(proc.pid, signal.SIGTERM)
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGKILL)
-                proc.wait(timeout=5)
-    except (ProcessLookupError, PermissionError):
-        pass
-    with contextlib.suppress(Exception):
-        proc.wait(timeout=5)
 
 
 # --------------------------------------------------------------------------
@@ -979,21 +1132,36 @@ def _terminate(proc: subprocess.Popen) -> None:
 
 
 def resolve_report(arg: str | None, run_id: str, index: dict) -> tuple[Path | None, bool]:
-    """Returns (path, run_owned)."""
+    """Returns (path, bare_name). Bare names live in the run-owned scratch."""
     if arg is None:
         return None, False
     paths = store_paths(run_id)
-    if "/" not in arg and os.sep not in arg and arg not in ("", ".", ".."):
+    if arg in ("", ".", "..") or arg.startswith("."):
+        raise UsageError(f"invalid --report name: {arg!r}")
+    if "/" not in arg and os.sep not in arg:
         return paths["reports"] / arg, True
     real = contained(arg, "--report")
     rel = rel_to_root(real)
     tracked = _git("ls-files", "--error-unmatch", "--", rel, cwd=repo_root(), check=False)
     if tracked.returncode == 0:
         raise UsageError(f"--report refuses a git-tracked file: {rel}")
-    if real.exists() and rel not in (index.get("reports") or []) \
-            and not _is_relative_to(real, Path(os.path.realpath(paths["reports"]))):
+    if os.path.lexists(real) and rel not in (index.get("reports") or []):
         raise UsageError(f"--report target exists and is not owned by this run: {rel}")
-    return real, True
+    return real, False
+
+
+def _delete_owned_report(report_path: Path, bare: bool, run_id: str) -> None:
+    """Delete a pre-existing run-owned report — after a fresh containment and
+    symlink check, so a path swapped for a link can never reach a foreign file."""
+    if not os.path.lexists(report_path):
+        return
+    if os.path.islink(report_path) or not report_path.is_file():
+        raise UsageError(f"--report target is not a regular file; refusing to delete: {report_path}")
+    real = Path(os.path.realpath(report_path))
+    base = Path(os.path.realpath(store_paths(run_id)["reports"])) if bare else repo_root()
+    if not _is_relative_to(real, base):
+        raise UsageError(f"--report target escaped its root; refusing to delete: {report_path}")
+    report_path.unlink()
 
 
 def substitute_report(argv: list, report: Path | None) -> list:
@@ -1052,6 +1220,10 @@ def unclosed_phases(records: list, checkpoint_phase: str) -> list:
     return sorted(out, key=lambda p: PHASE_RANK[p])
 
 
+def has_pass(records: list, phase: str) -> bool:
+    return any(r.get("phase") == phase and r.get("outcome") == "PASS" for r in terminal_records(records))
+
+
 # --------------------------------------------------------------------------
 # capsule
 
@@ -1063,11 +1235,21 @@ def _fresh(rec: dict, meta: dict) -> bool:
     return not check_envelope(env, meta)
 
 
-def build_capsule(records: list, meta: dict, extras: dict | None = None) -> str:
+def _item(text: str) -> str:
+    """One capsule bullet, sanitised and bounded."""
+    s = redact(text).replace("\n", " ")
+    raw = s.encode("utf-8")
+    if len(raw) > CAPSULE_ITEM_MAX_BYTES:
+        s = raw[:CAPSULE_ITEM_MAX_BYTES - 1].decode("utf-8", "ignore") + "…"
+    return f"- {s}"
+
+
+def build_capsule(records: list, meta: dict, extras: dict | None = None,
+                  state_after: str | None = None) -> str:
     extras = extras or {}
     cur = current_state_triplet(meta)
     terminals = terminal_records(records)
-    state = phase_state(records)
+    state = state_after or phase_state(records)
     head_n = next_n(records) - 1
     lines = []
     lines.append(f"# Capsule {meta['id']}")
@@ -1088,27 +1270,28 @@ def build_capsule(records: list, meta: dict, extras: dict | None = None) -> str:
         label = f"{rec['ref']} receipt {rec.get('receipt')} {rec.get('phase')}/{rec.get('case') or '-'}"
         if rec.get("outcome") == "PASS":
             if _fresh(rec, meta):
-                verified.append(f"- {label}: " + "; ".join(c['text'] for c in rec.get('claims', []) if c.get('outcome') == 'PASS'))
+                verified.append(_item(f"{label}: " + "; ".join(
+                    c['text'] for c in rec.get('claims', []) if c.get('outcome') == 'PASS')))
             else:
-                open_items.append(f"- {label}: stale envelope (re-verify)")
+                open_items.append(_item(f"{label}: stale envelope (re-verify)"))
             for c in rec.get("claims", []):
                 if c.get("outcome") == "PENDING":
-                    open_items.append(f"- {label}: pending manual: {c['text']}")
+                    open_items.append(_item(f"{label}: pending manual: {c['text']}"))
         elif rec.get("outcome") == "SURPRISE":
-            surprises.append(f"- {label}: " + "; ".join(
+            surprises.append(_item(f"{label}: " + "; ".join(
                 f"{c['text']} -> {c['outcome']} ({c.get('detail','')})" for c in rec.get("claims", [])
-                if c.get("outcome") == "SURPRISE"))
+                if c.get("outcome") == "SURPRISE")))
         elif rec.get("outcome") == "STALE":
-            open_items.append(f"- {label}: STALE — " + "; ".join(
-                c.get("detail", "") for c in rec.get("claims", [])[:1]) )
+            open_items.append(_item(f"{label}: STALE — " + "; ".join(
+                c.get("detail", "") for c in rec.get("claims", [])[:1])))
     for (case, phase), rec in last_by_case.items():
         if rec.get("outcome") in ("ERROR", "TIMEOUT", "INTERRUPTED"):
-            blocked.append(f"- {rec['ref']} {phase}/{case or '-'}: last attempt {rec['outcome']}")
+            blocked.append(_item(f"{rec['ref']} {phase}/{case or '-'}: last attempt {rec['outcome']}"))
     for item in extras.get("open", []) or []:
-        open_items.append(f"- {redact(item)}")
+        open_items.append(_item(item))
     for item in extras.get("blocked", []) or []:
-        blocked.append(f"- {redact(item)}")
-    na = [f"- {redact(i)}" for i in (extras.get("not_applicable", []) or [])]
+        blocked.append(_item(item))
+    na = [_item(i) for i in (extras.get("not_applicable", []) or [])]
     lines += ["", "## Verified"] + (verified or ["- none"])
     lines += ["", "## Open"] + (open_items or ["- none"])
     lines += ["", "## Blocked"] + (blocked or ["- none"])
@@ -1118,17 +1301,15 @@ def build_capsule(records: list, meta: dict, extras: dict | None = None) -> str:
     if cur["head"] != meta["head"]:
         drift.append(f"- HEAD moved since begin: {meta['head'][:12]} -> {cur['head'][:12]}")
     if cur["branch"] != meta["branch"]:
-        drift.append(f"- branch changed: {meta['branch']} -> {cur['branch']}")
+        drift.append(_item(f"branch changed: {meta['branch']} -> {cur['branch']}"))
     if cur["plan_sha256"] != meta["plan_sha256"]:
         drift.append("- plan changed since begin")
     dirty = sorted(worktree_snapshot())
     if dirty:
-        drift.append(f"- dirty paths ({len(dirty)}): " + ", ".join(dirty[:15]) + (" …" if len(dirty) > 15 else ""))
+        drift.append(_item(f"dirty paths ({len(dirty)}): " + ", ".join(dirty[:15]) + (" …" if len(dirty) > 15 else "")))
     lines += ["", "## State drift"] + (drift or ["- none"])
-    nxt = extras.get("next")
-    if not nxt:
-        nxt = _derive_next(records, meta, state)
-    lines += ["", "## Next", f"- {redact(nxt)}"]
+    nxt = extras.get("next") or _derive_next(records, meta, state)
+    lines += ["", "## Next", _item(nxt)]
     return _bound_capsule(lines)
 
 
@@ -1154,13 +1335,10 @@ def _derive_next(records: list, meta: dict, state: str) -> str:
 
 
 def _bound_capsule(lines: list) -> str:
-    # Truncate oldest-first inside sections: drop the earliest bullet lines of
-    # the longest sections until within bounds.
     def size(ls):
         return len(ls), len("\n".join(ls).encode("utf-8"))
     n, b = size(lines)
     while n > CAPSULE_MAX_LINES or b > CAPSULE_MAX_BYTES:
-        # find section with most bullets
         sections: dict = {}
         current = None
         for idx, line in enumerate(lines):
@@ -1169,26 +1347,26 @@ def _bound_capsule(lines: list) -> str:
                 sections[current] = []
             elif current is not None and line.startswith("- ") and not line.startswith("- [+"):
                 sections[current].append(idx)
-        if not sections:
+        candidates = {k: v for k, v in sections.items() if len(v) > 1}
+        if not candidates:
             break
-        target = max(sections, key=lambda k: len(sections[k]))
-        bullets = sections[target]
-        if len(bullets) <= 1:
-            break
-        drop = bullets[0]
-        marker_idx = drop
-        if lines[drop + 1].startswith("- [+") if drop + 1 < len(lines) else False:
-            pass
-        # merge with existing marker
-        if marker_idx + 1 < len(lines) and lines[marker_idx + 1].startswith("- [+"):
-            m = re.match(r"- \[\+(\d+) older\]", lines[marker_idx + 1])
+        target = max(candidates, key=lambda k: len(candidates[k]))
+        drop = candidates[target][0]
+        # The marker always sits at the top of the section, i.e. just BEFORE
+        # the oldest remaining bullet: fold the bullet into it.
+        if drop - 1 > target and lines[drop - 1].startswith("- [+"):
+            m = re.match(r"- \[\+(\d+) older\]", lines[drop - 1])
             count = int(m.group(1)) + 1 if m else 1
-            lines[marker_idx + 1] = f"- [+{count} older]"
-            del lines[marker_idx]
+            lines[drop - 1] = f"- [+{count} older]"
+            del lines[drop]
         else:
-            lines[marker_idx] = "- [+1 older]"
+            lines[drop] = "- [+1 older]"
         n, b = size(lines)
-    return "\n".join(lines) + "\n"
+    text = "\n".join(lines) + "\n"
+    raw = text.encode("utf-8")
+    if len(raw) > CAPSULE_MAX_BYTES:  # hard cap, defensive
+        text = raw[:CAPSULE_MAX_BYTES - 16].decode("utf-8", "ignore").rstrip() + "\n- [truncated]\n"
+    return text
 
 
 # --------------------------------------------------------------------------
@@ -1196,7 +1374,6 @@ def _bound_capsule(lines: list) -> str:
 
 
 def cmd_begin(args) -> int:
-    root = repo_root()
     store = ensure_store_ignored()
     if args.resume:
         run_id = args.resume
@@ -1255,9 +1432,20 @@ def _resolve_run(args) -> str:
     return run_id
 
 
+def _run_invariants(meta: dict, index: dict, run_id: str) -> dict:
+    """Run-level checks that refuse (exit 2) rather than record: sealed run,
+    branch or plan different from the run's identity."""
+    if index["state"] != "open":
+        raise UsageError(f"run {run_id} is sealed")
+    cur = current_state_triplet(meta)
+    if cur["branch"] != meta["branch"]:
+        raise UsageError(f"branch changed: run belongs to {meta['branch']!r}, current is {cur['branch']!r}")
+    if cur["plan_sha256"] != meta["plan_sha256"]:
+        raise UsageError("plan changed since the run began; begin a new run")
+    return cur
+
+
 def cmd_run(args) -> int:
-    if not args.argv:
-        raise UsageError("run needs a command after `--`")
     argv_raw = list(args.argv)
     if argv_raw and argv_raw[0] == "--":
         argv_raw = argv_raw[1:]
@@ -1271,9 +1459,15 @@ def cmd_run(args) -> int:
         raise UsageError(f"--case is required for --phase {phase}")
     if case and not re.match(r"^[A-Za-z0-9_.-]+$", case):
         raise UsageError(f"invalid --case: {case!r}")
+    if not (args.because or "").strip():
+        raise UsageError("--because is required")
+    workflow = args.workflow or WORKFLOW_DEFAULT
+    if not WORKFLOW_RE.match(workflow):
+        raise UsageError(f"invalid --workflow: {workflow!r}")
     claims = [parse_claim(c) for c in (args.expect or [])]
     if not any(c.machine_checkable() for c in claims):
         raise UsageError("at least one machine-checkable --expect is required")
+    validate_phase_claims(phase, claims)
     run_id = _resolve_run(args)
     meta = load_meta(run_id)
     own_scopes = compute_scopes(args.scope)
@@ -1281,14 +1475,18 @@ def cmd_run(args) -> int:
         for required_scope in ("red_inputs", "plan"):
             if required_scope not in own_scopes:
                 raise UsageError(f"--phase red requires --scope {required_scope}=…")
+    if phase in ("green", "refactor") and not args.requires:
+        raise UsageError(f"--phase {phase} requires --requires <{'Red' if phase == 'green' else 'Green'} ref>")
     if args.requires and not REF_RE.match(args.requires):
         raise UsageError(f"invalid --requires ref: {args.requires!r}")
     if args.requires and not args.requires.startswith(run_id + "#"):
         raise UsageError("--requires must reference an event of the same run")
     timeout = args.timeout if args.timeout is not None else DEFAULT_TIMEOUT
-    if timeout <= 0:
-        raise UsageError("--timeout must be positive")
+    if not 1 <= timeout <= MAX_TIMEOUT:
+        raise UsageError(f"--timeout must be between 1 and {MAX_TIMEOUT} seconds")
     tail_bytes = args.tail_bytes if args.tail_bytes is not None else DEFAULT_TAIL_BYTES
+    if not 1 <= tail_bytes <= MAX_TAIL_BYTES:
+        raise UsageError(f"--tail-bytes must be between 1 and {MAX_TAIL_BYTES}")
     risk = args.risk or "local_verify"
     if risk not in ("local_verify", "local_mutate"):
         raise UsageError("--risk must be local_verify or local_mutate")
@@ -1299,72 +1497,73 @@ def cmd_run(args) -> int:
         raise UsageError("test claims require --report")
     # Sanitised intent payload (raw argv is kept in memory only).
     sanitized_argv = redact_argv(argv_raw)
-    because = redact(args.because or "")
+    because = redact(args.because)
     claim_texts = [{"text": redact(c.text), "kind": c.kind} for c in claims]
 
     with store_lock():
         repair(run_id, "run")
         records, _ = load_records(run_id)
         index = rebuild_index(run_id, records)
-        if index["state"] != "open":
-            raise UsageError(f"run {run_id} is sealed")
+        cur = _run_invariants(meta, index, run_id)
         state = index["phase"]
         if not admitted_phase(state, phase):
             raise UsageError(f"phase {phase!r} is not admitted in state {state!r}")
-        cur = current_state_triplet(meta)
-        if cur["branch"] != meta["branch"]:
-            raise UsageError(f"branch changed: run belongs to {meta['branch']!r}, current is {cur['branch']!r}")
-        if cur["plan_sha256"] != meta["plan_sha256"]:
-            raise UsageError("plan changed since the run began; begin a new run")
         required = None
         if args.requires:
             required = validate_requires(records, args.requires, phase, case)
-        report_path, report_owned = resolve_report(args.report, run_id, index)
+        report_path, report_bare = resolve_report(args.report, run_id, index)
         envelope = envelope_of(own_scopes, required)
         if required is None:
             envelope["head"], envelope["branch"], envelope["plan_sha256"] = cur["head"], cur["branch"], cur["plan_sha256"]
+        paths = store_paths(run_id)
         n = next_n(records)
         ref = f"{run_id}#{n}"
         start_token = secrets.token_hex(8)
+        if report_path is None:
+            report_rel = None
+        elif _is_relative_to(Path(os.path.realpath(report_path.parent)), repo_root()):
+            report_rel = (Path(os.path.realpath(report_path.parent)) / report_path.name).relative_to(repo_root()).as_posix()
+        else:
+            report_rel = str(report_path)
         intent = {
             "ref": ref, "n": n, "run": run_id, "kind": "started", "at_utc": now_utc(),
-            "workflow": args.workflow or meta.get("workflow", WORKFLOW_DEFAULT),
+            "workflow": redact(workflow),
             "phase": phase, "case": case, "because": because, "risk": risk,
             "argv": sanitized_argv, "cwd": ".",
             "claims": claim_texts, "scopes": own_scopes, "envelope": envelope,
-            "requires": args.requires, "report_path": (rel_to_root(report_path) if report_path and _is_relative_to(Path(os.path.realpath(report_path)), repo_root()) else (str(report_path) if report_path else None)),
-            "timeout": timeout, "start_token": start_token,
+            "requires": args.requires, "report_path": redact(report_rel),
+            "timeout": timeout, "tail_bytes": tail_bytes, "start_token": start_token,
             "at": {**cur, "worktree_digest": None},
         }
-        # pre-run envelope check (inherited parts)
-        drift = check_envelope({k: v for k, v in envelope.items() if k != "scopes"} | {"scopes": {
-            k: v for k, v in envelope["scopes"].items() if k not in own_scopes}}, meta) if required else []
+        # Pre-run check of the INHERITED envelope exactly as stored on the
+        # required record (own scopes are being recorded fresh right now).
+        drift = check_envelope(required.get("envelope") or {}, meta) if required else []
+        pre_snap = worktree_snapshot()
+        intent["at"]["worktree_digest"] = worktree_digest(pre_snap)
         if drift:
-            pre_snap = worktree_snapshot()
-            intent["at"]["worktree_digest"] = worktree_digest(pre_snap)
             append_record(run_id, intent)
             term = _stale_terminal(intent, drift, "stale before execution")
             append_record(run_id, term)
             rebuild_index(run_id)
             _print_result(term)
             return 3
-        pre_snap = worktree_snapshot()
-        intent["at"]["worktree_digest"] = worktree_digest(pre_snap)
         path_before = {c.arg: (sha256_file(repo_root() / c.arg) if (repo_root() / c.arg).is_file() else None)
                        for c in claims if c.kind == "path"}
-        if report_path is not None and report_owned and report_path.exists():
-            report_path.unlink()
         if report_path is not None:
+            _delete_owned_report(report_path, report_bare, run_id)
             report_path.parent.mkdir(parents=True, exist_ok=True)
+        with contextlib.suppress(FileNotFoundError):
+            paths["child_pid"].unlink()
         append_record(run_id, intent)
         lease = {"run_id": run_id, "ref": ref, "controller_pid": os.getpid(),
-                 "start_token": start_token, "started_at_utc": now_utc(), "child_pid": None}
+                 "start_token": start_token, "started_at_utc": now_utc(),
+                 "child_pid": None, "child_pid_file": str(paths["child_pid"])}
         write_lease(lease)
 
     argv_exec = substitute_report(argv_raw, report_path)
     literals = {"stdout": [c.value for c in claims if c.kind == "contains" and c.arg == "stdout"],
                 "stderr": [c.value for c in claims if c.kind == "contains" and c.arg == "stderr"]}
-    result = execute(argv_exec, timeout, tail_bytes, literals, lease)
+    result = execute(argv_exec, timeout, tail_bytes, literals, lease, paths["child_pid"])
 
     post_snap = worktree_snapshot()
     post_cur = current_state_triplet(meta)
@@ -1374,12 +1573,12 @@ def cmd_run(args) -> int:
     changed = sorted(p for p in set(pre_snap) | set(post_snap) if pre_snap.get(p) != post_snap.get(p))
     junit, report_error, report_sha = [], None, None
     if report_path is not None:
-        if report_path.is_file():
+        if report_path.is_file() and not os.path.islink(report_path):
             report_sha = sha256_file(report_path)
             try:
                 junit = parse_junit(report_path)
             except UsageError as exc:
-                report_error = str(exc)
+                report_error = redact(str(exc))
         else:
             report_error = "report not produced by this run"
     ctx = {
@@ -1391,12 +1590,13 @@ def cmd_run(args) -> int:
     }
     graded = []
     if result.start_error:
-        outcome = "ERROR"
-        graded = [{"text": c.text, "kind": c.kind, "outcome": "ERROR", "detail": f"command could not start: {result.start_error}"} for c in claims]
-        kind = "error"
+        outcome, kind = "ERROR", "error"
+        graded = [{"text": c.text, "kind": c.kind, "outcome": "ERROR",
+                   "detail": redact(f"command could not start: {result.start_error}")} for c in claims]
     elif result.timed_out:
         outcome, kind = "TIMEOUT", "timeout"
-        graded = [{"text": c.text, "kind": c.kind, "outcome": "TIMEOUT", "detail": "not graded"} for c in claims]
+        detail = "not graded" + (" (escaped descendants held the pipes)" if result.readers_stuck else "")
+        graded = [{"text": c.text, "kind": c.kind, "outcome": "TIMEOUT", "detail": detail} for c in claims]
     elif result.interrupted:
         outcome, kind = "INTERRUPTED", "interrupted"
         graded = [{"text": c.text, "kind": c.kind, "outcome": "INTERRUPTED", "detail": "not graded"} for c in claims]
@@ -1411,7 +1611,6 @@ def cmd_run(args) -> int:
         # claims all PASS; they are carried as open items in the capsule.
         if post_drift:
             outcome = "STALE"
-            kind = "finished"
             graded.append({"text": "<envelope>", "kind": "envelope", "outcome": "STALE",
                            "detail": "drift during execution: " + "; ".join(post_drift)})
     terminal = dict(intent)
@@ -1427,6 +1626,7 @@ def cmd_run(args) -> int:
         "stderr_tail": redact(result.err.tail_text()) if result.err else "",
         "report_sha256": report_sha,
         "post_at": {**post_cur, "worktree_digest": worktree_digest(post_snap)},
+        "stragglers_terminated": bool(result.stragglers),
         "claims": [{**g, "text": redact(g["text"])} for g in graded],
         "outcome": outcome,
     })
@@ -1434,6 +1634,8 @@ def cmd_run(args) -> int:
     with store_lock():
         append_record(run_id, terminal)
         clear_lease()
+        with contextlib.suppress(FileNotFoundError):
+            paths["child_pid"].unlink()
         rebuild_index(run_id)
     _print_result(terminal)
     return EXIT_FOR_OUTCOME[outcome]
@@ -1446,7 +1648,7 @@ def _stale_terminal(intent: dict, drift: list, why: str) -> dict:
         "exit": None, "started_at": None, "finished_at": None,
         "stdout_sha256": None, "stdout_bytes": 0, "stdout_tail": "",
         "stderr_sha256": None, "stderr_bytes": 0, "stderr_tail": "",
-        "report_sha256": None, "post_at": None,
+        "report_sha256": None, "post_at": None, "stragglers_terminated": False,
         "claims": [{"text": c["text"], "kind": c.get("kind"), "outcome": "STALE",
                     "detail": f"{why}: " + "; ".join(drift)} for c in intent.get("claims", [])],
         "outcome": "STALE",
@@ -1534,38 +1736,33 @@ def cmd_checkpoint(args) -> int:
         repair(run_id, "checkpoint")
         records, _ = load_records(run_id)
         index = rebuild_index(run_id, records)
-        if index["state"] != "open":
-            raise UsageError(f"run {run_id} is sealed")
-        cur = current_state_triplet(meta)
-        if cur["branch"] != meta["branch"]:
-            raise UsageError(f"branch changed: run belongs to {meta['branch']!r}")
-        if cur["plan_sha256"] != meta["plan_sha256"]:
-            raise UsageError("plan changed since the run began; begin a new run")
+        cur = _run_invariants(meta, index, run_id)
         state = index["phase"]
         if not admitted_checkpoint(state, phase):
             raise UsageError(f"checkpoint {phase!r} is not admitted in state {state!r}")
         unclosed = unclosed_phases(records, phase)
         if unclosed:
             raise UsageError("phases with attempts newer than their checkpoint: " + ", ".join(unclosed))
+        # A checkpoint must stand on evidence: no empty phase transitions.
+        if phase in CASE_PHASES and not has_pass(records, phase):
+            raise UsageError(f"checkpoint {phase} requires at least one PASS {phase} receipt")
         if phase == "final":
             ach = args.achieved
-            need = {"red": "red", "green": "green", "refactored-green": "refactor"}.get(ach)
-            if need and PHASE_RANK[state] < PHASE_RANK[need]:
-                raise UsageError(f"--achieved {ach} requires state >= {need}, state is {state}")
+            need = ACHIEVED_NEEDS.get(ach)
+            if need:
+                if PHASE_RANK[state] < PHASE_RANK[need]:
+                    raise UsageError(f"--achieved {ach} requires state >= {need}, state is {state}")
+                if not has_pass(records, need):
+                    raise UsageError(f"--achieved {ach} requires at least one PASS {need} receipt")
         extras = {"next": args.next, "open": args.open, "blocked": args.blocked,
                   "not_applicable": args.not_applicable}
-        text = build_capsule(records, meta, extras)
+        text = build_capsule(records, meta, extras, state_after=phase)
         n = next_n(records)
         paths = store_paths(run_id)
         paths["capsules"].mkdir(parents=True, exist_ok=True)
         snap_name = f"{n:04d}-{phase}.md"
         snap = paths["capsules"] / snap_name
-        tmp = paths["capsules"] / (snap_name + ".tmp")
-        with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
-            fh.write(text)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, snap)
+        _atomic_write(snap, text)
         head_n = n - 1
         rec = {
             "ref": f"{run_id}#{n}", "n": n, "run": run_id, "kind": "checkpoint", "at_utc": now_utc(),
@@ -1620,21 +1817,31 @@ def cmd_export(args) -> int:
         for rec in records:
             if rec.get("kind") == "checkpoint":
                 snap = paths["capsules"] / rec["capsule_path"]
-                text = snap.read_text(encoding="utf-8") if snap.is_file() else ""
+                if not snap.is_file():
+                    raise UsageError(f"checkpoint capsule missing from the store: {rec['capsule_path']}")
+                text = snap.read_text(encoding="utf-8")
+                digest = sha256_bytes(text.encode("utf-8"))
+                if digest != rec.get("capsule_sha256"):
+                    raise UsageError(f"checkpoint capsule does not match its record: {rec['capsule_path']}")
                 capsules.append({"phase": rec["phase"], "path": rec["capsule_path"],
-                                 "text": text, "sha256": sha256_bytes(text.encode("utf-8"))})
+                                 "text": text, "sha256": digest})
         payload = {
             "schema": SCHEMA, "run": index, "exported_at": now_utc(),
             "records_through": next_n(records) - 1, "events": records, "capsules": capsules,
         }
         new_text = canonical_json(payload) + "\n"
-        if out.exists():
+        if os.path.lexists(out):
+            if os.path.islink(out) or not out.is_file():
+                raise UsageError(f"export target is not a regular file: {out}")
             try:
                 old = json.loads(out.read_text(encoding="utf-8"))
             except ValueError:
                 raise UsageError(f"existing export is not valid JSON: {out}")
-            old_events = old.get("events") or []
-            old_caps = old.get("capsules") or []
+            if (not isinstance(old, dict) or old.get("schema") != SCHEMA
+                    or not isinstance(old.get("run"), dict) or old["run"].get("id") != run_id
+                    or not isinstance(old.get("events"), list) or not isinstance(old.get("capsules"), list)):
+                raise UsageError(f"existing file is not an export of run {run_id}: {out}")
+            old_events, old_caps = old["events"], old["capsules"]
             if old_events != records[:len(old_events)] or old_caps != capsules[:len(old_caps)]:
                 raise UsageError(f"existing export is not a prefix of the current ledger: {out}")
             if len(old_events) == len(records) and len(old_caps) == len(capsules) \
