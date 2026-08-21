@@ -64,9 +64,10 @@ NOT_APPLICABLE_ENTRY_RE = re.compile(r"^(?!.*\breceipt [0-9a-f]{12}\b)Not applic
 def test_configuration_ok(value: str, root: Path | None = None) -> bool:
     """Configuration file paths only: repo-relative (no absolute, no `..`),
     path-shaped, and — when `root` is given — existing regular files under it.
-    `Not applicable — <reason>` is the only alternative."""
+    `Not applicable — <reason>` (reason free of transcription shapes) is the
+    only alternative."""
     if NOT_APPLICABLE_ENTRY_RE.match(value):
-        return True
+        return not prose_transcription(value)
     if RECEIPT_RE.search(value) or "→" in value or "·" in value:
         return False
     tokens = [t.strip().strip("`") for t in re.split(r"[,\s]+", value) if t.strip()]
@@ -532,16 +533,20 @@ def validate(log_path: Path) -> tuple[int, list]:
             cells = [c.strip() for c in s_.strip("|").split("|")]
             if len(cells) == 4 and EVIDENCE_CELL_RE.match(cells[3]):
                 cited.update(RECEIPT_RE.findall(cells[3]))
-    # Receipt tokens anywhere outside a validated citation entry are rejected,
-    # and so are prohibited transcription shapes in prose (Deviations, Files
-    # changed, Summary, …): commands and exits live only in the export.
+    # Receipt tokens anywhere outside a validated citation entry are rejected;
+    # and EVERY content line — headings, metadata, cells, citation summaries,
+    # not-run reasons, prose — is scanned for transcription shapes (receipt
+    # tokens scrubbed first). Commands and exits live only in the export. The
+    # only line with its own rule is `**Test configuration**:` (path tokens).
     for no, line in lines:
-        if no in citation_lines or re.match(r"^#{1,2} ", line):
-            continue
-        if RECEIPT_RE.search(line):
+        if no not in citation_lines and RECEIPT_RE.search(line):
             errors.add("g", f"line {no}: receipt token outside a citation field (Receipts bullets, Baseline runs, Final lines, Evidence cells) — transcriptions cannot hide in Deviations or prose")
-        elif prose_transcription(line) and not re.match(r"^-\s*\*\*Test configuration\*\*:", line.strip()):
-            errors.add("g", f"line {no}: command/exit transcription shape in prose or metadata (exit codes, `→`, backticked commands, flags, runner + script) — commands and exits live only in the export")
+            continue
+        if re.match(r"^-\s*\*\*Test configuration\*\*:", line.strip()):
+            continue
+        scrub = re.sub(r"`receipt [0-9a-f]{12}`|\breceipt [0-9a-f]{12}\b", "", line)
+        if prose_transcription(scrub):
+            errors.add("g", f"line {no}: command/exit transcription shape (exit codes, `→`, backticked commands, flags, runner + script) — commands and exits live only in the export")
 
     # A citation in a section must be an attempt of that section's phase
     for rc, phase, no in phase_citations:

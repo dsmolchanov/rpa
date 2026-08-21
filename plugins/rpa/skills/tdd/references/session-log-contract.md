@@ -109,9 +109,11 @@ accepts no other layout.
   fields alone. Prose fields may not carry transcription shapes either: no
   exit-code phrases (`exit 0`, `exited 1`), no `→`, no backticked commands
   (a backticked span with whitespace), no shell flags, no runner + script
-  tokens (`python3 x.py`, `npx jest …`). The same shapes are rejected inside
-  citation summaries, Evidence/reason cells, and the bold metadata lines
-  (`**Repository State**` is two single tokens: `` `branch` at `commit` ``).
+  tokens (`python3 x.py`, `npx jest …`). Every content line of the log is
+  scanned for those shapes — the title, metadata lines, table cells,
+  citation summaries, not-run / not-applicable reasons, and prose alike
+  (`**Repository State**` is two single tokens: `` `branch` at `commit` ``);
+  only `**Test configuration**:` has its own (path-token) rule.
   Configuration files named in `**Test configuration**` must be regular
   files (not symlinks) resolving inside the repository.
   `valid Red` cites a `red` receipt of that case with `outcome PASS` and a

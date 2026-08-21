@@ -3,10 +3,10 @@
 **Date**: 2026-08-21T00:00:00+00:00
 **Test Plan**: `thoughts/shared/tests/2026-08-21-TEST-docs-positive.md`
 **Requested Phase**: `full`
-**Repository State**: `master` at `28469c5ab774`
+**Repository State**: `master` at `d040d94c6ccf`
 **Evidence schema**: `tdd/1`
-**Evidence run**: `tdd-20260821-223138-ee130fd6-9a9067`
-**Evidence export**: `receipts/tdd-20260821-223138-ee130fd6-9a9067.json`
+**Evidence run**: `tdd-20260821-223757-ee130fd6-94658f`
+**Evidence export**: `receipts/tdd-20260821-223757-ee130fd6-94658f.json`
 
 ## Baseline
 
@@ -20,24 +20,24 @@
 
 | Case ID | Layer | Disposition | Evidence |
 |---|---|---|---|
-| U-01 | unit | Green | receipt f556a441bf32 — sample.test_x passes |
-| U-02 | unit | Green | receipt b848109d8522 — sample.test_y passes |
+| U-01 | unit | Green | receipt 322d82116510 — sample.test_x passes |
+| U-02 | unit | Green | receipt efb8a037c364 — sample.test_y passes |
 
 ## Red Phase
 
 - **Files changed**: tests/test_x.py
 - **Receipts**:
-  - `receipt 92e32397618d`: AssertionError: missing behavior
-  - `receipt d6e61a8be4e6`: AssertionError: missing behavior
+  - `receipt a09a15d85a07`: AssertionError: missing behavior
+  - `receipt 92a7fb483bdd`: AssertionError: missing behavior
 - **Deviations**: None
 
 ## Green Phase
 
 - **Files changed**: src/x.py
 - **Receipts**:
-  - `receipt 04131e200df6`: red inputs changed during Green; restored and re-ran
-  - `receipt f556a441bf32`: 1 passed
-  - `receipt b848109d8522`: 1 passed
+  - `receipt a54c0d6cfa28`: red inputs changed during Green; restored and re-ran
+  - `receipt 322d82116510`: 1 passed
+  - `receipt efb8a037c364`: 1 passed
 - **Deviations**: None
 
 ## Refactor Phase
@@ -48,7 +48,7 @@
 
 ## Final Verification
 
-- **Focused suite**: `receipt 38bec04c2d00`: ok
+- **Focused suite**: `receipt 0e7987b6cada`: ok
 - **Relevant surrounding suite**: Not applicable — synthetic fixture
 - **Coverage policy**: Not applicable — no threshold defined
 - **Manual verification**: Not applicable — no manual cases

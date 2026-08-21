@@ -353,6 +353,12 @@ def main() -> int:
     # transcription in a bold metadata line
     log_mut("metadata-transcription", lambda t: t.replace(
         f"**Repository State**: `master` at `{sc.head[:12]}`", "**Repository State**: python3 test.py exited 0", 1))
+    # not-applicable configuration reason carrying a transcription
+    log_mut("test-configuration-na-transcription", lambda t: t.replace(
+        f"- **Test configuration**: `{sc.plan_rel}`", "- **Test configuration**: Not applicable — python3 test.py exited 0", 1))
+    # transcription in the session title
+    log_mut("title-transcription", lambda t: t.replace(
+        "# TDD Session: valid fixture", "# TDD Session: python3 test.py exited 0", 1))
     # absolute executable + script in Test configuration
     log_mut("test-configuration-absolute", lambda t: t.replace(
         f"- **Test configuration**: `{sc.plan_rel}`", "- **Test configuration**: /usr/bin/python3 tests/test_x.py", 1))
