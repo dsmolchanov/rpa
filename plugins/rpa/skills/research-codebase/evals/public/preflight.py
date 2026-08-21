@@ -5996,22 +5996,24 @@ def _run_preflight(registration_isolation_ok):
             and single_clock,
             notes)
 
-        # The wrapper's parse-time @-imports must cover BOTH install
-        # layouts: plugin (${CLAUDE_PLUGIN_ROOT} set) and Quick Install
-        # (files copied under ~/.claude, variable unset) — with only the
-        # plugin form, non-plugin invocations lose the embedded kernel
-        # and artifact contract entirely.
-        wrapper_text = (HERE.parents[3] / "commands"
-                        / "research_codebase.md").read_text(encoding="utf-8")
+        # The command wrappers that used to @-import the kernel were
+        # removed in 5f10550 (workflow skills superseded them), so the
+        # old "wrapper embeds kernel + contract" check read a file that
+        # no longer exists and crashed the preflight. Both install
+        # layouts — plugin (${CLAUDE_PLUGIN_ROOT}) and the manual copy
+        # under ~/.claude/skills — now ship the skill package itself
+        # verbatim, so the capability to prove is that the package is
+        # self-contained: SKILL.md and the artifact contract travel
+        # together and SKILL.md points at the contract.
+        skill_root = HERE.parents[1]
+        skill_md = skill_root / "SKILL.md"
+        contract_md = skill_root / "references" / "artifact-contract.md"
+        skill_text = (skill_md.read_text(encoding="utf-8")
+                      if skill_md.is_file() else "")
         ok &= check(
-            "command wrapper embeds kernel + contract in both install layouts",
-            all(ref in wrapper_text for ref in (
-                "@${CLAUDE_PLUGIN_ROOT}/skills/research-codebase/SKILL.md",
-                "@~/.claude/skills/research-codebase/SKILL.md",
-                "@${CLAUDE_PLUGIN_ROOT}/skills/research-codebase/references"
-                "/artifact-contract.md",
-                "@~/.claude/skills/research-codebase/references"
-                "/artifact-contract.md")),
+            "skill package carries kernel + artifact contract in both install layouts",
+            skill_md.is_file() and contract_md.is_file()
+            and "references/artifact-contract.md" in skill_text,
             notes)
 
         # Each v2 adapter must IMPORT its contract at parse time
@@ -6073,7 +6075,10 @@ def _run_preflight(registration_isolation_ok):
             "step5_probe", HERE / "step5_operator.py")
         step5 = _ilu.module_from_spec(_spec_s5)
         _spec_s5.loader.exec_module(step5)
-        plan_text = (HERE.parents[3] / "thoughts" / "shared" / "plans"
+        # The pilot plan lives under the repository root's thoughts/, not
+        # under plugins/rpa/ (HERE.parents[3] is the plugin root;
+        # HERE.parents[5] is the repository root).
+        plan_text = (HERE.parents[5] / "thoughts" / "shared" / "plans"
                      / "2026-07-26-thinking-model-modernization-pilot.md"
                      ).read_text(encoding="utf-8")
         seal_registration_recorded = (
