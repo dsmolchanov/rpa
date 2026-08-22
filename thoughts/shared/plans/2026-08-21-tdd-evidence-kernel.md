@@ -1469,7 +1469,7 @@ closed at the artifact gate and in CI by `validate_docs.py`).
 
 #### Manual Verification
 
-- [ ] Read the updated `tdd/SKILL.md` once end-to-end and confirm no step still asks the model to transcribe a command/exit by hand (the only human-judgment check in this plan).
+- [x] Read the updated `tdd/SKILL.md` once end-to-end and confirm no step still asks the model to transcribe a command/exit by hand (the only human-judgment check in this plan). **Signed off 2026-08-22** — third human read-through of `SKILL.md` and `references/session-log-contract.md` on clean `master` at `718725e`: no step asks for command/exit transcription; Baseline records configuration-file paths only; all execution evidence is receipt-only; legacy and colon-prefixed command/exit citations are rejected by the validator; valid receipt summaries remain accepted. No findings, no files changed.
       - **Human review 2026-08-21 (first pass): not satisfied** — the
         session-log contract incorporated by `SKILL.md` still asked for
         `[argv] → [exit]` in every phase's bullets and in Final Verification,
@@ -1486,8 +1486,8 @@ closed at the artifact gate and in CI by `validate_docs.py`).
         anchored receipt-only citations) with fixtures. Subsequent Codex
         rounds on PR #18 hardened the same invariant (every content line,
         hidden content, cells, metadata, configuration tokens; VL-31…VL-62).
-        **Third human read-through pending**; the box above stays unchecked
-        until it passes.
+        **Third human read-through passed (2026-08-22, master `718725e`)**;
+        the criterion is ticked above.
 
 ---
 
