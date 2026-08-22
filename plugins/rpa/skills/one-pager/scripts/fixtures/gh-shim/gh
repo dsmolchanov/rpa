@@ -7,6 +7,10 @@ Behaviour is selected by GH_SHIM_MODE:
   fail       non-zero exit with an ordinary error
   auth       non-zero exit with an authentication error
 
+GH_SHIM_FAIL_ON, when set to a subcommand word (e.g. "checks" or "view"),
+fails only that subcommand while the others still answer — the shape that
+hides a degraded source behind a healthy-looking row.
+
 GH_SHIM_SHA, when set, is the commit the canned merged pull request owns.
 """
 
@@ -26,6 +30,11 @@ def emit(payload):
     sys.stdout.write(json.dumps(payload))
     return 0
 
+
+FAIL_ON = os.environ.get("GH_SHIM_FAIL_ON")
+if FAIL_ON and len(ARGS) > 1 and ARGS[1] == FAIL_ON:
+    sys.stderr.write(f"gh: {FAIL_ON} is unavailable\n")
+    sys.exit(1)
 
 if MODE == "fail":
     sys.stderr.write("gh: unexpected server response\n")

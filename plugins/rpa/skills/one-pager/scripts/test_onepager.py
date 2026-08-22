@@ -106,7 +106,7 @@ class Base(unittest.TestCase):
                 os.symlink(found, self.bindir / tool)
 
     # -- helpers ---------------------------------------------------------
-    def env(self, gh=None, sha=None, rpa_home=None):
+    def env(self, gh=None, sha=None, rpa_home=None, fail_on=None):
         path = str(self.bindir)
         env = dict(os.environ, TZ="UTC")
         env.pop("RPA_HOME", None)
@@ -115,6 +115,8 @@ class Base(unittest.TestCase):
             env["GH_SHIM_MODE"] = gh
             if sha:
                 env["GH_SHIM_SHA"] = sha
+            if fail_on:
+                env["GH_SHIM_FAIL_ON"] = fail_on
         env["PATH"] = path
         if rpa_home:
             env["RPA_HOME"] = str(rpa_home)
@@ -215,7 +217,7 @@ class TestGenerate(Base):
         repo = self.repo()
         out = self.generate(repo).stdout
         self.assertIn("| gh-prs | not_applicable | gh not found |", out)
-        self.assertIn("| gh-checks | not_applicable | gh not found |", out)
+        self.assertIn("| gh-checks | not_applicable | open pull requests unavailable |", out)
 
     def test_op05_gh_success(self):
         repo = self.repo(remote=True)
@@ -237,7 +239,7 @@ class TestGenerate(Base):
     def test_op06_gh_malformed_and_failing(self):
         repo = self.repo(remote=True)
         out = self.generate(repo, env=self.env(gh="malformed")).stdout
-        self.assertIn("| gh-prs | failed | malformed json |", out)
+        self.assertIn("| gh-prs | failed | malformed json (2 of 2 calls failed) |", out)
         self.assertIn("# One-pager: demo", out, "the digest still renders")
 
         res = self.generate(repo, env=self.env(gh="fail"))
@@ -397,7 +399,8 @@ class TestGenerate(Base):
         self.assertIn("mode: all", text)
         self.assertIn("## demo", text)
         self.assertIn("## other", text)
-        self.assertIn("| demo: git | passed |", text)
+        self.assertIn("| demo | passed |", text)
+        self.assertIn("| other | passed |", text)
         self.invoke("validate", str(page))
 
         res = self.invoke(
@@ -427,6 +430,68 @@ class TestGenerate(Base):
         broken.write_text(json.dumps({"schema": 2, "mode": "repo", "repos": []}), encoding="utf-8")
         res = self.invoke("validate", str(broken), expect=1)
         self.assertIn("one-pager: i — schema must be 1", res.stdout)
+
+    def test_op18_truncated_page_keeps_json_parity(self):
+        """Bounding must reshape the facts, not only the Markdown: the CI job
+        generates with --json and validates, so a truncated page whose
+        companion still described every item would fail every publish."""
+        repo = self.repo()
+        for i in range(60):
+            self.write(repo, f"thoughts/shared/plans/2026-08-2{i % 10}-p{i}.md", PLAN)
+            self.commit(repo, f"commit number {i:02d} with a deliberately long subject line")
+        self.generate(repo, "--write", "--json")
+        page = self.page(repo)
+        text = page.read_text(encoding="utf-8")
+        self.assertRegex(text, r"- \[\+\d+ more\]", "this page must be truncated")
+        self.invoke("validate", str(page))  # exit 0 => companion matches
+        facts = json.loads(page.with_suffix(".json").read_text(encoding="utf-8"))
+        entry = facts["repos"][0]
+        self.assertIn("truncated", entry, "the facts record what was dropped")
+        rendered = len(entry["landed"]) + len(entry["unattributed"])
+        self.assertLess(rendered, 60, "the facts are sliced, not merely annotated")
+        self.assertGreater(entry["window"]["commits"], rendered, "the window count is unchanged")
+
+    def test_op19_malformed_companion_is_rejected(self):
+        repo = self.repo()
+        self.generate(repo, "--write", "--json")
+        page = self.page(repo)
+        page.with_suffix(".json").write_text("{not json", encoding="utf-8")
+        res = self.invoke("validate", str(page), expect=1)
+        self.assertIn("one-pager: h — companion JSON is not valid JSON", res.stdout)
+
+    def test_op20_per_pr_check_failures_reach_the_sources_row(self):
+        """A failing `gh pr checks` must not be reported as `pending` behind a
+        `passed` row — that presents a degraded source as a healthy one."""
+        repo = self.repo(remote=True)
+        out = self.generate(repo, env=self.env(gh="ok", fail_on="checks")).stdout
+        self.assertIn("| gh-prs | passed |", out, "the PR list itself still worked")
+        self.assertRegex(out, r"\| gh-checks \| failed \|")
+        self.assertIn("checks unknown", out, "an unreadable rollup is not `pending`")
+        self.assertNotIn("- #9 checks fail", out, "an unknown rollup is not a red check")
+
+    def test_op20_pr_view_failure_reaches_the_sources_row(self):
+        repo = self.repo(remote=True)
+        out = self.generate(repo, env=self.env(gh="ok", fail_on="view")).stdout
+        self.assertRegex(out, r"\| gh-prs \| failed \|")
+
+    def test_op21_cross_repo_bounds_are_reachable_or_refused(self):
+        home = self.tmp / "rpa-home"
+        repos = [str(self.repo(f"repo{i}")) for i in range(5)]
+        res = self.invoke(
+            "generate", "--repos", *repos, "--since", "2026-08-01", "--write",
+            env=self.env(rpa_home=home),
+        )
+        page = Path(res.stdout.strip())
+        self.assertLessEqual(len(page.read_text(encoding="utf-8").splitlines()), 160)
+        self.invoke("validate", str(page))  # a supported set must validate
+
+        repos.append(str(self.repo("repo5")))
+        repos.append(str(self.repo("repo6")))
+        res = self.invoke(
+            "generate", "--repos", *repos, "--since", "2026-08-01", "--write",
+            env=self.env(rpa_home=home), expect=2,
+        )
+        self.assertIn("do not fit the 160-line bound", res.stderr)
 
     def test_op17_relocatable_package(self):
         elsewhere = self.tmp / "relocated"

@@ -151,7 +151,9 @@ optional `## Narrative`.
   commit did not arrive through a pull request.
 - **Open** — open pull requests with draft flag, review decision, and a check
   rollup: `pass` when every check passes or is skipped, `fail` when any check
-  fails, `pending` otherwise.
+  fails, `pending` otherwise, and `unknown` when the rollup could not be read.
+  `unknown` is never folded into `pending`: that would state something about
+  the pull request when the truth is that a call failed.
 - **Artifacts** — files under an artifact root that are in the **union** of
   (a) files changed by commits in the window and (b) dirty or untracked files
   reported by `git status --porcelain --untracked-files=all`. The union is
@@ -181,10 +183,21 @@ optional `## Narrative`.
   - `next: <text> (<path>)`
   - `#<N> checks fail`
 
-- **Sources** — a table with one row per source: `git`, `gh-prs`,
+- **Sources** — in `mode: repo`, one row per source: `git`, `gh-prs`,
   `gh-checks`, `gh-runs`, and one per artifact root (`plans`, `tests`,
   `implementations`, `handoffs`, `research`, `debt`, `test-suite`). Never a
   row for `one-pagers`.
+
+  A row aggregates **every call behind it** — `gh-prs` covers the merged and
+  open listings and one `gh pr view` per merged pull request; `gh-checks`
+  covers one `gh pr checks` per open pull request. Any failed call fails the
+  row, with a reason naming how many failed. A per-call outcome that never
+  reaches the table is a degraded source presented as a healthy one.
+
+  In `mode: all` the table carries **one aggregated row per repository**
+  (`failed` when any of its sources failed, naming them; otherwise `passed`
+  with the count of `not_applicable` sources). Eleven rows per repository
+  would put the page over its bound before a single fact was rendered.
 
 ## Criterion states
 
@@ -234,6 +247,15 @@ then list items. A list is truncated at its **tail**
 required heading always survive. The reserve is what makes appending a
 narrative to an already-maximal digest safe.
 
+Truncation is applied to the **facts**, not only to the rendered Markdown: the
+lists in the JSON are sliced and the per-section counts recorded under
+`truncated`. A companion that still described every item would fail the parity
+check (`h`) on exactly the pages that need truncating.
+
+When structure alone exceeds the bound — enough repositories that their
+headers and source rows do not fit — generation **fails with a usage error**
+naming the limit rather than emitting a page its own validator would reject.
+
 ## Narrative
 
 The skill may append:
@@ -270,6 +292,7 @@ prose ("a one-screen page") are not flagged.
       "artifacts": [],
       "health": [],
       "next": [],
+      "truncated": {"landed": 3},
       "sources": [{"source": "git", "outcome": "passed", "reason": ""}]
     }
   ]

@@ -109,7 +109,7 @@ window.head: 65f286fca408fe1c4406fc58ff540561d175f149
 | --- | --- | --- |
 | git | passed |  |
 | gh-prs | not_applicable | gh not found |
-| gh-checks | not_applicable | gh not found |
+| gh-checks | not_applicable | open pull requests unavailable |
 | gh-runs | not_applicable | gh not found |
 | plans | passed |  |
 | tests | not_applicable | absent |

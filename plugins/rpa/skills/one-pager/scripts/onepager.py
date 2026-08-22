@@ -266,16 +266,39 @@ def gh_prs(repo, state, since=None):
 
 
 def gh_pr_commits(repo, number):
-    data, outcome, _ = _gh(repo, ["pr", "view", str(number), "--json", "commits"])
+    data, outcome, reason = _gh(repo, ["pr", "view", str(number), "--json", "commits"])
     if outcome != "passed" or not isinstance(data, dict):
-        return []
-    return [c.get("oid", "") for c in data.get("commits", []) if isinstance(c, dict)]
+        return [], outcome, reason
+    return (
+        [c.get("oid", "") for c in data.get("commits", []) if isinstance(c, dict)],
+        outcome,
+        reason,
+    )
+
+
+def combine(parts):
+    """One Sources row from many calls: any failure fails the row. A per-call
+    outcome that never reaches the table is a degraded source presented as a
+    healthy one."""
+    parts = [p for p in parts if p]
+    failed = [(o, r) for o, r in parts if o == "failed"]
+    if failed:
+        reason = failed[0][1] or "call failed"
+        if len(failed) > 1:
+            reason = f"{reason} ({len(failed)} of {len(parts)} calls failed)"
+        return "failed", reason
+    skipped = [(o, r) for o, r in parts if o == "not_applicable"]
+    if skipped and len(skipped) == len(parts):
+        return "not_applicable", skipped[0][1]
+    return "passed", ""
 
 
 def gh_checks(repo, number):
     data, outcome, reason = _gh(repo, ["pr", "checks", str(number), "--json", "name,bucket"])
     if outcome != "passed" or not isinstance(data, list):
-        return "pending", outcome, reason
+        # Never report an unreadable rollup as `pending`: that is a claim
+        # about the pull request, not about the failed call.
+        return "unknown", outcome, reason
     buckets = [str(c.get("bucket", "")).lower() for c in data if isinstance(c, dict)]
     if any(b == "fail" for b in buckets):
         return "fail", outcome, reason
@@ -530,13 +553,14 @@ def collect_repo_facts(path, since_arg, previous):
     branch = default_branch(repo)
 
     merged, merged_outcome, merged_reason = gh_prs(repo, "merged", since)
-    sources.append({"source": "gh-prs", "outcome": merged_outcome, "reason": merged_reason})
+    pr_parts = [(merged_outcome, merged_reason)]
     window_shas = {c["sha"] for c in commits}
     pr_commit_shas = {}
     landed = []
     for pr in merged:
         number = pr.get("number")
-        shas = gh_pr_commits(repo, number)
+        shas, shas_outcome, shas_reason = gh_pr_commits(repo, number)
+        pr_parts.append((shas_outcome, shas_reason))
         pr_commit_shas[number] = shas
         merge_oid = (pr.get("mergeCommit") or {}).get("oid") if isinstance(pr.get("mergeCommit"), dict) else None
         if not (window_shas & set(shas)) and merge_oid not in window_shas:
@@ -554,10 +578,12 @@ def collect_repo_facts(path, since_arg, previous):
     unattributed = attribute_commits(commits, merged, pr_commit_shas)
 
     open_raw, open_outcome, open_reason = gh_prs(repo, "open")
-    sources.append({"source": "gh-checks", "outcome": open_outcome, "reason": open_reason})
+    pr_parts.append((open_outcome, open_reason))
+    check_parts = []
     open_prs = []
     for pr in open_raw:
-        rollup, _, _ = gh_checks(repo, pr.get("number"))
+        rollup, check_outcome, check_reason = gh_checks(repo, pr.get("number"))
+        check_parts.append((check_outcome, check_reason))
         open_prs.append(
             {
                 "number": pr.get("number"),
@@ -568,6 +594,16 @@ def collect_repo_facts(path, since_arg, previous):
             }
         )
     open_prs.sort(key=lambda p: p["number"], reverse=True)
+
+    prs_outcome, prs_reason = combine(pr_parts)
+    sources.append({"source": "gh-prs", "outcome": prs_outcome, "reason": prs_reason})
+    if check_parts:
+        checks_outcome, checks_reason = combine(check_parts)
+    elif open_outcome == "passed":
+        checks_outcome, checks_reason = "not_applicable", "no open pull requests"
+    else:
+        checks_outcome, checks_reason = open_outcome, "open pull requests unavailable"
+    sources.append({"source": "gh-checks", "outcome": checks_outcome, "reason": checks_reason})
 
     run, run_outcome, run_reason = gh_runs(repo, branch)
     sources.append({"source": "gh-runs", "outcome": run_outcome, "reason": run_reason})
@@ -667,10 +703,10 @@ def _bullets(name, entry):
     return []
 
 
-def _section(title, bullets, kept, level="##"):
+def _section(title, bullets, kept, dropped, level="##"):
     lines = [f"{level} {title}", ""]
     shown = [_clip(b) for b in bullets[:kept]]
-    dropped = len(bullets) - kept
+    dropped += len(bullets) - kept
     if not shown and dropped <= 0:
         shown = ["- none"]
     lines += shown
@@ -678,6 +714,50 @@ def _section(title, bullets, kept, level="##"):
         lines.append(f"- [+{dropped} more]")
     lines.append("")
     return lines
+
+
+def _keep_and_drop(entry, name, index, kept):
+    """(keep, already-dropped) for one section. `kept` is the search loop's
+    side channel; without it the counts come from the facts themselves, which
+    is what makes the JSON companion agree with the Markdown."""
+    bullets = _bullets(name, entry)
+    dropped = int((entry.get("truncated") or {}).get(name, 0))
+    keep = len(bullets) if kept is None else kept.get((index, name), len(bullets))
+    return bullets, keep, dropped
+
+
+def materialize(facts, kept):
+    """Write the search loop's decisions into the facts: slice each list and
+    record what was dropped. After this, `render_markdown(facts)` alone
+    reproduces the bounded page and `facts_json(facts)` describes exactly it."""
+    for index, entry in enumerate(facts["repos"]):
+        truncated = {}
+        for name in SECTION_NAMES:
+            key = (index, name)
+            if key not in kept:
+                continue
+            total = len(_bullets(name, entry))
+            keep = kept[key]
+            dropped = total - keep
+            if dropped <= 0:
+                continue
+            truncated[name] = dropped
+            if name == "landed":
+                # one rendered list over two fact lists: pull requests first,
+                # then unattributed commits, so the tail drops the oldest.
+                prs = min(keep, len(entry["landed"]))
+                entry["landed"] = entry["landed"][:prs]
+                entry["unattributed"] = entry["unattributed"][: max(0, keep - prs)]
+            elif name == "open":
+                entry["open"] = entry["open"][:keep]
+            elif name == "artifacts":
+                entry["artifacts"] = entry["artifacts"][:keep]
+            elif name == "health":
+                entry["health"] = entry["health"][:keep]
+            elif name == "next":
+                entry["next"] = entry["next"][:keep]
+        if truncated:
+            entry["truncated"] = truncated
 
 
 def _sources_table(rows, prefix=""):
@@ -721,9 +801,8 @@ def render_markdown(facts, kept=None):
             "",
         ]
         for name in SECTION_NAMES:
-            bullets = _bullets(name, entry)
-            keep = len(bullets) if kept is None else kept.get((0, name), len(bullets))
-            lines += _section(SECTION_TITLES[name], bullets, keep)
+            bullets, keep, dropped = _keep_and_drop(entry, name, 0, kept)
+            lines += _section(SECTION_TITLES[name], bullets, keep, dropped)
         lines += _sources_table(entry["sources"])
         return "\n".join(lines).rstrip("\n") + "\n"
 
@@ -746,12 +825,25 @@ def render_markdown(facts, kept=None):
             "",
         ]
         for name in ("landed", "open", "next"):
-            bullets = _bullets(name, entry)
-            keep = len(bullets) if kept is None else kept.get((index, name), len(bullets))
-            lines += _section(SECTION_TITLES[name], bullets, keep, level="###")
-        rows += [dict(row, source=f"{entry['repo']}: {row['source']}") for row in entry["sources"]]
+            bullets, keep, dropped = _keep_and_drop(entry, name, index, kept)
+            lines += _section(SECTION_TITLES[name], bullets, keep, dropped, level="###")
+        rows.append(aggregate_sources(entry))
     lines += _sources_table(rows)
     return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def aggregate_sources(entry):
+    """`mode: all` carries one row per repository: eleven rows each would put
+    the page over its bound before a single fact was rendered."""
+    rows = entry["sources"]
+    failed = [r["source"] for r in rows if r["outcome"] == "failed"]
+    skipped = [r["source"] for r in rows if r["outcome"] == "not_applicable"]
+    if failed:
+        outcome, reason = "failed", "failed: " + ", ".join(sorted(failed))
+    else:
+        outcome = "passed"
+        reason = f"{len(skipped)} not_applicable" if skipped else ""
+    return {"source": entry["repo"], "outcome": outcome, "reason": reason}
 
 
 def _over_budget(text, mode):
@@ -774,7 +866,14 @@ def allocate_and_bound(facts):
     while _over_budget(text, mode):
         candidates = [(count, key) for key, count in kept.items() if count > 0]
         if not candidates:
-            break
+            # Structure alone exceeds the bound. Emitting the page anyway
+            # would hand the caller a digest its own validator rejects, so
+            # refuse instead — the caller can split the repository set.
+            max_lines, _ = BOUNDS[mode]
+            raise UsageError(
+                f"{len(facts['repos'])} repositories do not fit the "
+                f"{max_lines}-line bound for mode {mode}; pass fewer --repos"
+            )
         best = max(c for c, _ in candidates)
         pick = min(
             (k for c, k in candidates if c == best),
@@ -782,7 +881,8 @@ def allocate_and_bound(facts):
         )
         kept[pick] -= 1
         text = render_markdown(facts, kept)
-    return text
+    materialize(facts, kept)
+    return render_markdown(facts)
 
 
 # ---------------------------------------------------------------------------
@@ -1095,14 +1195,17 @@ def cmd_validate(args):
         errors = validate_json(obj)
     else:
         companion = None
+        extra = []
         sibling = path.with_suffix(".json")
         if sibling.is_file():
             try:
                 companion = json.loads(sibling.read_text(encoding="utf-8"))
-            except ValueError:
+            except ValueError as exc:
                 companion = None
-                print("one-pager: h — companion JSON is not valid JSON")
-        errors = validate_text(path.read_text(encoding="utf-8", errors="replace"), companion)
+                extra.append(f"one-pager: h — companion JSON is not valid JSON: {exc}")
+        errors = extra + validate_text(
+            path.read_text(encoding="utf-8", errors="replace"), companion
+        )
     for error in errors:
         print(error)
     return 1 if errors else 0
