@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""Canned `gh` for one-pager tests. Never touches the network.
+
+Behaviour is selected by GH_SHIM_MODE:
+  ok         canned JSON (default)
+  malformed  invalid JSON on stdout, exit 0
+  fail       non-zero exit with an ordinary error
+  auth       non-zero exit with an authentication error
+
+GH_SHIM_SHA, when set, is the commit the canned merged pull request owns.
+"""
+
+import json
+import os
+import sys
+
+MODE = os.environ.get("GH_SHIM_MODE", "ok")
+SHA = os.environ.get("GH_SHIM_SHA", "0" * 40)
+ARGS = sys.argv[1:]
+
+
+def emit(payload):
+    if MODE == "malformed":
+        sys.stdout.write("{not json")
+        return 0
+    sys.stdout.write(json.dumps(payload))
+    return 0
+
+
+if MODE == "fail":
+    sys.stderr.write("gh: unexpected server response\n")
+    sys.exit(1)
+if MODE == "auth":
+    sys.stderr.write("gh: To get started with GitHub CLI, please run: gh auth login\n")
+    sys.exit(4)
+
+if ARGS[:2] == ["pr", "list"]:
+    state = ARGS[ARGS.index("--state") + 1] if "--state" in ARGS else "open"
+    if state == "merged":
+        sys.exit(
+            emit(
+                [
+                    {
+                        "number": 7,
+                        "title": "canned merged pull request",
+                        "mergedAt": "2026-08-21T10:00:00Z",
+                        "author": {"login": "octocat"},
+                        "mergeCommit": {"oid": SHA},
+                        "files": [{"path": "a.txt"}, {"path": "b.txt"}],
+                    }
+                ]
+            )
+        )
+    sys.exit(
+        emit(
+            [
+                {
+                    "number": 9,
+                    "title": "canned open pull request",
+                    "isDraft": False,
+                    "reviewDecision": "REVIEW_REQUIRED",
+                    "headRefName": "feat/canned",
+                }
+            ]
+        )
+    )
+
+if ARGS[:2] == ["pr", "view"]:
+    sys.exit(emit({"commits": [{"oid": SHA}]}))
+
+if ARGS[:2] == ["pr", "checks"]:
+    sys.exit(emit([{"name": "unit", "bucket": "pass"}, {"name": "e2e", "bucket": "fail"}]))
+
+if ARGS[:2] == ["run", "list"]:
+    sys.exit(emit([{"headSha": SHA, "conclusion": "success", "status": "completed"}]))
+
+sys.exit(emit([]))
