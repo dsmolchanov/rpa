@@ -48,6 +48,18 @@ Required fields:
 
 **Other Notes**: Additional references and useful information
 
+## Session end
+
+After the handoff file is written, refresh the repository's digest:
+
+```bash
+python3 <one-pager skill-dir>/scripts/onepager.py generate --write
+```
+
+The handoff is uncommitted at this point; the digest is what surfaces its
+next steps to the following session. Report a failed refresh — it never
+blocks the handoff and never edits it.
+
 ## Resume
 Resume work using:
 ```bash

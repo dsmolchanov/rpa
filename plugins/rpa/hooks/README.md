@@ -9,6 +9,9 @@
 | `lint` | `Stop` | root `package.json` has a `lint` script | exit 2 |
 | `related-tests` | `Stop` | root test script is Jest-backed and changed files exist | exit 2 |
 
+Hooks are gates, never writers: the session-end one-pager refresh is a step in
+the `tdd`, `create_handoff`, and `validate_plan` workflows, not a hook.
+
 Every invocation prints one machine-readable outcome: `passed`, `failed`, or
 `not_applicable` with a reason. Missing applicability is not treated as a
 pass, and applicable failures are never hidden.

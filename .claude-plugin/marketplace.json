@@ -9,7 +9,7 @@
     {
       "name": "rpa",
       "description": "Structured software development workflows with technical debt management, refactoring tools, and planning utilities",
-      "version": "2.1.0",
+      "version": "2.2.0",
       "source": "./plugins/rpa",
       "category": "development",
       "homepage": "https://github.com/dsmolchanov/rpa"

@@ -87,6 +87,14 @@ ONE_PAGER_FIXTURE_CASES = (
     "mode-caps", "narrative-invents-facts", "narrative-unmarked",
     "next-bad-shape", "oversized", "receipt-token", "sources-bad-outcome",
 )
+# The session-ending workflows must refresh the repository digest, and must do
+# it AFTER their own primary artifact exists: (file, primary-artifact anchor).
+ONE_PAGER_CALL = "onepager.py generate --write"
+ONE_PAGER_CALL_SITES = (
+    (Path("skills") / "tdd" / "SKILL.md", "evidence.py export"),
+    (Path("commands") / "create_handoff.md", "## Document Sections"),
+    (Path("commands") / "validate_plan.md", "**Write the report**"),
+)
 # Session logs are discovered by the contract's mandatory file name shape
 # (skills/tdd/references/session-log-contract.md) AND by their H1.
 SESSION_LOG_NAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-TDD-SESSION-.+\.md$")
@@ -823,6 +831,38 @@ def check_one_pagers(root, errors):
                 errors.append(f"{rel}: {line}")
 
 
+def check_one_pager_call_sites(root, errors):
+    """The session-ending workflows refresh the digest, and do it after their
+    own artifact is written — a digest generated first would omit the very
+    artifact that triggered it (the artifact is still uncommitted at that
+    point). Deterministic text-order gate, not a claim about runtime."""
+    base = plugin_root(root)
+    if not (base / "skills" / "one-pager").is_dir():
+        # not_applicable: this root does not ship the one-pager skill.
+        return
+    for rel, anchor in ONE_PAGER_CALL_SITES:
+        path = base / rel
+        if not path.is_file():
+            errors.append(f"one-pager call site missing: {rel}")
+            continue
+        text = path.read_text(encoding="utf-8")
+        call_at = text.find(ONE_PAGER_CALL)
+        anchor_at = text.find(anchor)
+        if call_at < 0:
+            errors.append(
+                f"{rel}: no session-end digest refresh (`{ONE_PAGER_CALL}`)"
+            )
+            continue
+        if anchor_at < 0:
+            errors.append(f"{rel}: primary-artifact anchor not found: {anchor!r}")
+            continue
+        if call_at < anchor_at:
+            errors.append(
+                f"{rel}: the digest refresh precedes the primary artifact step "
+                f"({anchor!r}); it would omit the artifact that triggered it"
+            )
+
+
 def validate(root, exclude_fixtures=True):
     errors = []
     check_commands(root, errors)
@@ -834,6 +874,7 @@ def validate(root, exclude_fixtures=True):
     check_session_logs(root, errors)
     check_one_pager_validator(root, errors)
     check_one_pagers(root, errors)
+    check_one_pager_call_sites(root, errors)
     check_links(root, errors, exclude_fixtures=exclude_fixtures)
     return errors
 

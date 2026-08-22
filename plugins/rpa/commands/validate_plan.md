@@ -180,6 +180,18 @@ Always verify:
 - [ ] Documentation updated if needed
 - [ ] Manual test steps are clear
 
+## Session end
+
+After the validation report is written, refresh the repository's digest:
+
+```bash
+python3 <one-pager skill-dir>/scripts/onepager.py generate --write
+```
+
+The report is uncommitted at this point; the digest is what surfaces it to the
+following session. Report a failed refresh — it never blocks the report and
+never edits it.
+
 ## Relationship to Other Commands
 
 Recommended workflow:

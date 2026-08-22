@@ -25,6 +25,7 @@ This approach reduces errors, improves code quality, and creates documentation t
 | `/validate_plan` | Verify that a plan was correctly implemented |
 | `/create_handoff` | Create handoff documents to transfer work between sessions |
 | `/resume_handoff` | Resume work from a handoff document |
+| `/one-pager` | Digest the last work in a repository — what landed, what is open, what is next |
 | `/commit` | Create well-structured git commits for session changes |
 | `/debug` | Investigate problems via logs, DB state, and git history without editing files |
 | `/create-test-plan` | Create comprehensive test plans and TDD strategies |
@@ -34,6 +35,35 @@ This approach reduces errors, improves code quality, and creates documentation t
 | `/refactor` | Refactor monolithic modules into focused, testable modules |
 | `/tech-debt-sweep` | Scan codebase for technical debt and generate paydown plan |
 | `/tech_debt_trends` | Analyze technical debt trends over time |
+
+### One-pager and scheduling
+
+`/rpa:one-pager` writes a bounded, deterministic digest of a repository's
+recent work to `thoughts/shared/one-pagers/`. It is refreshed on **events**,
+never per commit:
+
+- **Session end** — the `tdd`, `create_handoff`, and `validate_plan`
+  workflows refresh it after writing their own artifact, so the log, handoff,
+  or report they just produced is visible even though it is still uncommitted.
+- **Default-branch push** — `.github/workflows/one-pager.yml` in this
+  repository regenerates the page and publishes it to the job summary, an
+  artifact, and the unprotected `status/one-pager` branch. It does not commit
+  to a protected default branch. Other repositories adopt it by copying that
+  workflow; nothing else needs installing, because the script travels with the
+  plugin.
+- **Schedule (cross-repository)** — run
+  `/rpa:one-pager --repos <path> <path>…` from a **local** Claude Desktop
+  scheduled task. The page lands in `$RPA_HOME/one-pagers/` (default
+  `~/.rpa/one-pagers/`) and is never committed.
+
+  A cloud Claude Code routine can also produce it, with different
+  constraints: routines run against fresh clones of *selected GitHub
+  repositories*, so they cannot see local paths or `~/.rpa`. Such a routine
+  must install the plugin itself and post the result somewhere durable —
+  nothing it writes to disk survives the run.
+
+Regeneration is idempotent: an unchanged repository rewrites the same bytes,
+so refreshing costs nothing and never produces spurious diffs.
 
 ## When to Use Plugin vs Native Claude Code
 
