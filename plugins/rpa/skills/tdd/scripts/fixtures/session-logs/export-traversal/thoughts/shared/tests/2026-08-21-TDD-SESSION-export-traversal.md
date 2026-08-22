@@ -3,51 +3,52 @@
 **Date**: 2026-08-21T00:00:00+00:00
 **Test Plan**: `thoughts/shared/tests/2026-08-21-TEST-valid.md`
 **Requested Phase**: `full`
-**Repository State**: `master 7e865ad47ec6`
+**Repository State**: `master` at `16df64590050`
 **Evidence schema**: `tdd/1`
-**Evidence run**: `tdd-20260821-165934-cb157441-e61be9`
-**Evidence export**: `../receipts/tdd-20260821-165934-cb157441-e61be9.json`
+**Evidence run**: `tdd-20260822-082727-cb157441-23dd8f`
+**Evidence export**: `../receipts/tdd-20260822-082727-cb157441-23dd8f.json`
 
 ## Baseline
 
 - **Pre-existing worktree changes**: None
 - **Relevant implementation state**: absent (synthetic fixture)
-- **Test command(s)**: `python3 junit_stub.py --out={report} --case <case> --outcome <outcome>`
+- **Test configuration**: `thoughts/shared/tests/2026-08-21-TEST-valid.md`
+- **Baseline runs**: Not run — synthetic fixture
 - **Pre-existing relevant failures**: None observed
 
 ## Case Dispositions
 
 | Case ID | Layer | Disposition | Evidence |
 |---|---|---|---|
-| U-01 | unit | Green | receipt 7a0757cdf067 — sample.test_x passes |
-| U-02 | unit | Green | receipt cbabd3d0e2f1 — sample.test_y passes |
+| U-01 | unit | Green | receipt a92aeb33ca45 — sample.test_x passes |
+| U-02 | unit | Green | receipt 5f7242c46ee2 — sample.test_y passes |
 
 ## Red Phase
 
 - **Files changed**: tests/test_x.py
-- **Commands and exits**:
-  - `receipt ef00fa28bc1a` · `python3 /Users/dmitrymolchanov/Programs/rpa/plugins/rpa/skills/tdd/scripts/fixtures/junit_stub.py --out={report} --case sample.test_x --outcome failure --message AssertionError: missing behavior` → `1`: AssertionError: missing behavior
-  - `receipt 149f3981cbd5` · `python3 /Users/dmitrymolchanov/Programs/rpa/plugins/rpa/skills/tdd/scripts/fixtures/junit_stub.py --out={report} --case sample.test_y --outcome failure --message AssertionError: missing behavior` → `1`: AssertionError: missing behavior
+- **Receipts**:
+  - `receipt 12821b7fd10b`: AssertionError: missing behavior
+  - `receipt 50c940a82338`: AssertionError: missing behavior
 - **Deviations**: None
 
 ## Green Phase
 
 - **Files changed**: src/x.py
-- **Commands and exits**:
-  - `receipt 6d35692435d1` · `python3 /Users/dmitrymolchanov/Programs/rpa/plugins/rpa/skills/tdd/scripts/fixtures/junit_stub.py --out={report} --case sample.test_x --outcome pass` → `STALE`: red inputs changed during Green; restored and re-ran
-  - `receipt 7a0757cdf067` · `python3 /Users/dmitrymolchanov/Programs/rpa/plugins/rpa/skills/tdd/scripts/fixtures/junit_stub.py --out={report} --case sample.test_x --outcome pass` → `0`: 1 passed
-  - `receipt cbabd3d0e2f1` · `python3 /Users/dmitrymolchanov/Programs/rpa/plugins/rpa/skills/tdd/scripts/fixtures/junit_stub.py --out={report} --case sample.test_y --outcome pass` → `0`: 1 passed
+- **Receipts**:
+  - `receipt d5be971d96ac`: red inputs changed during Green; restored and re-ran
+  - `receipt a92aeb33ca45`: 1 passed
+  - `receipt 5f7242c46ee2`: 1 passed
 - **Deviations**: None
 
 ## Refactor Phase
 
 - **Refactorings applied**: Not applicable — Green code is already minimal
-- **Commands and exits**:
+- **Receipts**:
   - Not applicable — Green code is already minimal
 
 ## Final Verification
 
-- **Focused suite**: `receipt a2911d26f853` · `python3 -c print(ok)` → `0`: ok
+- **Focused suite**: `receipt 4f4ec75671c7`: ok
 - **Relevant surrounding suite**: Not applicable — synthetic fixture
 - **Coverage policy**: Not applicable — no threshold defined
 - **Manual verification**: Not applicable — no manual cases

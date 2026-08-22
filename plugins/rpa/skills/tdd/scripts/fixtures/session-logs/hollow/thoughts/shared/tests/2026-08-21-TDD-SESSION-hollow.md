@@ -3,16 +3,17 @@
 **Date**: 2026-08-21T00:00:00+00:00
 **Test Plan**: `thoughts/shared/tests/2026-08-21-TEST-valid.md`
 **Requested Phase**: `full`
-**Repository State**: `master 7e865ad47ec6`
+**Repository State**: `master` at `16df64590050`
 **Evidence schema**: `tdd/1`
-**Evidence run**: `tdd-20260821-165934-cb157441-e61be9`
-**Evidence export**: `receipts/tdd-20260821-165934-cb157441-e61be9.json`
+**Evidence run**: `tdd-20260822-082727-cb157441-23dd8f`
+**Evidence export**: `receipts/tdd-20260822-082727-cb157441-23dd8f.json`
 
 ## Baseline
 
 - **Pre-existing worktree changes**: None
 - **Relevant implementation state**: absent (synthetic fixture)
-- **Test command(s)**: `python3 junit_stub.py --out={report} --case <case> --outcome <outcome>`
+- **Test configuration**: `thoughts/shared/tests/2026-08-21-TEST-valid.md`
+- **Baseline runs**: Not run — synthetic fixture
 - **Pre-existing relevant failures**: None observed
 
 ## Case Dispositions
@@ -23,19 +24,19 @@
 ## Red Phase
 
 - **Files changed**: tests/test_x.py
-- **Commands and exits**:
+- **Receipts**:
 - **Deviations**: None
 
 ## Green Phase
 
 - **Files changed**: None
-- **Commands and exits**:
+- **Receipts**:
 - **Deviations**: None
 
 ## Refactor Phase
 
 - **Refactorings applied**: Not applicable — nothing
-- **Commands and exits**:
+- **Receipts**:
   - Not applicable — nothing
 
 ## Final Verification

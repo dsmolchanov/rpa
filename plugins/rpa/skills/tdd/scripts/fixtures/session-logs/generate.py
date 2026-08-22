@@ -129,9 +129,8 @@ class Scenario:
 
 
 def bullet(rec, summary):
-    argv = " ".join(Path(a).name if i == 0 else a for i, a in enumerate(rec["argv"]))
-    exit_str = "STALE" if rec["outcome"] == "STALE" else str(rec["exit"])
-    return f"  - `receipt {rec['receipt']}` · `{argv}` → `{exit_str}`: {summary}"
+    # Receipt-only: argv/exit live in the export, never in the log.
+    return f"  - `receipt {rec['receipt']}`: {summary}"
 
 
 def log_text(sc: Scenario, *, title, rows, red, green, refactor, final_focused, achieved, cycle,
@@ -142,7 +141,7 @@ def log_text(sc: Scenario, *, title, rows, red, green, refactor, final_focused, 
         f"**Date**: {DATE}T00:00:00+00:00",
         f"**Test Plan**: `{sc.plan_rel}`",
         "**Requested Phase**: `full`",
-        f"**Repository State**: `master {sc.head[:12]}`",
+        f"**Repository State**: `master` at `{sc.head[:12]}`",
         "**Evidence schema**: `tdd/1`",
         f"**Evidence run**: `{sc.run_id}`",
         f"**Evidence export**: `receipts/{sc.run_id}.json`",
@@ -151,7 +150,8 @@ def log_text(sc: Scenario, *, title, rows, red, green, refactor, final_focused, 
         "",
         "- **Pre-existing worktree changes**: None",
         "- **Relevant implementation state**: absent (synthetic fixture)",
-        "- **Test command(s)**: `python3 junit_stub.py --out={report} --case <case> --outcome <outcome>`",
+        f"- **Test configuration**: `{sc.plan_rel}`",
+        "- **Baseline runs**: Not run — synthetic fixture",
         "- **Pre-existing relevant failures**: None observed",
         "",
         "## Case Dispositions",
@@ -163,7 +163,7 @@ def log_text(sc: Scenario, *, title, rows, red, green, refactor, final_focused, 
         "## Red Phase",
         "",
         f"- **Files changed**: {files_red}",
-        "- **Commands and exits**:",
+        "- **Receipts**:",
         *red,
         "- **Deviations**: None",
         "",
@@ -171,12 +171,12 @@ def log_text(sc: Scenario, *, title, rows, red, green, refactor, final_focused, 
         "",
     ]
     if green:
-        lines += [f"- **Files changed**: {files_green}", "- **Commands and exits**:", *green, "- **Deviations**: None"]
+        lines += [f"- **Files changed**: {files_green}", "- **Receipts**:", *green, "- **Deviations**: None"]
     else:
-        lines += ["- **Files changed**: None", "- **Commands and exits**:",
+        lines += ["- **Files changed**: None", "- **Receipts**:",
                   "  - Not run — phase red requested", "- **Deviations**: Not run — phase red requested"]
     lines += ["", "## Refactor Phase", "", f"- **Refactorings applied**: {refactor}",
-              "- **Commands and exits**:", f"  - {refactor}", "", "## Final Verification", "",
+              "- **Receipts**:", f"  - {refactor}", "", "## Final Verification", "",
               f"- **Focused suite**: {final_focused}",
               "- **Relevant surrounding suite**: Not applicable — synthetic fixture",
               "- **Coverage policy**: Not applicable — no threshold defined",
@@ -191,7 +191,7 @@ def log_text(sc: Scenario, *, title, rows, red, green, refactor, final_focused, 
 
 
 def write_case(out: Path, name: str, sc: Scenario, text: str, export: dict | None = None,
-               extra_files: dict | None = None):
+               extra_files: dict | None = None, root_files: dict | None = None):
     case = out / name
     if case.exists():
         shutil.rmtree(case)
@@ -203,6 +203,10 @@ def write_case(out: Path, name: str, sc: Scenario, text: str, export: dict | Non
     (tests / "receipts" / f"{sc.run_id}.json").write_text(evidence.canonical_json(exp) + "\n")
     for rel, content in (extra_files or {}).items():
         p = tests / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content)
+    for rel, content in (root_files or {}).items():
+        p = case / rel
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content)
     return case
@@ -234,7 +238,7 @@ def build_valid(out: Path, name: str = "valid"):
              bullet(g1, "1 passed"), bullet(g2, "1 passed")]
     text = log_text(sc, title=f"{name} fixture", rows=rows, red=red, green=green,
                     refactor="Not applicable — Green code is already minimal",
-                    final_focused=f"`receipt {f1['receipt']}` · `python3 -c print(ok)` → `0`: ok",
+                    final_focused=f"`receipt {f1['receipt']}`: ok",
                     achieved="Green", cycle="complete")
     return sc, text, export, {"r1": r1, "r2": r2, "stale": stale, "g1": g1, "g2": g2, "f1": f1}
 
@@ -293,13 +297,13 @@ def main() -> int:
 
     sc, text, export, refs = build_valid(out)
     write_case(out, "valid", sc, text, export)
-    g1, r1, r2, stale, f1 = refs["g1"], refs["r1"], refs["r2"], refs["stale"], refs["f1"]
+    g1, g2, r1, r2, stale, f1 = refs["g1"], refs["g2"], refs["r1"], refs["r2"], refs["stale"], refs["f1"]
 
     # --- log-only mutations of valid -------------------------------------------
     def log_mut(name, fn):
         write_case(out, name, sc, fn(text), export)
 
-    log_mut("missing-receipt", lambda t: t.replace(f"  - `receipt {g1['receipt']}` · ", "  - ", 1))
+    log_mut("missing-receipt", lambda t: t.replace(f"  - `receipt {g1['receipt']}`: ", "  - ", 1))
     log_mut("unresolvable-receipt", lambda t: t.replace(f"receipt {r1['receipt']}", "receipt deadbeef0000"))
     log_mut("heading-order", lambda t: t.replace("## Red Phase", "@@G@@").replace("## Green Phase", "## Red Phase").replace("@@G@@", "## Green Phase"))
     log_mut("nonpass-disposition", lambda t: t.replace(
@@ -317,6 +321,102 @@ def main() -> int:
     log_mut("partial-cases", lambda t: "\n".join(l for l in t.splitlines() if not l.startswith("| U-02 |")) + "\n")
     log_mut("export-traversal", lambda t: t.replace(f"`receipts/{sc.run_id}.json`", f"`../receipts/{sc.run_id}.json`"))
     log_mut("export-absolute", lambda t: t.replace(f"`receipts/{sc.run_id}.json`", f"`/tmp/receipts/{sc.run_id}.json`"))
+    # trailing transcription after a valid receipt citation
+    log_mut("trailing-transcription", lambda t: t.replace(
+        f"  - `receipt {g1['receipt']}`: 1 passed", f"  - `receipt {g1['receipt']}`: 1 passed · `python3 junit_stub.py` → `0`", 1))
+    log_mut("baseline-runs-missing", lambda t: "\n".join(l for l in t.splitlines() if not l.startswith("- **Baseline runs**")) + "\n")
+    # transcription inside a Case Dispositions Evidence cell
+    log_mut("disposition-transcription", lambda t: t.replace(
+        f"| U-01 | unit | Green | receipt {g1['receipt']} — sample.test_x passes |",
+        f"| U-01 | unit | Green | receipt {g1['receipt']} — `python3 test.py` → `0` |", 1))
+    # legacy field name with the not-run alternative smuggled into Deviations
+    log_mut("receipts-field-missing", lambda t: t.replace(
+        "## Red Phase\n\n- **Files changed**: tests/test_x.py\n- **Receipts**:",
+        "## Red Phase\n\n- **Files changed**: tests/test_x.py\n- **Commands and exits**:", 1).replace(
+        "- **Deviations**: None\n\n## Green Phase", "- **Deviations**: Not run — legacy layout\n\n## Green Phase", 1))
+    # a not-run bullet next to receipt citations in the same Receipts field
+    log_mut("contradictory-not-run", lambda t: t.replace(
+        f"  - `receipt {g2['receipt']}`: 1 passed", f"  - `receipt {g2['receipt']}`: 1 passed\n  - Not run — claimed skipped", 1))
+    # a fifth disposition cell carrying a transcription
+    log_mut("extra-disposition-cell", lambda t: t.replace(
+        f"| U-01 | unit | Green | receipt {g1['receipt']} — sample.test_x passes |",
+        f"| U-01 | unit | Green | receipt {g1['receipt']} — sample.test_x passes | `python3 test.py` → `0` |", 1))
+    # hybrid/renamed field label
+    log_mut("receipts-label-hybrid", lambda t: t.replace("- **Receipts**:", "- **Receipts** and exits:"))
+    # legacy command-string field instead of Test configuration
+    log_mut("test-configuration-command", lambda t: t.replace(
+        f"- **Test configuration**: `{sc.plan_rel}`",
+        "- **Test command(s)**: `python3 junit_stub.py` → `0`", 1))
+    # unquoted transcription inside a citation summary
+    log_mut("citation-unquoted-transcription", lambda t: t.replace(
+        f"  - `receipt {g1['receipt']}`: 1 passed", f"  - `receipt {g1['receipt']}`: python3 test.py exited 0", 1))
+    # bare transcription inside a disposition Evidence cell
+    log_mut("disposition-bare-transcription", lambda t: t.replace(
+        f"| U-01 | unit | Green | receipt {g1['receipt']} — sample.test_x passes |",
+        f"| U-01 | unit | Green | receipt {g1['receipt']} — python3 test.py exited 0 |", 1))
+    # transcription in a bold metadata line
+    log_mut("metadata-transcription", lambda t: t.replace(
+        f"**Repository State**: `master` at `{sc.head[:12]}`", "**Repository State**: python3 test.py exited 0", 1))
+    # transcription inside an inline HTML comment
+    log_mut("inline-comment-transcription", lambda t: t.replace(
+        "- **Deviations**: None\n\n## Green Phase", "- **Deviations**: None <!-- python3 test.py exited 0 -->\n\n## Green Phase", 1))
+    # receipt token in the Layer cell of a disposition row
+    log_mut("receipt-in-layer-cell", lambda t: t.replace(
+        f"| U-02 | unit | Green | receipt {g2['receipt']}", f"| U-02 | unit receipt {r2['receipt']} | Green | receipt {g2['receipt']}", 1))
+    # path-invoked command in prose
+    log_mut("path-invoked-transcription", lambda t: t.replace(
+        "- **Deviations**: None\n\n## Green Phase", "- **Deviations**: ran ./scripts/test.sh then /usr/bin/python3 tests/test_x.py\n\n## Green Phase", 1))
+    # transcription hidden inside a fenced block
+    log_mut("fenced-transcription", lambda t: t.replace(
+        "- **Deviations**: None\n\n## Green Phase", "- **Deviations**: None\n\n```\n$ python3 test.py\nexit 0\n```\n\n## Green Phase", 1))
+    # extensionless runner command in prose
+    log_mut("extensionless-runner", lambda t: t.replace(
+        "- **Deviations**: None\n\n## Green Phase", "- **Deviations**: ran pytest tests then npm test\n\n## Green Phase", 1))
+    # VALID: a root-level Makefile as the test configuration
+    write_case(out, "valid-makefile-configuration", sc,
+               text.replace(f"- **Test configuration**: `{sc.plan_rel}`", "- **Test configuration**: `Makefile`", 1),
+               export, root_files={"Makefile": "test:\n\tpython3 -m pytest\n"})
+    # not-applicable configuration reason carrying a transcription
+    log_mut("test-configuration-na-transcription", lambda t: t.replace(
+        f"- **Test configuration**: `{sc.plan_rel}`", "- **Test configuration**: Not applicable — python3 test.py exited 0", 1))
+    # transcription in the session title
+    log_mut("title-transcription", lambda t: t.replace(
+        "# TDD Session: valid fixture", "# TDD Session: python3 test.py exited 0", 1))
+    # absolute executable + script in Test configuration
+    log_mut("test-configuration-absolute", lambda t: t.replace(
+        f"- **Test configuration**: `{sc.plan_rel}`", "- **Test configuration**: /usr/bin/python3 tests/test_x.py", 1))
+    # bare (unquoted) command/exit transcription in a prose field
+    log_mut("bare-transcription-in-prose", lambda t: t.replace(
+        "- **Deviations**: None\n\n## Green Phase", "- **Deviations**: python3 test.py exited 0\n\n## Green Phase", 1))
+    # Test configuration with the phase-style "Not run" fallback (only Not applicable is allowed)
+    log_mut("test-configuration-not-run", lambda t: t.replace(
+        f"- **Test configuration**: `{sc.plan_rel}`", "- **Test configuration**: Not run — no configuration", 1))
+    # Baseline runs citing a red receipt as baseline evidence
+    log_mut("baseline-cites-red", lambda t: t.replace(
+        "- **Baseline runs**: Not run — synthetic fixture", f"- **Baseline runs**: `receipt {r1['receipt']}`: baseline ok", 1))
+    # a phase section citing another phase's receipt (Red citing the Green receipt)
+    log_mut("phase-cites-other-phase", lambda t: t.replace(
+        f"  - `receipt {r2['receipt']}`: AssertionError: missing behavior", f"  - `receipt {g2['receipt']}`: AssertionError: missing behavior", 1))
+    # unquoted command in the exact Test configuration field
+    log_mut("test-configuration-unquoted-command", lambda t: t.replace(
+        f"- **Test configuration**: `{sc.plan_rel}`",
+        "- **Test configuration**: python3 junit_stub.py --case sample.test_x", 1))
+    # a receipt moved out of the Receipts bullets into Deviations
+    log_mut("receipt-outside-citation", lambda t: t.replace(
+        f"  - `receipt {g2['receipt']}`: 1 passed\n", "", 1).replace(
+        "- **Deviations**: None\n\n## Refactor Phase",
+        f"- **Deviations**: receipt {g2['receipt']} · `python3 junit_stub.py` → `0`\n\n## Refactor Phase", 1))
+    # an earlier duplicate Baseline runs line smuggling a transcription
+    log_mut("duplicate-baseline-runs", lambda t: t.replace(
+        "- **Baseline runs**: Not run — synthetic fixture",
+        f"- **Baseline runs**: `receipt {f1['receipt']}`: ok · `python3 test.py` → `0`\n- **Baseline runs**: Not run — synthetic fixture", 1))
+    # colon-prefixed transcription: a valid receipt citation whose summary is an argv/exit
+    log_mut("colon-transcription", lambda t: t.replace(
+        f"  - `receipt {g1['receipt']}`: 1 passed", f"  - `receipt {g1['receipt']}`: `python3 tests.py` → `0`", 1))
+    # a "Not run" entry that smuggles a receipt and a transcription after the reason
+    log_mut("not-run-with-transcription", lambda t: t.replace(
+        f"  - `receipt {g1['receipt']}`: 1 passed",
+        f"  - Not run — claimed no run · receipt {g1['receipt']} · `python3 old.py` → `0`", 1))
 
     hollow = log_text(sc, title="hollow fixture", rows=[], red=[], green=[],
                       refactor="Not applicable — nothing", final_focused="Not run — nothing", achieved="Green", cycle="complete")
@@ -327,6 +427,12 @@ def main() -> int:
     other_plan = PLAN_TEMPLATE.format(title="other", date=DATE) + "\n<!-- different content -->\n"
     write_case(out, "plan-mismatch", sc, text.replace(sc.plan_rel, f"thoughts/shared/tests/{DATE}-TEST-other.md"), export,
                extra_files={f"{DATE}-TEST-other.md": other_plan})
+
+    # test-configuration-symlink: the named configuration file is a symlink outside the repo
+    case = write_case(out, "test-configuration-symlink", sc,
+                      text.replace(f"- **Test configuration**: `{sc.plan_rel}`",
+                                   "- **Test configuration**: `thoughts/shared/tests/cfg.toml`", 1), export)
+    os.symlink("/etc/hosts", case / "thoughts" / "shared" / "tests" / "cfg.toml")
 
     # export-symlink: the export path is a symlink to the real file elsewhere
     case = write_case(out, "export-symlink", sc, text, export)
@@ -390,14 +496,17 @@ def main() -> int:
     pair[1] = recompute(pair[1])
     events = list(export["events"]) + pair
     e = dict(export, events=events, records_through=last_n + 1, run=dict(export["run"], records=len(events)))
-    exp_mut("record-after-final", e, text + f"\n<!-- {pair[1]['receipt']} -->\n" if False else text.replace(
-        f"- **Remaining blockers or follow-ups**: None",
-        f"- **Remaining blockers or follow-ups**: None (extra attempt `receipt {pair[1]['receipt']}`)"))
+    exp_mut("record-after-final", e, text.replace(
+        "- **Relevant surrounding suite**: Not applicable — synthetic fixture",
+        f"- **Relevant surrounding suite**: `receipt {pair[1]['receipt']}`: extra attempt after final", 1))
 
     # --- continuing-based cases ------------------------------------------------------
     sc2, text2, export2, refs2 = build_continuing(out)
     write_case(out, "valid-continuing", sc2, text2, export2)
     write_case(out, "unsealed-complete", sc2, text2.replace("- **Cycle state**: `continuing`", "- **Cycle state**: `complete`"), export2)
+    # two not-run bullets in a skipped phase (exactly one is required)
+    write_case(out, "two-not-run-bullets", sc2, text2.replace(
+        "  - Not run — phase red requested\n", "  - Not run — phase red requested\n  - Not applicable — also skipped\n", 1), export2)
     r1b = refs2["r1"]
     e, old, new = edit_pair(export2, r1b["ref"], lambda r: r.update(claims=[
         {"text": "exit != 0", "kind": "exit_ne0"} if r["kind"] == "started"

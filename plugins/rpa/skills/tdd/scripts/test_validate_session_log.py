@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Tests for validate_session_log.py against the fixtures under
-fixtures/session-logs/ (VL-01 … VL-31). Each invalid case must be rejected
+fixtures/session-logs/ (VL-01 … VL-62). Each invalid case must be rejected
 naming the contract check it violates; the two valid cases must pass."""
 
 from __future__ import annotations
@@ -49,6 +49,37 @@ CASES = [
     ("VL-28", "attempt-after-checkpoint", "l"),
     ("VL-29", "record-after-final", "l"),
     ("VL-31", "inline-comment-hidden", "i"),
+    ("VL-32", "trailing-transcription", "g"),
+    ("VL-33", "baseline-runs-missing", "g"),
+    ("VL-34", "not-run-with-transcription", "g"),
+    ("VL-35", "colon-transcription", "g"),
+    ("VL-36", "disposition-transcription", "j"),
+    ("VL-37", "receipts-field-missing", "g"),
+    ("VL-38", "contradictory-not-run", "h"),
+    ("VL-39", "extra-disposition-cell", "h"),
+    ("VL-40", "receipts-label-hybrid", "g"),
+    ("VL-41", "test-configuration-command", "g"),
+    ("VL-42", "duplicate-baseline-runs", "g"),
+    ("VL-43", "test-configuration-unquoted-command", "g"),
+    ("VL-44", "receipt-outside-citation", "g"),
+    ("VL-45", "test-configuration-not-run", "g"),
+    ("VL-46", "baseline-cites-red", "g"),
+    ("VL-47", "phase-cites-other-phase", "g"),
+    ("VL-48", "two-not-run-bullets", "h"),
+    ("VL-49", "test-configuration-absolute", "g"),
+    ("VL-50", "bare-transcription-in-prose", "g"),
+    ("VL-51", "citation-unquoted-transcription", "g"),
+    ("VL-52", "disposition-bare-transcription", "j"),
+    ("VL-53", "metadata-transcription", "g"),
+    ("VL-54", "test-configuration-symlink", "g"),
+    ("VL-55", "test-configuration-na-transcription", "g"),
+    ("VL-56", "title-transcription", "g"),
+    ("VL-57", "fenced-transcription", "g"),
+    ("VL-58", "extensionless-runner", "g"),
+    ("VL-59", "valid-makefile-configuration", None),
+    ("VL-60", "inline-comment-transcription", "g"),
+    ("VL-61", "receipt-in-layer-cell", "g"),
+    ("VL-62", "path-invoked-transcription", "g"),
 ]
 
 

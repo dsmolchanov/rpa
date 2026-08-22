@@ -36,8 +36,100 @@ EVIDENCE_DISPOSITIONS = {"valid Red", "Green", "refactored-green"}
 ACHIEVED_MAP = {"Red": "red", "Green": "green", "Refactored Green": "refactored-green", "Blocked": "blocked"}
 STATE_TO_ACHIEVED_PHASE = {"red": "Red", "green": "Green", "refactor": "Refactored Green"}
 RECEIPT_RE = re.compile(r"\breceipt ([0-9a-f]{12})\b")
+# Receipt-only citation shape, anchored over the WHOLE entry: the argv/exit
+# live in the export, never in the log — a summary may not carry backticked
+# commands, `→` exit arrows, or ` · ` separators.
+CITATION_RE = re.compile(r"^`receipt [0-9a-f]{12}`:\s*[^`→·\n]*\S[^`→·\n]*$")
 CASE_ROW_RE = re.compile(r"^\|\s*([UIE]-\d+)\s*\|")
 NOT_RUN_RE = re.compile(r"(Not run|Not applicable) — \S")
+# The not-run alternative is an ENTIRE entry too: `Not run — <reason>` /
+# `Not applicable — <reason>` with no backticks, exit arrows, separators, or
+# receipt tokens smuggled after the reason.
+NOT_RUN_ENTRY_RE = re.compile(r"^(?!.*\breceipt [0-9a-f]{12}\b)(Not run|Not applicable) — [^`→·\n]*\S$")
+
+
+# Case Dispositions Evidence cell: `receipt <hex12> — <salient assertion>`
+# (optionally containing the word stand-in) — same no-transcription rule.
+EVIDENCE_CELL_RE = re.compile(r"^receipt [0-9a-f]{12} — [^`→·\n]*\S$")
+REASON_CELL_RE = re.compile(r"^(?!.*\breceipt [0-9a-f]{12}\b)[^`→·\n]*\S$")
+# `**Test configuration**`: a list of configuration FILE PATHS (comma/space
+# separated, optionally backticked) — each token is path-shaped (no spaces,
+# contains `/` or `.`, no shell characters) — or an anchored not-run entry.
+PATH_TOKEN_RE = re.compile(r"^[A-Za-z0-9_@+./-]+$")
+EXTENSIONLESS_CONFIG = {"Makefile", "GNUmakefile", "Rakefile", "Justfile", "justfile", "Dockerfile",
+                        "Procfile", "Gemfile", "Pipfile", "BUILD", "WORKSPACE", "Taskfile"}
+
+
+NOT_APPLICABLE_ENTRY_RE = re.compile(r"^(?!.*\breceipt [0-9a-f]{12}\b)Not applicable — [^`→·\n]*\S$")
+
+
+def test_configuration_ok(value: str, root: Path | None = None) -> bool:
+    """Configuration file paths only: repo-relative (no absolute, no `..`),
+    path-shaped, and — when `root` is given — existing regular files under it.
+    `Not applicable — <reason>` (reason free of transcription shapes) is the
+    only alternative."""
+    if NOT_APPLICABLE_ENTRY_RE.match(value):
+        return not prose_transcription(value)
+    if RECEIPT_RE.search(value) or "→" in value or "·" in value:
+        return False
+    tokens = [t.strip().strip("`") for t in re.split(r"[,\s]+", value) if t.strip()]
+    if not tokens:
+        return False
+    for t in tokens:
+        if not PATH_TOKEN_RE.match(t):
+            return False
+        if "/" not in t and "." not in t and Path(t).name not in EXTENSIONLESS_CONFIG:
+            return False
+        if t.startswith("/") or t.startswith("~") or ".." in Path(t).parts:
+            return False
+        if root is not None:
+            p = root / t
+            if os.path.islink(p) or not p.is_file():
+                return False
+            real = Path(os.path.realpath(p))
+            try:
+                real.relative_to(Path(os.path.realpath(root)))
+            except ValueError:
+                return False
+    return True
+
+
+# Prohibited transcription shapes in PROSE (outside citation fields): exit-code
+# phrases, exit arrows, backticked spans containing whitespace (commands),
+# shell flags, and runner + script-file tokens.
+PROSE_TRANSCRIPTION_RES = [
+    re.compile(r"\bexit(?:ed|s)?\s*(?:code\s*)?(?:=|:)?\s*\d+\b", re.I),
+    re.compile(r"→\s*`?\d+`?"),
+    re.compile(r"(?<![\w/])--?[A-Za-z][\w-]*(?:=\S+)?(?=\s|$)"),
+    re.compile(r"\b(?:python3?|node|npx|npm|pnpm|yarn|pytest|go|cargo|make|bash|sh|ruby|java|dotnet)\s+\S+\.(?:py|js|ts|sh|rb|go|rs|java|cs)\b"),
+    # unambiguous runner words followed by any argument (extensionless commands
+    # such as `npm test`, `pytest tests`, `cargo test`, `npx jest`)
+    re.compile(r"\b(?:python3?|pytest|node|npx|npm|pnpm|yarn|cargo|dotnet|gradle|mvn|bundle|rspec|jest|vitest|mocha|tox|nox)\s+[A-Za-z0-9_./:@-]+"),
+    # common-word runners only when followed by a sub-command or target
+    re.compile(r"\b(?:go|make|bash|sh|ruby|java)\s+(?:test|run|build|check|lint|vet|-[A-Za-z]|[A-Za-z0-9_./-]+\.[A-Za-z0-9]+)\b"),
+    # path-invoked executables: `./x.sh`, `./bin/test args`, `/usr/bin/python3 …`,
+    # absolute binaries under common system prefixes
+    re.compile(r"(?:^|\s)(?:\./|/)[A-Za-z0-9_./-]+\.(?:sh|py|js|ts|rb|pl|exe)\b"),
+    re.compile(r"(?:^|\s)(?:\./|/)[A-Za-z0-9_./-]+\s+[A-Za-z0-9_./:@-]+"),
+    re.compile(r"(?:^|\s)/(?:usr|bin|sbin|opt|home|tmp)/\S+"),
+]
+
+
+def prose_transcription(line: str) -> bool:
+    # backticked spans are paired left-to-right; a span containing whitespace
+    # is a command, a single token (path, sha, branch) is not
+    if any(re.search(r"\s", span) for span in re.findall(r"`([^`\n]*)`", line)):
+        return True
+    return any(r.search(line) for r in PROSE_TRANSCRIPTION_RES)
+
+
+def entry_ok(body: str) -> bool:
+    """A receipt-only citation or an anchored not-run entry — nothing else;
+    the free-text part may not carry a transcription shape either."""
+    if not (CITATION_RE.match(body) or NOT_RUN_ENTRY_RE.match(body)):
+        return False
+    summary = re.sub(r"^`receipt [0-9a-f]{12}`:\s*", "", body)
+    return not prose_transcription(summary)
 PHASE_RANK = {"baseline": 0, "red": 1, "green": 2, "refactor": 3, "final": 4}
 TERMINAL_KINDS = ("finished", "error", "interrupted", "timeout")
 INTENT_FIELDS = ("ref", "n", "run", "workflow", "phase", "case", "because", "risk", "argv", "cwd",
@@ -109,6 +201,14 @@ def content_lines(text: str) -> list:
     return out
 
 
+def hidden_lines(text: str) -> list:
+    """(lineno, line) pairs that content_lines() drops — fenced and indented
+    code, HTML blocks and comments. They are invisible to the structural
+    checks but may not carry receipt tokens or transcription shapes."""
+    visible = {no for no, _ in content_lines(text)}
+    return [(no, line) for no, line in enumerate(text.splitlines(), 1) if no not in visible and line.strip()]
+
+
 def strip_inline_html_comments(s: str) -> str:
     return re.sub(r"<!--.*?-->", "", s)
 
@@ -168,12 +268,28 @@ def table_rows(body: list) -> list:
     return rows
 
 
+def field_lines(body: list, label: str) -> list:
+    """(lineno, value) for every top-level `- **<label>**:` line — the label is
+    matched EXACTLY (colon immediately after the closing emphasis)."""
+    pat = re.compile(r"^-\s*\*\*" + re.escape(label) + r"\*\*:\s*(.*)$")
+    out = []
+    for no, line in body:
+        m = pat.match(line.strip())
+        if m:
+            out.append((no, m.group(1).strip()))
+    return out
+
+
+def has_receipts_field(body: list) -> bool:
+    return len(field_lines(body, "Receipts")) == 1
+
+
 def commands_bullets(body: list) -> list:
-    """Nested bullets under a `**Commands and exits**:` line."""
+    """Nested bullets under the exact `**Receipts**:` line."""
     out, active = [], False
     for no, line in body:
         s = line.strip()
-        if re.match(r"^-\s*\*\*Commands and exits\*\*", s):
+        if re.match(r"^-\s*\*\*Receipts\*\*:", s):
             active = True
             continue
         if active:
@@ -332,18 +448,14 @@ def validate(log_path: Path) -> tuple[int, list]:
     for key in ("state", "achieved", "phase", "records", "reports"):
         if run.get(key) != derived.get(key):
             errors.add("d", f"export run.{key}={run.get(key)!r} disagrees with the ledger ({derived.get(key)!r})")
-    body_text = "\n".join(line for _, line in lines)
-    cited = set(RECEIPT_RE.findall(body_text))
+    # `cited` is derived ONLY from validated citation entries (collected in
+    # check g / the Evidence cells); receipt tokens anywhere else are rejected.
+    cited = set()
+    citation_lines = set()
+    # (receipt, section phase, lineno) for every validated citation — each must
+    # resolve to an attempt of THAT phase (checked once by_receipt is known)
+    phase_citations = []
     by_receipt = {r.get("receipt"): r for r in events if r.get("kind") in TERMINAL_KINDS + ("checkpoint",)}
-    for rc in cited:
-        rec = by_receipt.get(rc)
-        if rec and records_through is not None and rec.get("n", 0) > records_through:
-            errors.add("d", f"receipt {rc} cites n={rec.get('n')} beyond records_through={records_through}")
-
-    # (e) receipts resolve
-    for rc in sorted(cited):
-        if rc not in by_receipt:
-            errors.add("e", f"receipt {rc} does not resolve to a terminal or checkpoint record")
 
     # (f) recomputation and checkpoint binding
     cap_by_path = {c.get("path"): c for c in capsules}
@@ -364,20 +476,135 @@ def validate(log_path: Path) -> tuple[int, list]:
     # (g) commands-and-exits bullets
     phase_sections = {"red": find_section(secs, "## Red Phase"), "green": find_section(secs, "## Green Phase"),
                       "refactor": find_section(secs, "## Refactor Phase"), "final": find_section(secs, "## Final Verification")}
+    baseline = find_section(secs, "## Baseline")
+    # `**Test configuration**:` — exactly once, paths only (no command shapes)
+    for no, line in baseline:
+        if re.match(r"^-\s*\*\*Test command\(s\)\*\*", line.strip()):
+            errors.add("g", f"line {no}: legacy `**Test command(s)**` field — record `**Test configuration**:` (paths only); commands are not transcribed")
+    tc = field_lines(baseline, "Test configuration")
+    if len(tc) != 1:
+        errors.add("g", f"Baseline must carry exactly one `**Test configuration**:` line (found {len(tc)})")
+    for no, val in tc:
+        if not val:
+            errors.add("g", f"line {no}: `**Test configuration**` is empty")
+        elif not test_configuration_ok(val, root):
+            errors.add("g", f"line {no}: `**Test configuration**` must list existing repo-relative configuration files (e.g. `pyproject.toml`, `package.json`) or `Not applicable — <reason>`; absolute paths, commands, exits, and receipts are rejected (got {val[:60]!r})")
+    # `**Baseline runs**:` — exactly once, every occurrence entry-shaped
+    runs = field_lines(baseline, "Baseline runs")
+    if len(runs) != 1:
+        errors.add("g", f"Baseline must carry exactly one `**Baseline runs**:` line (found {len(runs)})")
+    for no, body in runs:
+        citation_lines.add(no)
+        if not body:
+            errors.add("g", f"line {no}: `**Baseline runs**` is empty")
+        elif not entry_ok(body):
+            errors.add("g", f"line {no}: `**Baseline runs**` must be `` `receipt <hex12>`: <summary> `` or `Not run — <reason>` (entire entry)")
+        else:
+            for rc in RECEIPT_RE.findall(body):
+                cited.add(rc)
+                phase_citations.append((rc, "baseline", no))
+    active = False
+    for bno, bline in baseline:
+        bs = bline.strip()
+        if re.match(r"^-\s*\*\*Baseline runs\*\*:", bs):
+            active = True
+            continue
+        if active and re.match(r"^\s{2,}-\s", bline):
+            b = re.sub(r"^-\s*", "", bs)
+            citation_lines.add(bno)
+            if not entry_ok(b):
+                errors.add("g", f"line {bno}: baseline receipt bullet must be receipt-only or `Not run — <reason>` (entire entry)")
+            else:
+                for rc in RECEIPT_RE.findall(b):
+                    cited.add(rc)
+                    phase_citations.append((rc, "baseline", bno))
+        elif active and re.match(r"^-\s", bs):
+            active = False
     for name in ("red", "green", "refactor"):
+        n_fields = len(field_lines(phase_sections[name], "Receipts"))
+        if n_fields != 1:
+            errors.add("g", f"{name} section must carry exactly one `**Receipts**:` field (found {n_fields}; the label is matched exactly)")
         for no, bullet in commands_bullets(phase_sections[name]):
-            if not RECEIPT_RE.search(bullet) and not NOT_RUN_RE.search(bullet):
-                errors.add("g", f"line {no}: commands bullet without `receipt <hex12>` / `Not run — …` / `Not applicable — …`")
+            body = re.sub(r"^-\s*", "", bullet)
+            citation_lines.add(no)
+            if not entry_ok(body):
+                errors.add("g", f"line {no}: receipt bullet must be receipt-only — `` `receipt <hex12>`: <salient result> `` "
+                                f"or an entire `Not run — <reason>` / `Not applicable — <reason>` entry; argv and exits live in the export")
+            else:
+                for rc in RECEIPT_RE.findall(body):
+                    cited.add(rc)
+                    phase_citations.append((rc, name, no))
     for key in ("Focused suite", "Relevant surrounding suite"):
-        val = None
-        for no, line in phase_sections["final"]:
-            s = line.strip().lstrip("- ").strip()
-            if s.startswith(f"**{key}**"):
-                val = s
-                if not RECEIPT_RE.search(s) and not NOT_RUN_RE.search(s):
-                    errors.add("g", f"line {no}: `**{key}**` needs `receipt <hex12>` / `Not run — …` / `Not applicable — …`")
-        if val is None:
-            errors.add("g", f"Final Verification lacks `**{key}**`")
+        found = field_lines(phase_sections["final"], key)
+        if len(found) != 1:
+            errors.add("g", f"Final Verification must carry exactly one `**{key}**:` line (found {len(found)})")
+        for no, body in found:
+            citation_lines.add(no)
+            if not entry_ok(body):
+                errors.add("g", f"line {no}: `**{key}**` must be `` `receipt <hex12>`: <summary> `` or an entire `Not run — <reason>` / `Not applicable — <reason>` entry")
+            else:
+                for rc in RECEIPT_RE.findall(body):
+                    cited.add(rc)
+                    phase_citations.append((rc, "final", no))
+    # Evidence cells are citation locations too (validated in check j below);
+    # the other three cells of a row are NOT — a receipt token there is rejected
+    disp_body = find_section(secs, "## Case Dispositions")
+    for no, line in disp_body:
+        s_ = line.strip()
+        if s_.startswith("|") and CASE_ROW_RE.match(s_):
+            citation_lines.add(no)
+            cells = [c.strip() for c in s_.strip("|").split("|")]
+            if any(RECEIPT_RE.search(c) for c in cells[:3]):
+                errors.add("g", f"line {no}: receipt token outside the Evidence cell of a disposition row")
+            if len(cells) == 4 and EVIDENCE_CELL_RE.match(cells[3]):
+                cited.update(RECEIPT_RE.findall(cells[3]))
+    # Inline HTML comment contents (<!-- … --> anywhere, incl. multi-line) are
+    # scanned like any other hidden content.
+    for m in re.finditer(r"<!--(.*?)-->", text, re.S):
+        inner = m.group(1)
+        cno = text.count("\n", 0, m.start()) + 1
+        if RECEIPT_RE.search(inner):
+            errors.add("g", f"line {cno}: receipt token inside an HTML comment")
+        elif any(prose_transcription(l) or re.search(r"(?:^|\s)(?:\$|>)\s*\S", l) for l in inner.splitlines()):
+            errors.add("g", f"line {cno}: command/exit transcription shape inside an HTML comment — commands and exits live only in the export")
+    # Receipt tokens anywhere outside a validated citation entry are rejected;
+    # and EVERY content line — headings, metadata, cells, citation summaries,
+    # not-run reasons, prose — is scanned for transcription shapes (receipt
+    # tokens scrubbed first). Commands and exits live only in the export. The
+    # only line with its own rule is `**Test configuration**:` (path tokens).
+    for no, line in lines:
+        if no not in citation_lines and RECEIPT_RE.search(line):
+            errors.add("g", f"line {no}: receipt token outside a citation field (Receipts bullets, Baseline runs, Final lines, Evidence cells) — transcriptions cannot hide in Deviations or prose")
+            continue
+        if re.match(r"^-\s*\*\*Test configuration\*\*:", line.strip()):
+            continue
+        scrub = re.sub(r"`receipt [0-9a-f]{12}`|\breceipt [0-9a-f]{12}\b", "", line)
+        if prose_transcription(scrub):
+            errors.add("g", f"line {no}: command/exit transcription shape (exit codes, `→`, backticked commands, flags, runner + script) — commands and exits live only in the export")
+    # Hidden content (fenced/indented code, HTML blocks, comments) may not carry
+    # receipt tokens or transcription shapes either: nothing is exempt.
+    for no, line in hidden_lines(text):
+        if RECEIPT_RE.search(line):
+            errors.add("g", f"line {no}: receipt token inside fenced/indented code, an HTML block, or a comment")
+        elif prose_transcription(line) or re.search(r"(?:^|\s)(?:\$|>)\s*\S", line):
+            errors.add("g", f"line {no}: command/exit transcription shape inside fenced/indented code, an HTML block, or a comment — commands and exits live only in the export")
+
+    # A citation in a section must be an attempt of that section's phase
+    for rc, phase, no in phase_citations:
+        rec = by_receipt.get(rc)
+        if rec is None:
+            continue  # reported by (e)
+        if rec.get("kind") == "checkpoint" or rec.get("phase") != phase:
+            errors.add("g", f"line {no}: receipt {rc} is a {rec.get('kind')} record of phase {rec.get('phase')!r}, cited as {phase} evidence")
+
+    # (d, tail) no citation may point beyond records_through; (e) receipts resolve
+    for rc in sorted(cited):
+        rec = by_receipt.get(rc)
+        if rec and records_through is not None and rec.get("n", 0) > records_through:
+            errors.add("d", f"receipt {rc} cites n={rec.get('n')} beyond records_through={records_through}")
+    for rc in sorted(cited):
+        if rc not in by_receipt:
+            errors.add("e", f"receipt {rc} does not resolve to a terminal or checkpoint record")
 
     # (h) case completeness
     planned: list = []
@@ -406,26 +633,38 @@ def validate(log_path: Path) -> tuple[int, list]:
     if unplanned_ledger:
         errors.add("h", f"ledger has attempts for unplanned cases {unplanned_ledger}")
     for r in rows:
-        if len(r) < 4:
-            errors.add("h", f"disposition row {r[:1]} has fewer than 4 cells")
+        if len(r) != 4:
+            errors.add("h", f"disposition row {r[:1]} must have exactly 4 cells (Case ID | Layer | Disposition | Evidence); got {len(r)}")
             continue
         if not re.fullmatch(r"[UIE]-\d+", r[0]):
             errors.add("h", f"disposition Case ID {r[0]!r} is not U-/I-/E- shaped")
         if r[2] not in DISPOSITIONS:
             errors.add("h", f"{r[0]}: disposition {r[2]!r} not in {sorted(DISPOSITIONS)}")
-        if r[2] not in EVIDENCE_DISPOSITIONS and not r[3].strip():
-            errors.add("h", f"{r[0]}: {r[2]} needs a reason in the Evidence cell")
+        cell = r[3].strip()
+        if r[2] in EVIDENCE_DISPOSITIONS:
+            if not EVIDENCE_CELL_RE.match(cell) or prose_transcription(re.sub(r"^receipt [0-9a-f]{12} — ", "", cell)):
+                errors.add("j", f"{r[0]}: Evidence cell must be `receipt <hex12> — <salient assertion>` with no transcribed command/exit (got {cell[:60]!r})")
+        elif not REASON_CELL_RE.match(cell) or prose_transcription(cell):
+            errors.add("h", f"{r[0]}: {r[2]} needs a plain reason in the Evidence cell (no receipt tokens, commands or exits)")
+        for extra in r[:3]:
+            if prose_transcription(extra):
+                errors.add("h", f"{r[0]}: transcription shape in a disposition cell ({extra[:40]!r})")
     for name in ("red", "green", "refactor"):
-        body = phase_sections[name]
-        bullets = commands_bullets(body)
-        has_receipt = any(RECEIPT_RE.search(b) for _, b in bullets)
-        section_text = "\n".join(l for _, l in body)
-        if not has_receipt and not NOT_RUN_RE.search(section_text):
-            errors.add("h", f"{name} section has no receipt bullets and is not marked `Not run — …` / `Not applicable — …`")
+        bullets = [re.sub(r"^-\s*", "", b) for _, b in commands_bullets(phase_sections[name])]
+        has_receipt = any(CITATION_RE.match(b) for b in bullets)
+        # The skipped-phase alternative must be stated IN the Receipts bullets —
+        # text elsewhere in the section (e.g. Deviations) does not count.
+        marked_not_run = len(bullets) == 1 and bool(NOT_RUN_ENTRY_RE.match(bullets[0]))
+        if not has_receipt and not marked_not_run:
+            errors.add("h", f"{name} section has no receipt citations under `**Receipts**:` and is not a single `Not run — …` / `Not applicable — …` bullet")
+        # The skipped-phase alternative is exclusive: a phase that cites receipts
+        # cannot also claim it was not run.
+        if has_receipt and any(NOT_RUN_ENTRY_RE.match(b) for b in bullets):
+            errors.add("h", f"{name} section mixes receipt citations with `Not run — …` / `Not applicable — …` bullets; a skipped phase uses the not-run entry as its only bullet")
 
     # (i) coverage: every attempt of phases red/green/refactor/final is cited
     for rec in terminals:
-        if rec.get("phase") in ("red", "green", "refactor", "final") and rec.get("receipt") not in cited:
+        if rec.get("phase") in ("baseline", "red", "green", "refactor", "final") and rec.get("receipt") not in cited:
             errors.add("i", f"{rec.get('ref')} ({rec.get('phase')}/{rec.get('case') or '-'} {rec.get('outcome')}) is not cited in the log")
 
     # (j) disposition <-> receipt; (k) manual-as-green

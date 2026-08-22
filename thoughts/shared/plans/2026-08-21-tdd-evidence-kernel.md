@@ -1470,6 +1470,24 @@ closed at the artifact gate and in CI by `validate_docs.py`).
 #### Manual Verification
 
 - [ ] Read the updated `tdd/SKILL.md` once end-to-end and confirm no step still asks the model to transcribe a command/exit by hand (the only human-judgment check in this plan).
+      - **Human review 2026-08-21 (first pass): not satisfied** — the
+        session-log contract incorporated by `SKILL.md` still asked for
+        `[argv] → [exit]` in every phase's bullets and in Final Verification,
+        and the validator only checked for a receipt token. **Fix (follow-up
+        PR)**: citations are receipt-only — `` `receipt <hex12>`: <salient
+        result> `` (argv/exit/outputs live in the export); the contract
+        template (`**Receipts**:` bullets, `**Baseline runs**`, Final lines),
+        acceptance criterion 6, the validator (check (g) now enforces the
+        receipt-only shape and rejects transcribed `· argv → exit` bullets),
+        the fixture generator and all fixtures were updated. **Second human
+        read-through (2026-08-21): two residual issues** — the Baseline field
+        still asked for repository command strings, and the citation regex was
+        prefix-only — both fixed (`**Test configuration**` path tokens;
+        anchored receipt-only citations) with fixtures. Subsequent Codex
+        rounds on PR #18 hardened the same invariant (every content line,
+        hidden content, cells, metadata, configuration tokens; VL-31…VL-62).
+        **Third human read-through pending**; the box above stays unchecked
+        until it passes.
 
 ---
 

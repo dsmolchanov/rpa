@@ -18,7 +18,7 @@ accepts no other layout.
 **Date**: [ISO date/time with timezone]
 **Test Plan**: `[repo-relative path — binding: the export's plan_path and plan sha must match]`
 **Requested Phase**: `[red | green | refactor | full]`
-**Repository State**: `[branch and commit at start]`
+**Repository State**: `[branch]` at `[commit]`
 **Evidence schema**: `tdd/1`
 **Evidence run**: `[run id from evidence.py begin]`
 **Evidence export**: `receipts/<run-id>.json`
@@ -27,7 +27,8 @@ accepts no other layout.
 
 - **Pre-existing worktree changes**: [paths, or None]
 - **Relevant implementation state**: [existing/partial/absent with evidence]
-- **Test command(s)**: `[exact commands discovered in repo]`
+- **Test configuration**: [repository files that define the test commands, e.g. `pyproject.toml`, `package.json` scripts, `Makefile` — paths only, no command strings]
+- **Baseline runs**: `receipt <hex12>`: [salient result] (or Not run — reason)
 - **Pre-existing relevant failures**: [evidence, or None observed]
 
 ## Case Dispositions
@@ -39,27 +40,27 @@ accepts no other layout.
 ## Red Phase
 
 - **Files changed**: [paths]
-- **Commands and exits**:
-  - `receipt <hex12>` · `[argv]` → `[exit]`: [expected failure signal]
+- **Receipts**:
+  - `receipt <hex12>`: [expected failure signal]
 - **Deviations**: [plan drift/duplicate/blocked case, or None]
 
 ## Green Phase
 
 - **Files changed**: [paths]
-- **Commands and exits**:
-  - `receipt <hex12>` · `[argv]` → `[exit]`: [test summary]
+- **Receipts**:
+  - `receipt <hex12>`: [test summary]
 - **Deviations**: [or Not run — reason]
 
 ## Refactor Phase
 
 - **Refactorings applied**: [behavior-preserving changes, or Not applicable — reason]
-- **Commands and exits**:
-  - `receipt <hex12>` · `[argv]` → `[exit]`: [test summary] (or Not run — reason / Not applicable — reason)
+- **Receipts**:
+  - `receipt <hex12>`: [test summary] (or Not run — reason / Not applicable — reason)
 
 ## Final Verification
 
-- **Focused suite**: `receipt <hex12>` · `[argv]` → `[exit]`: [summary] (or Not run — reason)
-- **Relevant surrounding suite**: `receipt <hex12>` · `[argv]` → `[exit]`: [summary] (or Not applicable — reason)
+- **Focused suite**: `receipt <hex12>`: [summary] (or Not run — reason)
+- **Relevant surrounding suite**: `receipt <hex12>`: [summary] (or Not applicable — reason)
 - **Coverage policy**: [measured result and configured threshold, or Not applicable — reason]
 - **Manual verification**: [outcome, pending authority, or Not applicable — reason]
 
@@ -76,10 +77,53 @@ accepts no other layout.
 
 - Every executed verification is a receipt from `scripts/evidence.py`, run
   with the phase and case it belongs to; the log cites the receipt and the
-  exported receipt file. **Every** attempt in the export is cited — a receipt
-  that is `STALE`, `SURPRISE`, `TIMEOUT` or `INTERRUPTED` is evidence of a
-  corrected belief, not something to omit. Concise salient output is enough.
-- Exactly one Case Dispositions row per case id in the test plan's §3 tables.
+  exported receipt file. Citations are **receipt-only**: `` `receipt <hex12>`:
+  <salient result> `` — the whole entry; the summary carries no backticked
+  commands, no `→` exit arrows, no ` · ` separators — because the argv, exit
+  status, outputs, and timestamps are persisted by the kernel in the export
+  and are never transcribed into the log. The alternative is likewise an
+  entire entry — `Not run — <reason>` / `Not applicable — <reason>` with no
+  receipt tokens, backticks or arrows after the reason. `**Baseline runs**`
+  is mandatory and has the same shape; baseline receipts are cited there. **Every** attempt in the export is cited — a receipt that is `STALE`,
+  `SURPRISE`, `TIMEOUT` or `INTERRUPTED` is evidence of a corrected belief,
+  not something to omit.
+- Exactly one Case Dispositions row per case id in the test plan's §3 tables;
+  an Evidence cell is `receipt <hex12> — <salient assertion>` (the word
+  `stand-in` may appear) or, for `already covered` / `blocked` /
+  `not_applicable`, a plain reason — never a transcribed command or exit.
+  Rows have exactly four cells. Every phase section carries the
+  `**Receipts**:` field; a skipped phase states `Not run — <reason>` as that
+  field's **only** bullet — a phase that cites receipts may not also carry a
+  not-run bullet. Field labels are matched **exactly** (`- **Label**:`, colon
+  immediately after the emphasis) and each mandatory field appears exactly
+  once: `**Test configuration**:` (existing repo-relative configuration
+  files only — e.g. `pyproject.toml`, `package.json`, `Makefile` — or `Not
+  applicable — <reason>`; no absolute paths, commands, exits, or receipts),
+  `**Baseline runs**:`, `**Receipts**:` per phase, `**Focused suite**:` and
+  `**Relevant surrounding suite**:`. A citation resolves to an attempt of the
+  section it sits in (`**Baseline runs**` → `baseline` receipts, a phase's
+  `**Receipts**` → that phase, Final lines → `final`). Receipt tokens may
+  appear **only** in
+  those citation fields and in Evidence cells — never in Deviations, Files
+  changed, Summary, or prose — and attempt coverage is computed from those
+  fields alone. Prose fields may not carry transcription shapes either: no
+  exit-code phrases (`exit 0`, `exited 1`), no `→`, no backticked commands
+  (a backticked span with whitespace), no shell flags, no runner + script
+  tokens (`python3 x.py`, `npx jest …`). Every content line of the log is
+  scanned for those shapes — the title, metadata lines, table cells,
+  citation summaries, not-run / not-applicable reasons, and prose alike
+  (`**Repository State**` is two single tokens: `` `branch` at `commit` ``)
+  — and so is hidden content (fenced or indented code, HTML blocks,
+  comments), which may carry neither receipt tokens nor transcription
+  shapes; only `**Test configuration**:` has its own (path-token) rule, which
+  also accepts well-known extensionless files (`Makefile`, `Dockerfile`,
+  `Gemfile`, …). Extensionless runner commands (`npm test`, `pytest tests`,
+  `cargo test`, `npx jest`) and path-invoked executables (`./x.sh`,
+  `/usr/bin/python3 …`) count as transcription shapes; HTML comment contents
+  are scanned wherever they open; a receipt token in a disposition row is
+  allowed only in its Evidence cell.
+  Configuration files named in `**Test configuration**` must be regular
+  files (not symlinks) resolving inside the repository.
   `valid Red` cites a `red` receipt of that case with `outcome PASS` and a
   `test … fail-with` claim (or, marked `stand-in`, the pair `exit != 0` +
   `contains`); `Green` cites a `green` receipt of that case whose `--requires`

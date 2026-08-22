@@ -88,6 +88,17 @@ SESSION_LOG_FIXTURE_CASES = (
     "trimmed-export", "intent-deleted", "duplicate-terminal", "ref-mismatch",
     "unsealed-complete", "achieved-mismatch", "partial-cases", "plan-mismatch",
     "export-traversal", "export-absolute", "export-symlink",
+    "trailing-transcription", "baseline-runs-missing", "not-run-with-transcription",
+    "colon-transcription", "disposition-transcription", "receipts-field-missing",
+    "contradictory-not-run", "extra-disposition-cell",
+    "receipts-label-hybrid", "test-configuration-command", "duplicate-baseline-runs",
+    "test-configuration-unquoted-command", "receipt-outside-citation",
+    "test-configuration-not-run", "baseline-cites-red", "phase-cites-other-phase", "two-not-run-bullets",
+    "test-configuration-absolute", "bare-transcription-in-prose",
+    "citation-unquoted-transcription", "disposition-bare-transcription", "metadata-transcription",
+    "test-configuration-symlink", "test-configuration-na-transcription", "title-transcription",
+    "fenced-transcription", "extensionless-runner", "valid-makefile-configuration",
+    "inline-comment-transcription", "receipt-in-layer-cell", "path-invoked-transcription",
     "attempt-after-checkpoint", "record-after-final",
 )
 
