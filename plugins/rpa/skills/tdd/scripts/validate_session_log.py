@@ -56,6 +56,8 @@ REASON_CELL_RE = re.compile(r"^(?!.*\breceipt [0-9a-f]{12}\b)[^`→·\n]*\S$")
 # separated, optionally backticked) — each token is path-shaped (no spaces,
 # contains `/` or `.`, no shell characters) — or an anchored not-run entry.
 PATH_TOKEN_RE = re.compile(r"^[A-Za-z0-9_@+./-]+$")
+EXTENSIONLESS_CONFIG = {"Makefile", "GNUmakefile", "Rakefile", "Justfile", "justfile", "Dockerfile",
+                        "Procfile", "Gemfile", "Pipfile", "BUILD", "WORKSPACE", "Taskfile"}
 
 
 NOT_APPLICABLE_ENTRY_RE = re.compile(r"^(?!.*\breceipt [0-9a-f]{12}\b)Not applicable — [^`→·\n]*\S$")
@@ -74,7 +76,9 @@ def test_configuration_ok(value: str, root: Path | None = None) -> bool:
     if not tokens:
         return False
     for t in tokens:
-        if not PATH_TOKEN_RE.match(t) or ("/" not in t and "." not in t):
+        if not PATH_TOKEN_RE.match(t):
+            return False
+        if "/" not in t and "." not in t and Path(t).name not in EXTENSIONLESS_CONFIG:
             return False
         if t.startswith("/") or t.startswith("~") or ".." in Path(t).parts:
             return False
@@ -98,6 +102,11 @@ PROSE_TRANSCRIPTION_RES = [
     re.compile(r"→\s*`?\d+`?"),
     re.compile(r"(?<![\w/])--?[A-Za-z][\w-]*(?:=\S+)?(?=\s|$)"),
     re.compile(r"\b(?:python3?|node|npx|npm|pnpm|yarn|pytest|go|cargo|make|bash|sh|ruby|java|dotnet)\s+\S+\.(?:py|js|ts|sh|rb|go|rs|java|cs)\b"),
+    # unambiguous runner words followed by any argument (extensionless commands
+    # such as `npm test`, `pytest tests`, `cargo test`, `npx jest`)
+    re.compile(r"\b(?:python3?|pytest|node|npx|npm|pnpm|yarn|cargo|dotnet|gradle|mvn|bundle|rspec|jest|vitest|mocha|tox|nox)\s+[A-Za-z0-9_./:@-]+"),
+    # common-word runners only when followed by a sub-command or target
+    re.compile(r"\b(?:go|make|bash|sh|ruby|java)\s+(?:test|run|build|check|lint|vet|-[A-Za-z]|[A-Za-z0-9_./-]+\.[A-Za-z0-9]+)\b"),
 ]
 
 
@@ -185,6 +194,14 @@ def content_lines(text: str) -> list:
             prev_nonblank = line
         out.append((idx, line))
     return out
+
+
+def hidden_lines(text: str) -> list:
+    """(lineno, line) pairs that content_lines() drops — fenced and indented
+    code, HTML blocks and comments. They are invisible to the structural
+    checks but may not carry receipt tokens or transcription shapes."""
+    visible = {no for no, _ in content_lines(text)}
+    return [(no, line) for no, line in enumerate(text.splitlines(), 1) if no not in visible and line.strip()]
 
 
 def strip_inline_html_comments(s: str) -> str:
@@ -547,6 +564,13 @@ def validate(log_path: Path) -> tuple[int, list]:
         scrub = re.sub(r"`receipt [0-9a-f]{12}`|\breceipt [0-9a-f]{12}\b", "", line)
         if prose_transcription(scrub):
             errors.add("g", f"line {no}: command/exit transcription shape (exit codes, `→`, backticked commands, flags, runner + script) — commands and exits live only in the export")
+    # Hidden content (fenced/indented code, HTML blocks, comments) may not carry
+    # receipt tokens or transcription shapes either: nothing is exempt.
+    for no, line in hidden_lines(text):
+        if RECEIPT_RE.search(line):
+            errors.add("g", f"line {no}: receipt token inside fenced/indented code, an HTML block, or a comment")
+        elif prose_transcription(line) or re.search(r"(?:^|\s)(?:\$|>)\s*\S", line):
+            errors.add("g", f"line {no}: command/exit transcription shape inside fenced/indented code, an HTML block, or a comment — commands and exits live only in the export")
 
     # A citation in a section must be an attempt of that section's phase
     for rc, phase, no in phase_citations:

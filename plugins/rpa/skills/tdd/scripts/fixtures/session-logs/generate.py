@@ -191,7 +191,7 @@ def log_text(sc: Scenario, *, title, rows, red, green, refactor, final_focused, 
 
 
 def write_case(out: Path, name: str, sc: Scenario, text: str, export: dict | None = None,
-               extra_files: dict | None = None):
+               extra_files: dict | None = None, root_files: dict | None = None):
     case = out / name
     if case.exists():
         shutil.rmtree(case)
@@ -203,6 +203,10 @@ def write_case(out: Path, name: str, sc: Scenario, text: str, export: dict | Non
     (tests / "receipts" / f"{sc.run_id}.json").write_text(evidence.canonical_json(exp) + "\n")
     for rel, content in (extra_files or {}).items():
         p = tests / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content)
+    for rel, content in (root_files or {}).items():
+        p = case / rel
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content)
     return case
@@ -353,6 +357,16 @@ def main() -> int:
     # transcription in a bold metadata line
     log_mut("metadata-transcription", lambda t: t.replace(
         f"**Repository State**: `master` at `{sc.head[:12]}`", "**Repository State**: python3 test.py exited 0", 1))
+    # transcription hidden inside a fenced block
+    log_mut("fenced-transcription", lambda t: t.replace(
+        "- **Deviations**: None\n\n## Green Phase", "- **Deviations**: None\n\n```\n$ python3 test.py\nexit 0\n```\n\n## Green Phase", 1))
+    # extensionless runner command in prose
+    log_mut("extensionless-runner", lambda t: t.replace(
+        "- **Deviations**: None\n\n## Green Phase", "- **Deviations**: ran pytest tests then npm test\n\n## Green Phase", 1))
+    # VALID: a root-level Makefile as the test configuration
+    write_case(out, "valid-makefile-configuration", sc,
+               text.replace(f"- **Test configuration**: `{sc.plan_rel}`", "- **Test configuration**: `Makefile`", 1),
+               export, root_files={"Makefile": "test:\n\tpython3 -m pytest\n"})
     # not-applicable configuration reason carrying a transcription
     log_mut("test-configuration-na-transcription", lambda t: t.replace(
         f"- **Test configuration**: `{sc.plan_rel}`", "- **Test configuration**: Not applicable — python3 test.py exited 0", 1))

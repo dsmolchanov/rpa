@@ -3,10 +3,10 @@
 **Date**: 2026-08-21T00:00:00+00:00
 **Test Plan**: `thoughts/shared/tests/2026-08-21-TEST-valid.md`
 **Requested Phase**: `full`
-**Repository State**: `master` at `d6035eaa0d56`
+**Repository State**: `master` at `bbd5d11b3aa6`
 **Evidence schema**: `tdd/1`
-**Evidence run**: `tdd-20260821-223751-cb157441-01f819`
-**Evidence export**: `receipts/tdd-20260821-223751-cb157441-01f819.json`
+**Evidence run**: `tdd-20260822-082105-cb157441-fd3250`
+**Evidence export**: `receipts/tdd-20260822-082105-cb157441-fd3250.json`
 
 ## Baseline
 
@@ -20,24 +20,24 @@
 
 | Case ID | Layer | Disposition | Evidence |
 |---|---|---|---|
-| U-01 | unit | Green | receipt e9ece1f1af77 — sample.test_x passes |
-| U-02 | unit | Green | receipt c258818490dc — sample.test_y passes |
+| U-01 | unit | Green | receipt 8d947aa4535c — sample.test_x passes |
+| U-02 | unit | Green | receipt 73e2c5dd3939 — sample.test_y passes |
 
 ## Red Phase
 
 - **Files changed**: tests/test_x.py
 - **Receipts**:
-  - `receipt 85dd02079b70`: AssertionError: missing behavior
-  - `receipt 78098db001b0`: AssertionError: missing behavior
+  - `receipt 75fe03065b95`: AssertionError: missing behavior
+  - `receipt 2d9d052cb0f0`: AssertionError: missing behavior
 - **Deviations**: None
 
 ## Green Phase
 
 - **Files changed**: src/x.py
 - **Receipts**:
-  - `receipt c7dc03581b64`: red inputs changed during Green; restored and re-ran
-  - `receipt e9ece1f1af77`: 1 passed
-- **Deviations**: receipt c258818490dc · `python3 junit_stub.py` → `0`
+  - `receipt 78adf689662e`: red inputs changed during Green; restored and re-ran
+  - `receipt 8d947aa4535c`: 1 passed
+- **Deviations**: receipt 73e2c5dd3939 · `python3 junit_stub.py` → `0`
 
 ## Refactor Phase
 
@@ -47,7 +47,7 @@
 
 ## Final Verification
 
-- **Focused suite**: `receipt 773d25203cb3`: ok
+- **Focused suite**: `receipt fdf97ca4b0dd`: ok
 - **Relevant surrounding suite**: Not applicable — synthetic fixture
 - **Coverage policy**: Not applicable — no threshold defined
 - **Manual verification**: Not applicable — no manual cases

@@ -112,8 +112,13 @@ accepts no other layout.
   tokens (`python3 x.py`, `npx jest …`). Every content line of the log is
   scanned for those shapes — the title, metadata lines, table cells,
   citation summaries, not-run / not-applicable reasons, and prose alike
-  (`**Repository State**` is two single tokens: `` `branch` at `commit` ``);
-  only `**Test configuration**:` has its own (path-token) rule.
+  (`**Repository State**` is two single tokens: `` `branch` at `commit` ``)
+  — and so is hidden content (fenced or indented code, HTML blocks,
+  comments), which may carry neither receipt tokens nor transcription
+  shapes; only `**Test configuration**:` has its own (path-token) rule, which
+  also accepts well-known extensionless files (`Makefile`, `Dockerfile`,
+  `Gemfile`, …). Extensionless runner commands (`npm test`, `pytest tests`,
+  `cargo test`, `npx jest`) count as transcription shapes.
   Configuration files named in `**Test configuration**` must be regular
   files (not symlinks) resolving inside the repository.
   `valid Red` cites a `red` receipt of that case with `outcome PASS` and a

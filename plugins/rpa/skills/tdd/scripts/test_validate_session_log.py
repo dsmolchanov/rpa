@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Tests for validate_session_log.py against the fixtures under
-fixtures/session-logs/ (VL-01 … VL-56). Each invalid case must be rejected
+fixtures/session-logs/ (VL-01 … VL-59). Each invalid case must be rejected
 naming the contract check it violates; the two valid cases must pass."""
 
 from __future__ import annotations
@@ -74,6 +74,9 @@ CASES = [
     ("VL-54", "test-configuration-symlink", "g"),
     ("VL-55", "test-configuration-na-transcription", "g"),
     ("VL-56", "title-transcription", "g"),
+    ("VL-57", "fenced-transcription", "g"),
+    ("VL-58", "extensionless-runner", "g"),
+    ("VL-59", "valid-makefile-configuration", None),
 ]
 
 
