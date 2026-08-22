@@ -1479,8 +1479,15 @@ closed at the artifact gate and in CI by `validate_docs.py`).
         template (`**Receipts**:` bullets, `**Baseline runs**`, Final lines),
         acceptance criterion 6, the validator (check (g) now enforces the
         receipt-only shape and rejects transcribed `· argv → exit` bullets),
-        the fixture generator and all fixtures were updated. Awaiting the
-        second human read-through.
+        the fixture generator and all fixtures were updated. **Second human
+        read-through (2026-08-21): two residual issues** — the Baseline field
+        still asked for repository command strings, and the citation regex was
+        prefix-only — both fixed (`**Test configuration**` path tokens;
+        anchored receipt-only citations) with fixtures. Subsequent Codex
+        rounds on PR #18 hardened the same invariant (every content line,
+        hidden content, cells, metadata, configuration tokens; VL-31…VL-62).
+        **Third human read-through pending**; the box above stays unchecked
+        until it passes.
 
 ---
 

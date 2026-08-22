@@ -357,6 +357,15 @@ def main() -> int:
     # transcription in a bold metadata line
     log_mut("metadata-transcription", lambda t: t.replace(
         f"**Repository State**: `master` at `{sc.head[:12]}`", "**Repository State**: python3 test.py exited 0", 1))
+    # transcription inside an inline HTML comment
+    log_mut("inline-comment-transcription", lambda t: t.replace(
+        "- **Deviations**: None\n\n## Green Phase", "- **Deviations**: None <!-- python3 test.py exited 0 -->\n\n## Green Phase", 1))
+    # receipt token in the Layer cell of a disposition row
+    log_mut("receipt-in-layer-cell", lambda t: t.replace(
+        f"| U-02 | unit | Green | receipt {g2['receipt']}", f"| U-02 | unit receipt {r2['receipt']} | Green | receipt {g2['receipt']}", 1))
+    # path-invoked command in prose
+    log_mut("path-invoked-transcription", lambda t: t.replace(
+        "- **Deviations**: None\n\n## Green Phase", "- **Deviations**: ran ./scripts/test.sh then /usr/bin/python3 tests/test_x.py\n\n## Green Phase", 1))
     # transcription hidden inside a fenced block
     log_mut("fenced-transcription", lambda t: t.replace(
         "- **Deviations**: None\n\n## Green Phase", "- **Deviations**: None\n\n```\n$ python3 test.py\nexit 0\n```\n\n## Green Phase", 1))

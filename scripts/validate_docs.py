@@ -98,6 +98,7 @@ SESSION_LOG_FIXTURE_CASES = (
     "citation-unquoted-transcription", "disposition-bare-transcription", "metadata-transcription",
     "test-configuration-symlink", "test-configuration-na-transcription", "title-transcription",
     "fenced-transcription", "extensionless-runner", "valid-makefile-configuration",
+    "inline-comment-transcription", "receipt-in-layer-cell", "path-invoked-transcription",
     "attempt-after-checkpoint", "record-after-final",
 )
 

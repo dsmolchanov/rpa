@@ -107,6 +107,11 @@ PROSE_TRANSCRIPTION_RES = [
     re.compile(r"\b(?:python3?|pytest|node|npx|npm|pnpm|yarn|cargo|dotnet|gradle|mvn|bundle|rspec|jest|vitest|mocha|tox|nox)\s+[A-Za-z0-9_./:@-]+"),
     # common-word runners only when followed by a sub-command or target
     re.compile(r"\b(?:go|make|bash|sh|ruby|java)\s+(?:test|run|build|check|lint|vet|-[A-Za-z]|[A-Za-z0-9_./-]+\.[A-Za-z0-9]+)\b"),
+    # path-invoked executables: `./x.sh`, `./bin/test args`, `/usr/bin/python3 …`,
+    # absolute binaries under common system prefixes
+    re.compile(r"(?:^|\s)(?:\./|/)[A-Za-z0-9_./-]+\.(?:sh|py|js|ts|rb|pl|exe)\b"),
+    re.compile(r"(?:^|\s)(?:\./|/)[A-Za-z0-9_./-]+\s+[A-Za-z0-9_./:@-]+"),
+    re.compile(r"(?:^|\s)/(?:usr|bin|sbin|opt|home|tmp)/\S+"),
 ]
 
 
@@ -541,15 +546,27 @@ def validate(log_path: Path) -> tuple[int, list]:
                 for rc in RECEIPT_RE.findall(body):
                     cited.add(rc)
                     phase_citations.append((rc, "final", no))
-    # Evidence cells are citation locations too (validated in check j below)
+    # Evidence cells are citation locations too (validated in check j below);
+    # the other three cells of a row are NOT — a receipt token there is rejected
     disp_body = find_section(secs, "## Case Dispositions")
     for no, line in disp_body:
         s_ = line.strip()
         if s_.startswith("|") and CASE_ROW_RE.match(s_):
             citation_lines.add(no)
             cells = [c.strip() for c in s_.strip("|").split("|")]
+            if any(RECEIPT_RE.search(c) for c in cells[:3]):
+                errors.add("g", f"line {no}: receipt token outside the Evidence cell of a disposition row")
             if len(cells) == 4 and EVIDENCE_CELL_RE.match(cells[3]):
                 cited.update(RECEIPT_RE.findall(cells[3]))
+    # Inline HTML comment contents (<!-- … --> anywhere, incl. multi-line) are
+    # scanned like any other hidden content.
+    for m in re.finditer(r"<!--(.*?)-->", text, re.S):
+        inner = m.group(1)
+        cno = text.count("\n", 0, m.start()) + 1
+        if RECEIPT_RE.search(inner):
+            errors.add("g", f"line {cno}: receipt token inside an HTML comment")
+        elif any(prose_transcription(l) or re.search(r"(?:^|\s)(?:\$|>)\s*\S", l) for l in inner.splitlines()):
+            errors.add("g", f"line {cno}: command/exit transcription shape inside an HTML comment — commands and exits live only in the export")
     # Receipt tokens anywhere outside a validated citation entry are rejected;
     # and EVERY content line — headings, metadata, cells, citation summaries,
     # not-run reasons, prose — is scanned for transcription shapes (receipt

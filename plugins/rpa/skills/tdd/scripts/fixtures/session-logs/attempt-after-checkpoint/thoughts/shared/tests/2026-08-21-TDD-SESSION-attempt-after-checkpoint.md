@@ -3,10 +3,10 @@
 **Date**: 2026-08-21T00:00:00+00:00
 **Test Plan**: `thoughts/shared/tests/2026-08-21-TEST-attempt-after-checkpoint.md`
 **Requested Phase**: `full`
-**Repository State**: `master` at `ef9fa74beec2`
+**Repository State**: `master` at `be92f63d8fc6`
 **Evidence schema**: `tdd/1`
-**Evidence run**: `tdd-20260822-082108-2b98673d-129cb4`
-**Evidence export**: `receipts/tdd-20260822-082108-2b98673d-129cb4.json`
+**Evidence run**: `tdd-20260822-082731-2b98673d-2b8494`
+**Evidence export**: `receipts/tdd-20260822-082731-2b98673d-2b8494.json`
 
 ## Baseline
 
@@ -20,15 +20,15 @@
 
 | Case ID | Layer | Disposition | Evidence |
 |---|---|---|---|
-| U-01 | unit | valid Red | receipt 2fe36489302a — AssertionError at the assertion |
-| U-02 | unit | valid Red | receipt d21472c71843 — AssertionError at the assertion |
+| U-01 | unit | valid Red | receipt 4e014f84da75 — AssertionError at the assertion |
+| U-02 | unit | valid Red | receipt ca4bc7abf79f — AssertionError at the assertion |
 
 ## Red Phase
 
 - **Files changed**: tests/test_x.py
 - **Receipts**:
-  - `receipt 2fe36489302a`: AssertionError: missing behavior
-  - `receipt d21472c71843`: AssertionError: missing behavior
+  - `receipt 4e014f84da75`: AssertionError: missing behavior
+  - `receipt ca4bc7abf79f`: AssertionError: missing behavior
 - **Deviations**: None
 
 ## Green Phase

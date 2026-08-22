@@ -118,7 +118,10 @@ accepts no other layout.
   shapes; only `**Test configuration**:` has its own (path-token) rule, which
   also accepts well-known extensionless files (`Makefile`, `Dockerfile`,
   `Gemfile`, …). Extensionless runner commands (`npm test`, `pytest tests`,
-  `cargo test`, `npx jest`) count as transcription shapes.
+  `cargo test`, `npx jest`) and path-invoked executables (`./x.sh`,
+  `/usr/bin/python3 …`) count as transcription shapes; HTML comment contents
+  are scanned wherever they open; a receipt token in a disposition row is
+  allowed only in its Evidence cell.
   Configuration files named in `**Test configuration**` must be regular
   files (not symlinks) resolving inside the repository.
   `valid Red` cites a `red` receipt of that case with `outcome PASS` and a
