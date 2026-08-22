@@ -1,0 +1,88 @@
+# Publishes this repository's one-pager digest after every push to the default
+# branch. Deliberately NOT a required check and deliberately not a commit to
+# `master`: protection there is strict (required contexts + linear history), so
+# the Actions token cannot push, and a digest is not worth an admin PAT. The
+# page is published to the job summary, an artifact, and the unprotected
+# `status/one-pager` branch instead.
+name: one-pager
+on:
+  push:
+    branches: [master]
+
+# Every unspecified permission becomes `none` once this block exists, so the
+# read scopes the digest needs (pull requests, checks, workflow runs) are
+# listed explicitly.
+permissions:
+  contents: write
+  pull-requests: read
+  checks: read
+  actions: read
+
+# Never cancel: a cancelled run could leave the status branch holding an older
+# digest than the one a concurrent run already published.
+concurrency:
+  group: one-pager-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch the previously published digest
+        run: |
+          if git fetch --depth=1 origin status/one-pager 2>/dev/null; then
+            git show FETCH_HEAD:one-pager.md > previous.md || true
+          fi
+          if [ -f previous.md ]; then
+            echo "previous digest: $(wc -l < previous.md) lines"
+          else
+            echo "no previous digest — the window falls back to 14 days"
+          fi
+
+      - name: Generate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ARGS=""
+          [ -f previous.md ] && ARGS="--previous previous.md"
+          python3 plugins/rpa/skills/one-pager/scripts/onepager.py generate \
+            --since last --out one-pager.md --json $ARGS
+          python3 plugins/rpa/skills/one-pager/scripts/onepager.py validate one-pager.md
+
+      - name: Job summary
+        run: cat one-pager.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: one-pager
+          path: |
+            one-pager.md
+            one-pager.json
+
+      - name: Publish to status/one-pager
+        run: |
+          # HEAD guard: if master moved while this run was working, a newer run
+          # is already producing a fresher digest — publishing now would move
+          # the status branch backwards.
+          REMOTE_HEAD="$(git ls-remote origin refs/heads/master | cut -f1)"
+          if [ "$REMOTE_HEAD" != "$GITHUB_SHA" ]; then
+            echo "master advanced to $REMOTE_HEAD (this run is $GITHUB_SHA) — skipping publish"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          TMP="$(mktemp -d)"
+          cp one-pager.md one-pager.json "$TMP/"
+          git checkout --orphan status-one-pager
+          git rm -rqf . >/dev/null 2>&1 || true
+          cp "$TMP/one-pager.md" "$TMP/one-pager.json" .
+          git add one-pager.md one-pager.json
+          git commit -qm "one-pager: ${GITHUB_SHA:0:7}"
+          git push -f origin status-one-pager:status/one-pager
