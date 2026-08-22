@@ -65,6 +65,12 @@ in `mode: all`, `--out` must resolve **outside** every listed repository, and
 3. no previous digest → the UTC date 14 days before the `HEAD` commit's
    committer date.
 
+In `mode: all` this is resolved **per repository**: a cross-repository page
+carries one header block per `## <slug>` section, and each repository's window
+advances from its own recorded `generated_from`. Reading only a single
+page-level block would send every repository back to a fresh 14-day window as
+soon as any one of them advanced.
+
 Rule 1 is the fixed point: without it, an unchanged rerun would scan `H..H`
 and replace the page with an empty window.
 
@@ -143,8 +149,15 @@ optional `## Narrative`.
 ## Section contents
 
 - **Window** — `since`, `head` (short sha), `commits` (count in window).
-- **Landed** — merged pull requests in the window, then commits not
-  attributable to any pull request. A commit is attributed when its sha is a
+- **Landed** — merged pull requests and commits not attributable to any pull
+  request, in **one chronological list** ordered by full timestamp
+  (`mergedAt` / committer date), newest first. The two kinds are interleaved
+  rather than grouped, because the section is truncated at its tail: grouping
+  would drop a recent commit while keeping an older pull request. Timestamps
+  are compared at full precision — a date-only comparison leaves same-day
+  entries in an arbitrary order, and most repositories do most of their work
+  within a day. `merged_at` is stored as the full timestamp and rendered as a
+  date. A commit is attributed when its sha is a
   pull request's `mergeCommit` **or** appears in that pull request's `commits`
   list (this covers merge, squash, and rebase merges). Everything else is
   **`unattributed`** — never "direct": without `gh` data, git cannot prove a
@@ -229,7 +242,10 @@ and still exits 0.
 Artifact scanning reads only **regular files whose realpath is inside the
 repository root and under `thoughts/shared/`**. Symlinks (at the file or any
 parent), special files, and files over 1 MiB are skipped and counted in the
-root's reason as `skipped: N symlink/special/oversized`. Without this the
+root's reason as `skipped: N symlink/special/oversized`. Skips from **both**
+scans are counted — the window scan and the wider scan behind `## Next` —
+deduplicated by path: a containment rejection is a degraded root wherever it
+was found, and the `## Next` scan reaches artifacts the window never touches. Without this the
 "nothing outside `thoughts/shared/`" promise would be false.
 
 ## Bounds
@@ -308,7 +324,7 @@ usage.
 | Check | Rule |
 |---|---|
 | `a` | heading sequence for the mode |
-| `b` | header fields: `mode` first, then per repository `repo`, `generated_from`, `window.since`, `window.head`, and one page-level `generated_at` |
+| `b` | header block **order**, not mere presence: the page block is `mode`, `generated_at` (plus `repo`, `generated_from`, `window.since`, `window.head` in `mode: repo`); in `mode: all` each `## <slug>` block is `repo`, `generated_from`, `window.since`, `window.head`. Fields that merely exist somewhere in the file are not the header the contract describes |
 | `c` | bounds selected by `mode` |
 | `d` | every `## Sources` row carries a valid outcome |
 | `e` | no receipt token (`` `receipt <hex12>` ``) anywhere — a digest cites logs, not receipts |

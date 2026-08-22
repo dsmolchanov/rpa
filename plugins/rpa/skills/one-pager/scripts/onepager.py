@@ -487,7 +487,9 @@ def parse_artifact(repo, rel):
 
 
 def scan_artifacts(repo, rels):
-    """Parse the given repo-relative paths; return (infos, skipped-by-root)."""
+    """Parse the given repo-relative paths; return (infos, skipped) where
+    `skipped` maps a root to {path: verdict} — keyed by path so the same file
+    rejected by two scans is counted once."""
     infos, skipped = [], {}
     for rel in sorted(rels):
         root = _root_of(rel)
@@ -497,10 +499,18 @@ def scan_artifacts(repo, rels):
         if verdict == "missing":
             continue
         if verdict != "ok":
-            skipped.setdefault(root, []).append(verdict)
+            skipped.setdefault(root, {})[rel] = verdict
             continue
         infos.append(parse_artifact(repo, rel))
     return infos, skipped
+
+
+def merge_skips(*maps):
+    merged = {}
+    for source in maps:
+        for root, entries in source.items():
+            merged.setdefault(root, {}).update(entries)
+    return merged
 
 
 def all_active_artifacts(repo):
@@ -513,8 +523,7 @@ def all_active_artifacts(repo):
             continue
         for path in sorted(base.rglob("*.md")):
             rels.append(path.relative_to(repo).as_posix())
-    infos, _ = scan_artifacts(repo, rels)
-    return infos
+    return scan_artifacts(repo, rels)
 
 
 def derive_next(all_infos, open_prs):
@@ -569,7 +578,7 @@ def collect_repo_facts(path, since_arg, previous):
             {
                 "number": number,
                 "title": " ".join(str(pr.get("title", "")).split()),
-                "merged_at": str(pr.get("mergedAt") or "")[:10],
+                "merged_at": str(pr.get("mergedAt") or ""),
                 "author": ((pr.get("author") or {}).get("login") if isinstance(pr.get("author"), dict) else "") or "unknown",
                 "files": len(pr.get("files") or []),
             }
@@ -617,7 +626,11 @@ def collect_repo_facts(path, since_arg, previous):
 
     window_paths = git_window_paths(repo, since)
     dirty = git_dirty_paths(repo)
-    infos, skipped = scan_artifacts(repo, window_paths | dirty)
+    infos, window_skips = scan_artifacts(repo, window_paths | dirty)
+    active_infos, active_skips = all_active_artifacts(repo)
+    # A containment rejection is a degraded root wherever it was found: the
+    # `## Next` scan reaches artifacts the window never touches.
+    skipped = merge_skips(window_skips, active_skips)
     for root in ARTIFACT_ROOTS:
         base = repo / "thoughts" / "shared" / root
         reason = ""
@@ -626,16 +639,16 @@ def collect_repo_facts(path, since_arg, previous):
             reason = "absent"
         else:
             outcome = "passed"
-            marks = skipped.get(root, [])
+            marks = skipped.get(root, {})
             if marks:
-                reason = f"skipped: {len(marks)} " + "/".join(sorted(set(marks)))
+                reason = f"skipped: {len(marks)} " + "/".join(sorted(set(marks.values())))
         sources.append({"source": root, "outcome": outcome, "reason": reason})
 
     artifacts = [
         {"root": i["root"], "path": i["path"], "status": i["status"]}
         for i in sorted(infos, key=lambda i: (i["root"], i["path"]), reverse=True)
     ]
-    nxt = derive_next(all_active_artifacts(repo), open_prs)
+    nxt = derive_next(active_infos, open_prs)
 
     return {
         "repo": slugify(repo.name),
@@ -674,19 +687,35 @@ def _clip(text):
     return raw[: BULLET_MAX_BYTES - 3].decode("utf-8", "ignore") + "…"
 
 
+def landed_order(entry):
+    """One chronological list over two fact lists. Rendering pull requests
+    first and commits second would let tail truncation drop a recent commit
+    while keeping an older pull request — the opposite of the newest-first
+    guarantee. Sorted from the facts alone, so the JSON companion agrees."""
+    items = []
+    for index, pr in enumerate(entry["landed"]):
+        items.append((pr.get("merged_at") or "", 1, f"{pr.get('number') or 0:09d}", "pr", index))
+    for index, commit in enumerate(entry["unattributed"]):
+        items.append((commit.get("date") or "", 0, commit.get("sha") or "", "commit", index))
+    items.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+    return [(kind, index) for _, _, _, kind, index in items]
+
+
 def _bullets(name, entry):
     if name == "landed":
         out = []
-        for p in entry["landed"]:
-            count = p["files"]
-            files = "1 file" if count == 1 else f"{count}{'+' if count >= 100 else ''} files"
-            out.append(
-                f"- #{p['number']} {p['title']} — merged {p['merged_at']} by {p['author']} ({files})"
-            )
-        out += [
-            f"- unattributed {c['sha'][:7]} {c['subject']} ({c['date'][:10]})"
-            for c in entry["unattributed"]
-        ]
+        for kind, index in landed_order(entry):
+            if kind == "pr":
+                p = entry["landed"][index]
+                count = p["files"]
+                files = "1 file" if count == 1 else f"{count}{'+' if count >= 100 else ''} files"
+                out.append(
+                    f"- #{p['number']} {p['title']} — merged {p['merged_at'][:10]} "
+                    f"by {p['author']} ({files})"
+                )
+            else:
+                c = entry["unattributed"][index]
+                out.append(f"- unattributed {c['sha'][:7]} {c['subject']} ({c['date'][:10]})")
         return out
     if name == "open":
         return [
@@ -743,11 +772,13 @@ def materialize(facts, kept):
                 continue
             truncated[name] = dropped
             if name == "landed":
-                # one rendered list over two fact lists: pull requests first,
-                # then unattributed commits, so the tail drops the oldest.
-                prs = min(keep, len(entry["landed"]))
-                entry["landed"] = entry["landed"][:prs]
-                entry["unattributed"] = entry["unattributed"][: max(0, keep - prs)]
+                # keep the newest `keep` entries of the chronological order,
+                # then rebuild both fact lists from the survivors.
+                survivors = landed_order(entry)[:keep]
+                prs = sorted(i for kind, i in survivors if kind == "pr")
+                commits = sorted(i for kind, i in survivors if kind == "commit")
+                entry["landed"] = [entry["landed"][i] for i in prs]
+                entry["unattributed"] = [entry["unattributed"][i] for i in commits]
             elif name == "open":
                 entry["open"] = entry["open"][:keep]
             elif name == "artifacts":
@@ -889,18 +920,39 @@ def allocate_and_bound(facts):
 # previous digest
 
 
+def _header_fields(block):
+    out = {}
+    for field in ("repo", "generated_from", "window.since", "window.head"):
+        m = re.search(rf"^{re.escape(field)}:\s*(.+)$", block, re.M)
+        if m:
+            out[field] = m.group(1).strip()
+    return out
+
+
 def read_previous(path):
-    """Header fields of a previous digest (repo mode)."""
+    """Previous digest, indexed by repository. A cross-repository page carries
+    one header block per `## <slug>` section; without reading them, a
+    scheduled `--repos` refresh would silently fall back to a fresh 14-day
+    window every time any repository advanced."""
     if not path or not Path(path).is_file():
         return None
     text = Path(path).read_text(encoding="utf-8", errors="replace")
-    out = {}
-    for field in ("generated_at", "generated_from", "window.since", "window.head", "repo"):
-        m = re.search(rf"^{re.escape(field)}:\s*(.+)$", text, re.M)
-        if m:
-            out[field] = m.group(1).strip()
-    out["_text"] = text
-    return out or None
+    mode_match = re.search(r"(?m)^mode: (repo|all)$", text)
+    mode = mode_match.group(1) if mode_match else "repo"
+    stamp = re.search(r"(?m)^generated_at:\s*(.+)$", text)
+    out = {"_text": text, "mode": mode, "repos": {}}
+    if stamp:
+        out["generated_at"] = stamp.group(1).strip()
+    if mode == "all":
+        for chunk in text.split("\n## ")[1:]:
+            fields = _header_fields(chunk)
+            if fields.get("repo"):
+                out["repos"][fields["repo"]] = fields
+    else:
+        fields = _header_fields(text)
+        if fields.get("repo"):
+            out["repos"][fields["repo"]] = fields
+    return out
 
 
 def preserved_generated_at(previous, rendered_with_placeholder):
@@ -986,6 +1038,35 @@ def _headings(lines):
     return [l for l in _strip_fences(lines) if l.startswith("#")]
 
 
+# Check (b) is an ORDER check: a header whose fields merely exist somewhere in
+# the file is not the header the contract describes.
+PAGE_HEADER_KEYS = {
+    "repo": ["mode", "generated_at", "repo", "generated_from", "window.since", "window.head"],
+    "all": ["mode", "generated_at"],
+}
+REPO_HEADER_KEYS = {
+    "repo": [],
+    "all": ["repo", "generated_from", "window.since", "window.head"],
+}
+HEADER_LINE_RE = re.compile(r"^([a-z_.]+):\s+\S")
+
+
+def _header_keys(lines, start):
+    """Keys of the contiguous `key: value` block after a heading, in order."""
+    keys, seen = [], False
+    for line in lines[start:]:
+        if not line.strip():
+            if seen:
+                break
+            continue
+        m = HEADER_LINE_RE.match(line)
+        if not m:
+            break
+        seen = True
+        keys.append(m.group(1))
+    return keys
+
+
 def validate_text(text, companion=None):
     errors = []
     lines = text.splitlines()
@@ -1039,14 +1120,31 @@ def validate_text(text, companion=None):
                     errors.append(f"one-pager: a — malformed repository section {group}")
                     break
 
-    required = ["repo", "generated_from", "window.since", "window.head"]
     if len(re.findall(r"(?m)^generated_at: .+$", text)) != 1:
         errors.append("one-pager: b — exactly one page-level `generated_at` required")
-    repo_count = len(re.findall(r"(?m)^repo: .+$", text))
-    for field in required:
-        found = len(re.findall(rf"(?m)^{re.escape(field)}: .+$", text))
-        if found != repo_count or found == 0:
-            errors.append(f"one-pager: b — `{field}` must appear once per repository ({found} of {repo_count})")
+    page_keys = PAGE_HEADER_KEYS[mode]
+    repo_keys = REPO_HEADER_KEYS[mode]
+    heading_re = re.compile(r"^# " if mode == "repo" else r"^## ")
+    blocks = []
+    for index, line in enumerate(body):
+        if line.startswith("# ") or (mode == "all" and line.startswith("## ") and line != "## Sources"):
+            blocks.append((line, _header_keys(body, index + 1)))
+    if not blocks:
+        errors.append("one-pager: b — no header block found")
+    else:
+        title_keys = blocks[0][1]
+        if title_keys != page_keys:
+            errors.append(
+                f"one-pager: b — page header must be {page_keys} in order, got {title_keys}"
+            )
+        for heading, keys in blocks[1:]:
+            if keys != repo_keys:
+                errors.append(
+                    f"one-pager: b — header block under `{heading}` must be "
+                    f"{repo_keys} in order, got {keys}"
+                )
+        if mode == "all" and len(blocks) < 2:
+            errors.append("one-pager: b — a cross-repository page needs one repository block")
 
     max_lines, max_bytes = BOUNDS[mode]
     if len(lines) > max_lines:
@@ -1143,14 +1241,23 @@ def cmd_generate(args):
         repos = [repo_root(args.repo or ".")]
 
     previous_path = args.previous
-    if previous_path is None and mode == "repo":
-        folder = repos[0] / "thoughts" / "shared" / ONE_PAGER_ROOT
+    if previous_path is None:
+        if mode == "repo":
+            folder = repos[0] / "thoughts" / "shared" / ONE_PAGER_ROOT
+            pattern = f"*-{slugify(repos[0].name)}.md"
+        else:
+            folder = rpa_home() / ONE_PAGER_ROOT
+            pattern = "*-all.md"
         if folder.is_dir():
-            pages = sorted(folder.glob(f"*-{slugify(repos[0].name)}.md"))
+            pages = sorted(folder.glob(pattern))
             previous_path = pages[-1] if pages else None
     previous = read_previous(previous_path)
+    known = (previous or {}).get("repos", {})
 
-    entries = [collect_repo_facts(repo, args.since, previous if mode == "repo" else None) for repo in repos]
+    entries = [
+        collect_repo_facts(repo, args.since, known.get(slugify(repo.name)))
+        for repo in repos
+    ]
     facts = {"schema": SCHEMA, "mode": mode, "generated_at": PLACEHOLDER, "repos": entries}
 
     text = allocate_and_bound(facts)

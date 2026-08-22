@@ -131,7 +131,8 @@ class Base(unittest.TestCase):
         if remote:
             git(root, "remote", "add", "origin", "https://github.com/example/demo.git")
         self.write(root, "thoughts/shared/plans/2026-08-08-demo.md", PLAN)
-        self.commit(root, "seed", date="2026-08-08T00:00:00+00:00")
+        self.write(root, "IDENTITY", f"{name}\n")  # distinct content => distinct shas
+        self.commit(root, f"seed {name}", date="2026-08-08T00:00:00+00:00")
         return root
 
     def write(self, root, rel, text):
@@ -492,6 +493,76 @@ class TestGenerate(Base):
             env=self.env(rpa_home=home), expect=2,
         )
         self.assertIn("do not fit the 160-line bound", res.stderr)
+
+    def test_op22_cross_repo_honours_the_previous_page(self):
+        """The scheduled `--repos` refresh is the documented use; if previous
+        state were repo-mode only, every cross-repo run would silently fall
+        back to a fresh 14-day window once any repository advanced."""
+        home = self.tmp / "rpa-home"
+        one, two = self.repo("demo"), self.repo("other")
+        env = self.env(rpa_home=home)
+        self.invoke("generate", "--repos", str(one), str(two), "--since", "2026-08-01",
+                    "--write", env=env)
+        def cross_page():
+            return sorted((home / "one-pagers").glob("*-all.md"))[-1]
+
+        self.assertEqual(cross_page().read_text(encoding="utf-8").count("window.since: 2026-08-01"), 2)
+        head_one = git(one, "rev-parse", "HEAD")
+
+        # unchanged: `last` reuses each repository's recorded window start
+        self.invoke("generate", "--repos", str(one), str(two), "--since", "last",
+                    "--write", env=env)
+        self.assertEqual(cross_page().read_text(encoding="utf-8").count("window.since: 2026-08-01"), 2)
+
+        # only `demo` advances: only its window moves, `other` holds
+        self.write(one, "thoughts/shared/plans/2026-08-21-next.md", PLAN)
+        self.commit(one, "advance demo")
+        self.invoke("generate", "--repos", str(one), str(two), "--since", "last",
+                    "--write", env=env)
+        text = cross_page().read_text(encoding="utf-8")
+        self.assertIn(f"window.since: {head_one}", text, "demo advanced to its prior head")
+        self.assertIn("window.since: 2026-08-01", text, "other kept its window")
+
+    def test_op23_landed_is_chronological_across_both_kinds(self):
+        """Truncation drops the tail, so the tail must be the oldest entry of
+        either kind — not 'every commit, after every pull request'."""
+        repo = self.repo(remote=True)
+        for i in range(40):
+            self.write(repo, f"thoughts/shared/plans/2026-08-2{i % 10}-p{i}.md", PLAN)
+            self.commit(repo, f"recent commit {i:02d}", date=f"2026-08-22T{i // 2:02d}:{(i % 2) * 30:02d}:00+00:00")
+        newest = git(repo, "rev-parse", "HEAD")[:7]
+        # the canned pull request merged on 2026-08-21 — older than every commit
+        out = self.generate(repo, env=self.env(gh="ok", sha="f" * 40)).stdout
+        self.assertRegex(out, r"- \[\+\d+ more\]", "this page must be truncated")
+        self.assertIn(f"- unattributed {newest}", out, "the newest commit survives")
+        self.assertNotIn("#7 canned merged pull request", out,
+                         "the oldest entry is dropped even though it is a pull request")
+
+    def test_op24_header_order_is_enforced(self):
+        page = self.tmp / "reordered.md"
+        text = (FIXTURES / "valid" / "one-pager.md").read_text(encoding="utf-8")
+        lines = text.splitlines()
+        mode_at = lines.index("mode: repo")
+        repo_at = next(i for i, l in enumerate(lines) if l.startswith("repo: "))
+        lines[mode_at], lines[repo_at] = lines[repo_at], lines[mode_at]
+        page.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        res = self.invoke("validate", str(page), expect=1)
+        self.assertIn("one-pager: b — page header must be", res.stdout)
+
+    def test_op25_skips_outside_the_window_are_reported(self):
+        """`## Next` reaches artifacts the window never touches; a containment
+        rejection there is still a degraded root."""
+        repo = self.repo()
+        outside = self.tmp / "outside-plan.md"
+        outside.write_text("# Elsewhere\n\n- [ ] open\n", encoding="utf-8")
+        os.symlink(outside, repo / "thoughts" / "shared" / "plans" / "2020-01-01-linked.md")
+        self.commit(repo, "track a symlinked plan")
+        head = git(repo, "rev-parse", "HEAD")
+        # empty window and a clean tree: only the all-active scan sees it
+        out = self.invoke("generate", "--repo", str(repo), "--since", head).stdout
+        self.assertIn("- commits: 0", out)
+        self.assertRegex(out, r"\| plans \| passed \| skipped: 1 symlink \|")
+        self.assertNotIn("linked", out.split("## Sources")[0], "never read, never listed")
 
     def test_op17_relocatable_package(self):
         elsewhere = self.tmp / "relocated"
