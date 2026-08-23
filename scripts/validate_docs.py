@@ -74,6 +74,27 @@ SESSION_LOG_VALIDATOR = (
     Path(__file__).resolve().parents[1]
     / "plugins" / "rpa" / "skills" / "tdd" / "scripts" / "validate_session_log.py"
 )
+# The one-pager validator is resolved the same way, for the same reason.
+ONE_PAGER_VALIDATOR = (
+    Path(__file__).resolve().parents[1]
+    / "plugins" / "rpa" / "skills" / "one-pager" / "scripts" / "onepager.py"
+)
+# Fixture cases the one-pager validator must be proven against (one directory
+# each under skills/one-pager/scripts/fixtures/).
+ONE_PAGER_FIXTURE_CASES = (
+    "valid", "valid-all", "valid-json", "valid-with-narrative",
+    "absolute-path", "heading-order", "json-parity-mismatch", "missing-window",
+    "mode-caps", "narrative-invents-facts", "narrative-unmarked",
+    "next-bad-shape", "oversized", "receipt-token", "sources-bad-outcome",
+)
+# The session-ending workflows must refresh the repository digest, and must do
+# it AFTER their own primary artifact exists: (file, primary-artifact anchor).
+ONE_PAGER_CALL = "onepager.py generate --write"
+ONE_PAGER_CALL_SITES = (
+    (Path("skills") / "tdd" / "SKILL.md", "evidence.py export"),
+    (Path("commands") / "create_handoff.md", "## Document Sections"),
+    (Path("commands") / "validate_plan.md", "**Write the report**"),
+)
 # Session logs are discovered by the contract's mandatory file name shape
 # (skills/tdd/references/session-log-contract.md) AND by their H1.
 SESSION_LOG_NAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-TDD-SESSION-.+\.md$")
@@ -745,6 +766,103 @@ def check_session_logs(root, errors):
             errors.append(f"{rcpt.relative_to(root)}: orphan export — no session log cites it")
 
 
+def _run_one_pager_validator(page):
+    import subprocess as _sp
+    import sys as _sys
+    return _sp.run([_sys.executable, str(ONE_PAGER_VALIDATOR), "validate", str(page)],
+                   capture_output=True, text=True)
+
+
+def check_one_pager_validator(root, errors):
+    """The one-pager contract is bound as an executable gate: the validator
+    must accept every `valid*` fixture case and reject every other case
+    (conventions §4). A missing case is itself an error."""
+    skill_root = plugin_root(root) / "skills" / "one-pager"
+    if not skill_root.is_dir():
+        # not_applicable: the one-pager skill package is absent from this root.
+        return
+    validator = skill_root / "scripts" / "onepager.py"
+    fixtures = skill_root / "scripts" / "fixtures"
+    if not validator.is_file() or not fixtures.is_dir():
+        errors.append("one-pager validator or its fixtures missing under "
+                      "skills/one-pager/scripts/")
+        return
+    cases = {d.name: d for d in fixtures.iterdir()
+             if d.is_dir() and not d.name.startswith((".", "_")) and d.name != "gh-shim"}
+    for name in ONE_PAGER_FIXTURE_CASES:
+        if name not in cases:
+            errors.append(f"one-pager fixture case missing: {name}")
+    for name, case in sorted(cases.items()):
+        page = case / "one-pager.md"
+        if not page.is_file():
+            errors.append(f"one-pager fixture {name}: no one-pager.md")
+            continue
+        res = _run_one_pager_validator(page)
+        if name.startswith("valid"):
+            if res.returncode != 0:
+                errors.append(f"one-pager validator rejects the VALID fixture {name}: "
+                              f"{(res.stdout + res.stderr)[:200]}")
+        elif res.returncode == 0:
+            errors.append(f"one-pager validator accepted the INVALID fixture {name} — "
+                          "the gate is a silent no-op for that check")
+        elif res.returncode != 1:
+            errors.append(f"one-pager validator crashed on fixture {name}: "
+                          f"{(res.stdout + res.stderr)[:200]}")
+
+
+def check_one_pagers(root, errors):
+    """Every committed one-pager digest validates. A `.json` companion is
+    checked with it (the validator compares the two for parity)."""
+    pages_dir = root / "thoughts" / "shared" / "one-pagers"
+    if not pages_dir.is_dir():
+        return  # not_applicable: this root publishes no digest
+    pages = sorted(pages_dir.glob("*.md"))
+    if not pages:
+        return  # not_applicable
+    if not ONE_PAGER_VALIDATOR.is_file():
+        errors.append(f"one-pager validator missing: {ONE_PAGER_VALIDATOR}")
+        return
+    for page in pages:
+        rel = page.relative_to(root)
+        res = _run_one_pager_validator(page)
+        if res.returncode != 0:
+            lines = [l for l in (res.stdout + res.stderr).splitlines() if l.strip()] or ["rejected"]
+            for line in lines:
+                errors.append(f"{rel}: {line}")
+
+
+def check_one_pager_call_sites(root, errors):
+    """The session-ending workflows refresh the digest, and do it after their
+    own artifact is written — a digest generated first would omit the very
+    artifact that triggered it (the artifact is still uncommitted at that
+    point). Deterministic text-order gate, not a claim about runtime."""
+    base = plugin_root(root)
+    if not (base / "skills" / "one-pager").is_dir():
+        # not_applicable: this root does not ship the one-pager skill.
+        return
+    for rel, anchor in ONE_PAGER_CALL_SITES:
+        path = base / rel
+        if not path.is_file():
+            errors.append(f"one-pager call site missing: {rel}")
+            continue
+        text = path.read_text(encoding="utf-8")
+        call_at = text.find(ONE_PAGER_CALL)
+        anchor_at = text.find(anchor)
+        if call_at < 0:
+            errors.append(
+                f"{rel}: no session-end digest refresh (`{ONE_PAGER_CALL}`)"
+            )
+            continue
+        if anchor_at < 0:
+            errors.append(f"{rel}: primary-artifact anchor not found: {anchor!r}")
+            continue
+        if call_at < anchor_at:
+            errors.append(
+                f"{rel}: the digest refresh precedes the primary artifact step "
+                f"({anchor!r}); it would omit the artifact that triggered it"
+            )
+
+
 def validate(root, exclude_fixtures=True):
     errors = []
     check_commands(root, errors)
@@ -754,6 +872,9 @@ def validate(root, exclude_fixtures=True):
     check_artifact_validator(root, errors)
     check_session_log_validator(root, errors)
     check_session_logs(root, errors)
+    check_one_pager_validator(root, errors)
+    check_one_pagers(root, errors)
+    check_one_pager_call_sites(root, errors)
     check_links(root, errors, exclude_fixtures=exclude_fixtures)
     return errors
 

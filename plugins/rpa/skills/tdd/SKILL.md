@@ -9,7 +9,7 @@ description: >
   refactor; use create-test-plan, debug/test-runner, test-suite, or refactor
   instead.
 user-invocable: true
-permission-class: "workspace_write (plan-scoped source, tests, thoughts/shared/tests session log and receipts, .rpa/evidence local state)"
+permission-class: "workspace_write (plan-scoped source, tests, thoughts/shared/tests session log and receipts, thoughts/shared/one-pagers digest, .rpa/evidence local state)"
 invocation: "both"
 ---
 
@@ -132,9 +132,12 @@ Read the applicable contracts before editing.
     `evidence.py checkpoint final --achieved <phase>`. In **every** session:
     `evidence.py export`, finish the session log with actual transitions,
     files, receipts, deviations, `not_applicable` outcomes, and `**Cycle
-    state**`, then run `validate_session_log.py <log>`. Return a concise result
-    with changed files, phase state, verification evidence, and remaining
-    blockers.
+    state**`, then run `validate_session_log.py <log>`. Finally refresh the
+    repository's digest with `python3 <one-pager skill-dir>/scripts/onepager.py generate --write` — the session log it just wrote is
+    uncommitted, and the digest is what makes it visible to the next session.
+    A refresh that fails is reported and never blocks the session or alters
+    the log. Return a concise result with changed files, phase state,
+    verification evidence, and remaining blockers.
 
 Delegation is optional and limited to independent, sizeable analysis or
 generation tracks. The orchestrator owns edits, phase evidence, and final
@@ -156,9 +159,9 @@ The requested TDD scope is complete when:
 3. Green implements the agreed behavior without weakening tests or regressing
    the relevant existing suite.
 4. Refactoring, when applicable, preserves behavior and public contracts.
-5. Only plan-scoped files, the session log, and its receipt export are
-   changed; the local evidence store is not committed; pre-existing user
-   changes remain intact.
+5. Only plan-scoped files, the session log, its receipt export, and the
+   repository's one-pager digest are changed; the local evidence store is not
+   committed; pre-existing user changes remain intact.
 6. Commands, exit statuses, and outputs are persisted by the kernel in the
    receipt export — never transcribed into the log; the log cites receipts
    and salient outcomes; counts, coverage, duration, and LOC are never
@@ -177,6 +180,7 @@ The requested TDD scope is complete when:
 | Recovery capsule | every phase boundary | `evidence.py checkpoint <phase>` | at each boundary | blocking | checkpoint record and capsule snapshot |
 | Evidence export | every session | `evidence.py export` (after `checkpoint final` when the cycle ends) | before finishing | blocking | receipt file committed alongside the log |
 | Session artifact | every session | `python3 <skill-dir>/scripts/validate_session_log.py <log>` | before finishing | blocking | exit status 0 |
+| One-pager refresh | every session | `python3 <one-pager skill-dir>/scripts/onepager.py generate --write` | after the session log validates | advisory | digest path printed |
 | Kernel/docs hygiene | this repository's kernel and adapter files | `python3 scripts/validate_docs.py` | before commit / in CI | blocking | exit status 0 |
 
 ## Escalation conditions
