@@ -92,7 +92,7 @@ jobs:
                 exit 1
               fi
               for n in ${RECENT}; do
-                if ! IDS=$(gh api "repos/${REPO}/pulls/${n}/reviews" \
+                if ! IDS=$(gh api "repos/${REPO}/pulls/${n}/reviews" --paginate \
                   --jq ".[] | select(.user.login == \"${CODEX_BOT}\") | .id"); then
                   echo "::error::Connection probe failed (reviews query for PR #${n}); failing closed."
                   exit 1
