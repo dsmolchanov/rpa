@@ -1,5 +1,5 @@
 ---
-date: 2026-08-30T10:45:00Z
+date: 2026-08-30T11:00:00Z
 type: test-suite-manifest
 commit: e508ef7
 ---
@@ -37,8 +37,9 @@ There is no single suite-level command; CI (`.github/workflows/ci.yml`,
 | TDD session-log validator | `python3 plugins/rpa/skills/tdd/scripts/test_validate_session_log.py` |
 | One-pager | `python3 plugins/rpa/skills/one-pager/scripts/test_onepager.py` |
 
-The docs gate (`python3 scripts/validate_docs.py --self-test` and
-`--root .`) runs alongside them in the same job.
+The repository docs gate — the manifest's lint command,
+`python3 scripts/validate_docs.py --root .` (preceded by `--self-test`) —
+runs alongside them in the same job.
 
 ## Existing Tests
 

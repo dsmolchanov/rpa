@@ -1,10 +1,12 @@
 {
-  "detected_at": "2026-08-30T10:45:00Z",
+  "detected_at": "2026-08-30T11:00:00Z",
   "commit": "e508ef7",
-  "languages": ["python"],
+  "languages": [
+    "python"
+  ],
   "frameworks": {
     "test": "unittest (script-embedded)",
-    "lint": null,
+    "lint": "validate_docs (repository docs gate)",
     "typecheck": null
   },
   "commands": {
@@ -12,11 +14,13 @@
     "test_single": "python3 {file}",
     "test_related": null,
     "coverage": null,
-    "lint": null,
+    "lint": "python3 scripts/validate_docs.py --root .",
     "typecheck": null
   },
   "patterns": {
-    "test_files": ["**/test_*.py"],
+    "test_files": [
+      "**/test_*.py"
+    ],
     "test_directories": [
       "plugins/rpa/hooks",
       "plugins/rpa/skills/tdd/scripts",
@@ -31,7 +35,11 @@
     "output_path": null,
     "threshold_config": null
   },
-  "monorepo": { "detected": false, "tool": null, "packages": [] },
+  "monorepo": {
+    "detected": false,
+    "tool": null,
+    "packages": []
+  },
   "existing_tests": {
     "count": 4,
     "files": [
