@@ -5,10 +5,13 @@ Detect test infrastructure and refresh the manifest pair. `audit` rejects
 
 ## Procedure
 
-1. Record the default-branch anchor per the artifact contract
-   (`git merge-base HEAD <default-branch>`, short; fall back to
-   `git rev-parse --short HEAD` when the default branch is unknown, else
-   `no-git`).
+1. Record the default-branch anchor per the artifact contract:
+   `git merge-base HEAD <default-branch>` (short), resolving the default
+   branch via `git symbolic-ref --short refs/remotes/origin/HEAD` or the
+   repository's documented mainline. On the default branch this is HEAD.
+   If the default branch cannot be determined and HEAD is not evidently
+   on it, stop and ask rather than stamping a branch HEAD that a
+   squash-merge would discard. Without a repository: `no-git`.
 2. Delegate infrastructure detection to `test-analyzer` (contract:
    `../agent-contracts/test-analyzer.md`): frameworks, conventions,
    commands, coverage backend, monorepo layout, existing test inventory.

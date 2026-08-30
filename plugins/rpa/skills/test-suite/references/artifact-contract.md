@@ -55,7 +55,8 @@ every audit (point-in-time snapshot). Required fields:
   },
   "monorepo": {"detected": false, "tool": null, "packages": []},
   "existing_tests": {"count": 0, "files": [], "passing": null},
-  "additional_tools": {"mocking": null, "assertions": null, "fixtures": null}
+  "additional_tools": {"mocking": null, "assertions": null, "fixtures": null},
+  "evidence_paths": ["<files the detection relied on: configs, CI, scripts>"]
 }
 ```
 
@@ -64,11 +65,18 @@ entry, config file, Makefile target) — never invented. Unknown values are
 `null`, not guesses. `coverage_backend.threshold_config` names the defining
 file when the repository configures a threshold (see coverage-policy).
 
-A manifest is **current** while its `commit` is an ancestor of the
-checkout HEAD (`git merge-base --is-ancestor <commit> HEAD`); otherwise
-non-audit modes treat it as stale and direct the user to `audit`. A
-`no-git` manifest carries no lineage to test: treat it as current only
-within the session that produced it, and re-run `audit` when in doubt.
+A manifest is **current** while both hold:
+
+1. **Lineage** — its `commit` is an ancestor of the checkout HEAD
+   (`git merge-base --is-ancestor <commit> HEAD`); and
+2. **Freshness** — no commit after the anchor changed the files the
+   detection relied on: `git diff --name-only <commit>..HEAD` is disjoint
+   from `evidence_paths` and from paths matching `patterns.test_files`.
+
+Otherwise non-audit modes treat it as stale and direct the user to
+`audit`. A `no-git` manifest carries no lineage to test: treat it as
+current only within the session that produced it, and re-run `audit`
+when in doubt.
 
 `test-suite-manifest.md` — human-readable projection of the same data:
 detected infrastructure table, patterns, commands table, existing-test

@@ -47,7 +47,8 @@ Cross-mode invariants:
   is never consent for them.
 - Every non-`audit` mode requires a current manifest at
   `thoughts/shared/test-suite/test-suite-manifest.json` (currency is
-  defined by the artifact contract's `commit` ancestry rule). If it is
+  defined by the artifact contract: anchor lineage plus evidence
+  freshness). If it is
   missing or stale, direct the user to run `audit`; no other mode silently
   refreshes it.
 - `init` on a repository that already has tests produces an adopt plan and

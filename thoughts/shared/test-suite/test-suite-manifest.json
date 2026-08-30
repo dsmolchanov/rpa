@@ -54,5 +54,8 @@
     "mocking": null,
     "assertions": "assert / unittest",
     "fixtures": "tests/fixtures (docs-validate), skill-local fixtures"
-  }
+  },
+  "evidence_paths": [
+    ".github/workflows/ci.yml"
+  ]
 }
