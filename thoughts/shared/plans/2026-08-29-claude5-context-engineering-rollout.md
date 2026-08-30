@@ -583,8 +583,14 @@ gated. No runtime code paths change; hooks are untouched.
 
 ## Migration and Rollback
 
-- One PR per phase; rollback is `git revert` of that PR. Phase 2's command
-  replacement and skill creation land in one commit so a revert restores the
+- Delivery follows the owner decision recorded in Implementation Approach:
+  all four phases in one PR, one commit per phase. On the merged default
+  branch the rollout lands as a single squash commit, so rolling back the
+  whole release is one `git revert` of that squash; rolling back a single
+  phase is a targeted forward-fix that reverts that phase's changes
+  (cherry-pick the inverse of the corresponding phase commit, which stays
+  reachable on the PR branch). Phase 2's command replacement and skill
+  creation share one phase commit, so either rollback path restores the
   legacy command atomically.
 - `/rpa:test_suite` stays supported through 2.x; removal is a 3.0 decision.
   `init --force` is the one retired option and its rejection message points
