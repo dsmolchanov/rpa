@@ -66,7 +66,9 @@ file when the repository configures a threshold (see coverage-policy).
 
 A manifest is **current** while its `commit` is an ancestor of the
 checkout HEAD (`git merge-base --is-ancestor <commit> HEAD`); otherwise
-non-audit modes treat it as stale and direct the user to `audit`.
+non-audit modes treat it as stale and direct the user to `audit`. A
+`no-git` manifest carries no lineage to test: treat it as current only
+within the session that produced it, and re-run `audit` when in doubt.
 
 `test-suite-manifest.md` — human-readable projection of the same data:
 detected infrastructure table, patterns, commands table, existing-test
