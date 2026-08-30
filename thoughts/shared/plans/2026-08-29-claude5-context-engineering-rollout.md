@@ -508,10 +508,13 @@ result.
 
 #### Automated Verification
 
-- [ ] `grep '"version"' plugins/rpa/.claude-plugin/plugin.json
+- [x] `grep '"version"' plugins/rpa/.claude-plugin/plugin.json
       .claude-plugin/marketplace.json` → both `2.3.0`
-- [ ] `python3 scripts/validate_docs.py` exits 0 from a clean checkout
-- [ ] Phase 1's frozen-build hash check still passes on the release commit
+- [x] `python3 scripts/validate_docs.py` exits 0 (self-test + full run;
+      clean-checkout run repeats in CI's docs-validate and unit jobs)
+- [x] Phase 1's frozen-build hash check still passes on the release commit
+      (all three registered hashes reproduced; hook/tdd/one-pager CI tests
+      also pass locally)
 
 #### Manual Verification
 

@@ -36,6 +36,22 @@ This approach reduces errors, improves code quality, and creates documentation t
 | `/tech-debt-sweep` | Scan codebase for technical debt and generate paydown plan |
 | `/tech_debt_trends` | Analyze technical debt trends over time |
 
+### Changes in 2.3.0
+
+- The test-suite workflow is now the `test-suite` skill; `/rpa:test-suite`
+  is canonical and `/rpa:test_suite` remains a supported, deprecated 2.x
+  alias. `test_suite init --force` is retired — overwrites go through a
+  reviewed init plan and `init apply`.
+- Reduced tool preapprovals: the test-suite alias and workflows request
+  writes and test execution through the ordinary permission flow instead
+  of broad frontmatter grants — expect permission prompts where 2.2 had
+  none.
+- The refactor workflow no longer pre-authorizes or recommends destructive
+  git operations; failures report a scoped diff of workflow-touched files
+  and wait for a user decision.
+- The historical `research-v2-*` agents left the live roster; the frozen
+  research pilot remains reproducible from pinned history.
+
 ### One-pager and scheduling
 
 `/rpa:one-pager` writes a bounded, deterministic digest of a repository's
