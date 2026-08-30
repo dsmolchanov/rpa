@@ -62,7 +62,7 @@
     "plugins/rpa/skills/tdd/scripts/test_validate_session_log.py": "98b095e04e08c80ec734a3f0256ed232e2ab90c2f89db82d43c50a1f054b8976",
     "plugins/rpa/skills/one-pager/scripts/test_onepager.py": "5ab546beac63afd95c8f5720c5718a491b69874f7355141b53971ade139b737f",
     ".github/workflows/one-pager.yml": "d9dd48bf2e298123ac5f5aa81c30c32f632f7281db6d399ab8755c2b149f2b24",
-    ".github/workflows/codex-review-window.yml": "9b9d2390ddf3c9523df213343397dfb7ba98f858dcb3e77dcef90df421430257"
+    ".github/workflows/codex-review-window.yml": "c0a4e11c63eb25ade01d2d8fe8d8aa3fd045e2dba82205049642ee2f3c2f9661"
   },
   "detection_globs": [
     "package.json",
