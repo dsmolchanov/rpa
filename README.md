@@ -138,6 +138,7 @@ mkdir -p ~/.claude/agents
 mkdir -p ~/.claude/scripts
 mkdir -p ~/.claude/skills
 mkdir -p ~/.claude/hooks
+mkdir -p ~/.claude/docs
 
 # Copy commands
 cp plugins/rpa/commands/*.md ~/.claude/commands/
@@ -147,6 +148,11 @@ cp plugins/rpa/agents/*.md ~/.claude/agents/
 
 # Copy workflow skill packages (kernels the commands delegate to)
 cp -R plugins/rpa/skills/* ~/.claude/skills/
+
+# Copy shared docs — skills reference them as ../../docs/ relative to
+# ~/.claude/skills/<skill>/, i.e. ~/.claude/docs/ (e.g. testing-patterns.md
+# used by tdd, create-test-plan, and test-suite)
+cp plugins/rpa/docs/*.md ~/.claude/docs/
 
 # Copy and make scripts executable
 cp plugins/rpa/scripts/*.sh ~/.claude/scripts/

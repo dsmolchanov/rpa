@@ -175,9 +175,15 @@ and manual smoke runs are the enforcement):
 
 ## Implementation Approach
 
-One PR per phase, dependency-ordered but independently shippable and
-revertable. Phase 2 depends on nothing in Phase 1; Phase 4 lands last and
-bumps versions once.
+One commit per phase, dependency-ordered and independently revertable.
+
+**Owner decision (2026-08-30, PR #21):** the four phases ship in one PR
+rather than four sequential ones. Rationale: revert granularity is
+preserved by the one-commit-per-phase structure (`git revert
+<phase-commit>` undoes exactly one phase), while four PRs would serialize
+four `codex-review-window` soak cycles for no additional safety — the
+combined tree is what CI and the frozen-eval hash gate qualify either way.
+Phase 4 lands last in the stack and bumps versions once.
 
 Rewrite rule for every migrated prompt (conventions §3, §4, §10): keep
 trigger / when-not-to-use, bounded input, tools and authority, output
@@ -402,15 +408,36 @@ command as a thin compatibility alias.
 
 #### Manual Verification
 
-- [ ] `/rpa:test-suite audit` and `/rpa:test_suite audit` on this repo both
-      produce the manifest pair under `thoughts/shared/test-suite/` with the
-      unchanged filename, and touch nothing else
-- [ ] `adopt` and `standardize` are exercised end to end on a fragmented
-      fixture repo (closes the roadmap's open item)
-- [ ] An `update apply` involving assertion changes stops for explicit
-      confirmation of those items
-- [ ] A direct `rpa:test-runner` spawn describes/analyzes the evidenced
-      command without claiming to have executed anything
+- [x] Both audit entrypoints exercised in-checkout (2026-08-30, second
+      pass): the alias's documented resolution order was probed live —
+      layouts 1 and 2 absent, resolved at
+      `plugins/rpa/skills/test-suite/SKILL.md` (layout 3) — so both
+      entrypoints load the byte-identical kernel file; the audit procedure
+      was executed against HEAD `12b6619` and re-executed via the
+      alias-resolved kernel, regenerating an identical manifest pair
+      (point-in-time overwrite, unchanged evidenced inputs), and
+      `git status --porcelain` showed only
+      `thoughts/shared/test-suite/test-suite-manifest.{json,md}` modified.
+      A live dual slash invocation of the *new* files needs a session with
+      this tree installed (the current plugin cache is 2.2.0) — covered by
+      the Phase 4 fresh-session roster check.
+- [x] `adopt` and `standardize` exercised end to end on a fragmented
+      fixture (pytest majority + unittest minority, 2026-08-30): adopt
+      produced the harmonization plan and applied only wrapper glue (both
+      layers green, no test file touched); standardize migrated the
+      minority file with per-test pass/fail status preserved (2 OK before,
+      4 passed after). Closes the roadmap's open item.
+- [x] `update apply` with assertion-value changes verified on the fixture
+      (2026-08-30, second pass — full stop-and-confirm cycle): apply
+      without approvals **stopped and requested explicit per-item
+      confirmation** for both assertion items (A1, A2), test file
+      checksum-identical at the stop; explicit approval of A1 only then
+      applied exactly that item — `test_add` passed with the new
+      assertion while unapproved A2 stayed byte-untouched and
+      `test_add_negative` failed honestly against the changed behavior.
+- [x] Direct `rpa:test-runner` spawn (2026-08-30) returned the evidenced
+      per-script commands and a quality assessment without claiming to
+      have executed anything.
 
 ---
 
@@ -556,8 +583,14 @@ gated. No runtime code paths change; hooks are untouched.
 
 ## Migration and Rollback
 
-- One PR per phase; rollback is `git revert` of that PR. Phase 2's command
-  replacement and skill creation land in one commit so a revert restores the
+- Delivery follows the owner decision recorded in Implementation Approach:
+  all four phases in one PR, one commit per phase. On the merged default
+  branch the rollout lands as a single squash commit, so rolling back the
+  whole release is one `git revert` of that squash; rolling back a single
+  phase is a targeted forward-fix that reverts that phase's changes
+  (cherry-pick the inverse of the corresponding phase commit, which stays
+  reachable on the PR branch). Phase 2's command replacement and skill
+  creation share one phase commit, so either rollback path restores the
   legacy command atomically.
 - `/rpa:test_suite` stays supported through 2.x; removal is a 3.0 decision.
   `init --force` is the one retired option and its rejection message points
