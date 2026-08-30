@@ -12,7 +12,13 @@ add fields rather than renaming.
   exists stops for an explicit decision (archive/rename); identical content
   is an idempotent no-op.
 - Markdown frontmatter always carries `date` (ISO timestamp), `type`, and
-  `commit` (short HEAD, or `no-git`).
+  `commit` — the checkout's **default-branch anchor**:
+  `git merge-base HEAD <default-branch>` (short), which equals HEAD on the
+  default branch itself; `no-git` without a repository. Branch SHAs die at
+  squash-merge, so a durable stamp must be a default-branch ancestor.
+- Audit artifacts are per-checkout snapshots produced by running `audit`
+  on the target checkout; hand-editing a manifest (e.g. to satisfy review
+  feedback) is not a valid refresh.
 - Plans list every file they would touch, precisely enough that `apply` can
   be checked against the authority matrix afterwards.
 
@@ -24,7 +30,7 @@ every audit (point-in-time snapshot). Required fields:
 ```json
 {
   "detected_at": "<ISO timestamp>",
-  "commit": "<short HEAD or no-git>",
+  "commit": "<default-branch anchor per the common rules, or no-git>",
   "languages": ["<language>", "..."],
   "frameworks": {"test": "<framework>", "lint": null, "typecheck": null},
   "commands": {
@@ -57,6 +63,10 @@ Every command value must be evidenced by repository configuration (script
 entry, config file, Makefile target) — never invented. Unknown values are
 `null`, not guesses. `coverage_backend.threshold_config` names the defining
 file when the repository configures a threshold (see coverage-policy).
+
+A manifest is **current** while its `commit` is an ancestor of the
+checkout HEAD (`git merge-base --is-ancestor <commit> HEAD`); otherwise
+non-audit modes treat it as stale and direct the user to `audit`.
 
 `test-suite-manifest.md` — human-readable projection of the same data:
 detected infrastructure table, patterns, commands table, existing-test

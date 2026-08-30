@@ -5,7 +5,10 @@ Detect test infrastructure and refresh the manifest pair. `audit` rejects
 
 ## Procedure
 
-1. Record git identity (`git rev-parse --short HEAD`, else `no-git`).
+1. Record the default-branch anchor per the artifact contract
+   (`git merge-base HEAD <default-branch>`, short; fall back to
+   `git rev-parse --short HEAD` when the default branch is unknown, else
+   `no-git`).
 2. Delegate infrastructure detection to `test-analyzer` (contract:
    `../agent-contracts/test-analyzer.md`): frameworks, conventions,
    commands, coverage backend, monorepo layout, existing test inventory.

@@ -46,8 +46,10 @@ Cross-mode invariants:
   deletions always require an explicit per-item user decision; `apply` alone
   is never consent for them.
 - Every non-`audit` mode requires a current manifest at
-  `thoughts/shared/test-suite/test-suite-manifest.json`. If it is missing or
-  stale, direct the user to run `audit`; no other mode silently refreshes it.
+  `thoughts/shared/test-suite/test-suite-manifest.json` (currency is
+  defined by the artifact contract's `commit` ancestry rule). If it is
+  missing or stale, direct the user to run `audit`; no other mode silently
+  refreshes it.
 - `init` on a repository that already has tests produces an adopt plan and
   says why, instead of scaffolding duplicates.
 - The legacy `init --force` overwrite flag is retired: reject it and point
