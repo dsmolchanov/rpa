@@ -131,12 +131,14 @@ late review re-evaluate the gate.
 **Changes**:
 
 - Add a `pull_request_review: types: [submitted]` trigger alongside the
-  existing `pull_request` types (`codex-review-window.yml:2-4`). Guard the
-  gate step so review-triggered runs proceed only when
-  `github.event.review.user.login == 'chatgpt-codex-connector[bot]'`
-  (other reviewers must not consume gate runs); keep the draft and
-  `fast-merge` guards intact. `HEAD_SHA` for review-triggered runs still
-  comes from `github.event.pull_request.head.sha`.
+  existing `pull_request` types (`codex-review-window.yml:2-4`).
+  Review-triggered runs execute the **full gate for any reviewer** — no
+  per-author skip: a gate step skipped on a review event reports a green
+  job for the head SHA and would launder a red verdict; the gate is
+  idempotent, so a human review merely re-evaluates Codex's state (the
+  occasional extra run is the price of not being launderable). Keep the
+  draft and `fast-merge` guards intact. `HEAD_SHA` for review-triggered
+  runs still comes from `github.event.pull_request.head.sha`.
 - On a review-triggered run, skip the `@codex review` re-request block
   (`codex-review-window.yml:48-51`) — the review already exists — and
   evaluate the verdict immediately (the poll loop finds the review on its
