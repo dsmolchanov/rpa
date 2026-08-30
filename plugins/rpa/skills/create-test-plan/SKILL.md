@@ -6,8 +6,8 @@ description: >
   and existing coverage. Select when the user wants risk-based test strategy
   or an executable Red-phase specification before implementation. Do NOT
   select to write or run tests, repair a failing suite, plan repo-wide coverage
-  work, or implement the feature; use tdd, test-suite, test-runner, or
-  implement-plan instead.
+  work, or implement the feature; use tdd, test-suite (run executes suites),
+  or implement-plan instead.
 user-invocable: true
 permission-class: "read_only (target repo) + workspace_write (thoughts/shared/tests/ only)"
 invocation: "both"

@@ -30,7 +30,7 @@ This approach reduces errors, improves code quality, and creates documentation t
 | `/debug` | Investigate problems via logs, DB state, and git history without editing files |
 | `/create-test-plan` | Create comprehensive test plans and TDD strategies |
 | `/tdd` | Execute full TDD cycle with Red/Green/Refactor verification |
-| `/test_suite` | Create, update, and maintain test suites (audit, init, update, gaps, run, ci, standardize) |
+| `/test-suite` | Create, update, and maintain test suites (audit, adopt, init, update, gaps, run, ci, standardize); `/test_suite` remains a deprecated 2.x alias |
 | `/refactor_candidates` | Discover and index God-like modules as refactoring candidates |
 | `/refactor` | Refactor monolithic modules into focused, testable modules |
 | `/tech-debt-sweep` | Scan codebase for technical debt and generate paydown plan |
@@ -226,6 +226,9 @@ After a manual copy install, your `~/.claude/` directory should look like:
 │   │   ├── SKILL.md
 │   │   └── references/
 │   ├── create-test-plan/
+│   │   ├── SKILL.md
+│   │   └── references/
+│   ├── test-suite/
 │   │   ├── SKILL.md
 │   │   └── references/
 │   ├── tdd/

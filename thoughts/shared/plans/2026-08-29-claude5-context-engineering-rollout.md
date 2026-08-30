@@ -388,16 +388,16 @@ command as a thin compatibility alias.
 
 #### Automated Verification
 
-- [ ] `python3 scripts/validate_docs.py` exits 0 (new skill package, adapter
+- [x] `python3 scripts/validate_docs.py` exits 0 (new skill package, adapter
       frontmatter, links)
-- [ ] `grep -rn "Priority Score\|Default to 80" plugins/rpa --include="*.md"
+- [x] `grep -rn "Priority Score\|Default to 80" plugins/rpa --include="*.md"
       | grep -v fixtures` returns nothing
-- [ ] `grep -n "tools:" plugins/rpa/agents/test-runner.md` shows exactly
+- [x] `grep -n "tools:" plugins/rpa/agents/test-runner.md` shows exactly
       `Glob, Grep, LS, Read`
-- [ ] `grep -c "allowed-tools" plugins/rpa/commands/test_suite.md` shows the
+- [x] `grep -c "allowed-tools" plugins/rpa/commands/test_suite.md` shows the
       alias frontmatter contains no `Edit`, `Write`, `Task`, `TodoWrite`, or
       test-command preapproval (inspect the line)
-- [ ] Each of the eight adapters imports its contract path and each contract
+- [x] Each of the eight adapters imports its contract path and each contract
       file exists (link check via `validate_docs.py`)
 
 #### Manual Verification
