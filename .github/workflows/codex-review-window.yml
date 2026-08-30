@@ -77,11 +77,18 @@ jobs:
             # when nothing evidences a Codex connection; otherwise fail
             # closed — the pull_request_review trigger re-runs this gate
             # the moment the review lands.
+            # Connection means RECENT bot activity: a review on an old
+            # head must not pin the repo "connected" forever after the
+            # connector is removed, or the fail-closed path would block
+            # PRs permanently (no review will ever arrive to self-heal).
+            # With a 7-day window, a disconnected repo degrades back to
+            # the advisory pass within a week.
+            CUTOFF=$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)
             # NB: --paginate emits one JSON array per page, so `length`
             # would print one number per page; count matching ids per line
             # instead.
             CONNECTED=$(gh api "repos/${REPO}/pulls/${PR}/reviews" --paginate \
-              --jq ".[] | select(.user.login == \"${CODEX_BOT}\") | .id" \
+              --jq ".[] | select(.user.login == \"${CODEX_BOT}\" and .submitted_at >= \"${CUTOFF}\") | .id" \
               | wc -l | tr -d ' ')
             # A probe that cannot answer must fail closed: an API error
             # here must never turn into the advisory pass on a repo that
@@ -93,7 +100,7 @@ jobs:
               fi
               for n in ${RECENT}; do
                 if ! IDS=$(gh api "repos/${REPO}/pulls/${n}/reviews" --paginate \
-                  --jq ".[] | select(.user.login == \"${CODEX_BOT}\") | .id"); then
+                  --jq ".[] | select(.user.login == \"${CODEX_BOT}\" and .submitted_at >= \"${CUTOFF}\") | .id"); then
                   echo "::error::Connection probe failed (reviews query for PR #${n}); failing closed."
                   exit 1
                 fi

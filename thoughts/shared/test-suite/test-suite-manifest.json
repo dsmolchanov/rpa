@@ -60,6 +60,24 @@
     "plugins/rpa/hooks/test_run_gate.py": "4e0c5f4593ce450d89b8d029225e937a22648413c615fb9b79c550376dda64b5",
     "plugins/rpa/skills/tdd/scripts/test_evidence.py": "c840af267ac76d798a39550f1b57ba3175b615ae27e8493c98186259b54a9351",
     "plugins/rpa/skills/tdd/scripts/test_validate_session_log.py": "98b095e04e08c80ec734a3f0256ed232e2ab90c2f89db82d43c50a1f054b8976",
-    "plugins/rpa/skills/one-pager/scripts/test_onepager.py": "5ab546beac63afd95c8f5720c5718a491b69874f7355141b53971ade139b737f"
-  }
+    "plugins/rpa/skills/one-pager/scripts/test_onepager.py": "5ab546beac63afd95c8f5720c5718a491b69874f7355141b53971ade139b737f",
+    ".github/workflows/one-pager.yml": "d9dd48bf2e298123ac5f5aa81c30c32f632f7281db6d399ab8755c2b149f2b24",
+    ".github/workflows/codex-review-window.yml": "9b9d2390ddf3c9523df213343397dfb7ba98f858dcb3e77dcef90df421430257"
+  },
+  "detection_globs": [
+    "package.json",
+    "pyproject.toml",
+    "setup.py",
+    "setup.cfg",
+    "pytest.ini",
+    "tox.ini",
+    "go.mod",
+    "Cargo.toml",
+    "pom.xml",
+    "build.gradle",
+    "Gemfile",
+    "composer.json",
+    "Makefile",
+    ".github/workflows/*.yml"
+  ]
 }

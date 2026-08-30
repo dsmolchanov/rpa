@@ -19,7 +19,10 @@ Detect test infrastructure and refresh the manifest pair. `audit` rejects
    delegation and gather the same fields directly.
 3. Write `test-suite-manifest.json` and its Markdown projection per the
    artifact contract. Every command must be evidenced by repository
-   configuration; unknown values stay `null`.
+   configuration; unknown values stay `null`. Record in `evidence` the
+   SHA-256 of every file the detection relied on, and in
+   `detection_globs` the config patterns the detection probed (found or
+   not) — currency checks re-glob them to catch newly appeared inputs.
 4. Report the detected stack, the evidenced test command, and suggested
    next modes.
 

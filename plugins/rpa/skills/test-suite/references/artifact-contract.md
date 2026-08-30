@@ -56,7 +56,8 @@ every audit (point-in-time snapshot). Required fields:
   "monorepo": {"detected": false, "tool": null, "packages": []},
   "existing_tests": {"count": 0, "files": [], "passing": null},
   "additional_tools": {"mocking": null, "assertions": null, "fixtures": null},
-  "evidence": {"<file the detection relied on>": "<sha256 of its bytes>"}
+  "evidence": {"<file the detection relied on>": "<sha256 of its bytes>"},
+  "detection_globs": ["<config patterns the audit probed, found or not>"]
 }
 ```
 
@@ -71,10 +72,13 @@ A manifest is **current** while both hold:
    (`git merge-base --is-ancestor <commit> HEAD`); and
 2. **Freshness** — the working tree still matches what the audit
    observed: every `evidence` entry's file exists with the recorded
-   SHA-256, and globbing `patterns.test_files` yields exactly
-   `existing_tests.files`. (Content-based on purpose: an anchor-to-HEAD
-   diff would mark a fresh audit stale whenever the audited branch itself
-   changes evidenced files.)
+   SHA-256; globbing `patterns.test_files` yields exactly
+   `existing_tests.files`; and re-globbing `detection_globs` finds no
+   file absent from the `evidence` keys — a newly appeared detection
+   input (a project manifest, test config, Makefile) invalidates the
+   snapshot even though the recorded files are unchanged. (Content-based
+   on purpose: an anchor-to-HEAD diff would mark a fresh audit stale
+   whenever the audited branch itself changes evidenced files.)
 
 Otherwise non-audit modes treat it as stale and direct the user to
 `audit`. A `no-git` manifest carries no lineage to test: treat it as

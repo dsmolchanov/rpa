@@ -155,10 +155,13 @@ late review re-evaluate the gate.
   timeout at line 20 stays 15 minutes and still bounds the run).
 - Replace the unconditional advisory pass (`codex-review-window.yml:61-64`)
   with a connection probe:
-  - connected ⇔ the bot has any review on this PR
-    (`gh api repos/$REPO/pulls/$PR/reviews` filtered by `CODEX_BOT`,
-    any commit) **or** any review among the repository's recent closed PRs
-    (bounded query, e.g. the bot's involvement in the last ~10 PRs);
+  - connected ⇔ the bot has a **recent** review (submitted within the
+    last 7 days) on this PR (any commit) or among the repository's last
+    ~10 PRs. Recency is load-bearing: an old review must not pin the repo
+    "connected" forever after the connector is removed, or the
+    fail-closed path would block PRs permanently with no review ever
+    arriving to self-heal; with the window, a disconnected repo degrades
+    back to the advisory pass within a week;
   - connected → `exit 1` with an error naming the pending review and
     stating that the gate re-runs automatically when the Codex review is
     submitted;
@@ -217,8 +220,12 @@ define manifest currency against it.
   `commit` is an ancestor of the checkout HEAD (`git merge-base
   --is-ancestor <commit> HEAD`) and (2) the working tree still matches
   what the audit observed — every entry of a new additive `evidence`
-  field ({file: sha256}) verifies, and globbing `patterns.test_files`
-  reproduces `existing_tests.files`. Content-based freshness on purpose:
+  field ({file: sha256}) verifies, globbing `patterns.test_files`
+  reproduces `existing_tests.files`, and re-globbing a new additive
+  `detection_globs` field (the config patterns the audit probed, found
+  or not) finds no file absent from `evidence` — so newly appeared
+  detection inputs invalidate the snapshot. Content-based freshness on
+  purpose:
   an anchor-to-HEAD diff would mark a fresh audit stale whenever the
   audited branch itself changes evidenced files. A `no-git` manifest has
   no lineage to test and is current only within its producing session.
@@ -226,7 +233,8 @@ define manifest currency against it.
   `audit`.
 - Migrate the committed manifest at
   `thoughts/shared/test-suite/test-suite-manifest.json` to the extended
-  schema (add its `evidence` map; detection content unchanged).
+  schema (add its `evidence` map — CI workflows plus the four test files —
+  and its `detection_globs`; detection content unchanged).
 - Add to the common rules: audit artifacts are per-checkout snapshots
   produced by running `audit` on the target checkout; hand-editing a
   manifest (e.g. to satisfy review feedback) is not a valid refresh.
