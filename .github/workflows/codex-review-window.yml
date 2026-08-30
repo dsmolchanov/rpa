@@ -51,9 +51,14 @@ jobs:
           set -euo pipefail
           echo "Waiting for Codex review of ${HEAD_SHA} on PR #${PR}"
 
+          # --paginate emits one JSON array per page, so a per-page
+          # `last` would print one ID per page; emit matching IDs per
+          # line and take the overall last (reviews arrive in
+          # chronological order).
           review_id_for_head() {
             gh api "repos/${REPO}/pulls/${PR}/reviews" --paginate \
-              --jq "[.[] | select(.user.login == \"${CODEX_BOT}\" and .commit_id == \"${HEAD_SHA}\")] | (last | .id) // empty"
+              --jq ".[] | select(.user.login == \"${CODEX_BOT}\" and .commit_id == \"${HEAD_SHA}\") | .id" \
+              | tail -n 1
           }
 
           # Codex auto-reviews on open/ready but NOT on pushes — ask for a
@@ -119,12 +124,15 @@ jobs:
           # Give inline finding comments a moment to finish landing.
           sleep 15
 
+          # Fetch first, grep second: `|| true` may only absorb grep's
+          # zero-match exit, never an API failure that would otherwise
+          # report a blocking review as green.
           PATTERN='\[BLOCKER\]|badge/P1|P1 Badge'
-          INLINE=$(gh api "repos/${REPO}/pulls/${PR}/comments" --paginate \
-            --jq ".[] | select(.pull_request_review_id == ${RID}) | .body" \
-            | grep -cE "${PATTERN}" || true)
-          BODY=$(gh api "repos/${REPO}/pulls/${PR}/reviews/${RID}" --jq '.body' \
-            | grep -cE "${PATTERN}" || true)
+          INLINE_BODIES=$(gh api "repos/${REPO}/pulls/${PR}/comments" --paginate \
+            --jq ".[] | select(.pull_request_review_id == ${RID}) | .body")
+          INLINE=$(grep -cE "${PATTERN}" <<<"${INLINE_BODIES}" || true)
+          REVIEW_BODY=$(gh api "repos/${REPO}/pulls/${PR}/reviews/${RID}" --jq '.body')
+          BODY=$(grep -cE "${PATTERN}" <<<"${REVIEW_BODY}" || true)
 
           if [ "$((INLINE + BODY))" -gt 0 ]; then
             echo "::error::Codex review reports P1/[BLOCKER] finding(s) on ${HEAD_SHA} (inline hits: ${INLINE}). Auto-fix must push a fix commit; this check re-runs on the new head until Codex is green."
