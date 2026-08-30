@@ -108,8 +108,14 @@ branch stamps a commit that still exists after squash-merge.
 
 ## Implementation Approach
 
-Two small, independent phases; one PR (they share no files, but neither
-justifies its own review cycle — each phase is one revertable commit).
+Two small, independent phases; one PR. The **initial implementation** is
+one revertable commit per phase. **Review-response commits are exempt
+from phase isolation**: `AGENTS.md` requires batching all open
+`[BLOCKER]`s and CI failures into one fix commit, and that durable
+repository rule takes precedence — a batch may therefore touch both
+phases' files. Phase-level rollback of the final state is a targeted
+forward-fix (revert the phase commit plus that phase's hunks of any
+batch commits).
 Phase 1 edits only the workflow; Phase 2 edits only the test-suite skill
 package. The docs gate covers Phase 2; Phase 1 is verified by `actionlint`-
 style YAML sanity (no such linter is installed — verification is manual
