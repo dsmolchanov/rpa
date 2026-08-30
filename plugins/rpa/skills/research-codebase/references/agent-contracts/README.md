@@ -19,8 +19,10 @@ locator adapters carry `Read` solely to load their own contract file —
 an authority bound stated in the contracts themselves (repository and
 document contents are never read; locating is not analyzing). These shared
 adapters serve research, planning, and testing callers from one
-contract source. Historical `research-v2-*` adapters remain solely for
-reproducing the frozen pilot installation.
+contract source. The historical `research-v2-*` adapters exist only in
+the frozen candidate tree addressed by the registered SHA (see
+`evals/public/pilot_registration.py` and `build_installs.py`); the live
+roster no longer carries them.
 
 Routing between agents (which to use when, Claude delegation calibration)
 lives in `../fleet-routing.md`.

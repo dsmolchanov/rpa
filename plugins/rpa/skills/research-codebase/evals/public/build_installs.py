@@ -40,13 +40,46 @@ import sys
 import tarfile
 from pathlib import Path, PurePosixPath
 
+import pilot_registration
 import runner
 
 BASELINE_SHA = "a7de5f6000225b57eeee1a5c6c0131fb02656d4d"
-CANDIDATE_SHA = "b731f06cdff5f38c0fa4c5aa64f93277d69e741d"
+CANDIDATE_SHA = pilot_registration.FROZEN_CANDIDATE_SHA
 INSTALL_PATHS = [".claude-plugin", "agents", "commands", "hooks",
                  "scripts", "skills", "CLAUDE.md", "AGENTS.md"]
 IMPORT_LINE = "@AGENTS.md"
+# The historical fleet adapters live only in the frozen candidate tree;
+# the live roster no longer carries them. Validate the extracted
+# candidate explicitly so ablation removes a proven set, not a glob.
+FROZEN_ADAPTERS = (
+    "research-v2-analyzer.md",
+    "research-v2-locator.md",
+    "research-v2-pattern-finder.md",
+    "research-v2-thoughts-analyzer.md",
+    "research-v2-thoughts-locator.md",
+    "research-v2-web-researcher.md",
+)
+
+
+def validate_candidate_adapters(candidate):
+    """Assert the frozen candidate carries exactly the six fleet adapters,
+    each importing its agent contract at parse time (the adapters have no
+    Bash tool, so a prose path would dead-end them in a plugin install)."""
+    agents = candidate / "agents"
+    found = sorted(p.name for p in agents.glob("research-v2-*.md"))
+    if found != sorted(FROZEN_ADAPTERS):
+        raise SystemExit(
+            f"frozen candidate adapter set mismatch: expected "
+            f"{sorted(FROZEN_ADAPTERS)}, found {found}")
+    for name in FROZEN_ADAPTERS:
+        contract = name.replace("research-v2-", "research-", 1)
+        import_line = ("@${CLAUDE_PLUGIN_ROOT}/skills/research-codebase"
+                       f"/references/agent-contracts/{contract}")
+        text = (agents / name).read_text(encoding="utf-8")
+        if import_line not in text:
+            raise SystemExit(
+                f"frozen candidate adapter {name} lacks its parse-time "
+                f"contract import {import_line}")
 
 
 def safe_extract_git_archive(archive, dest):
@@ -119,6 +152,7 @@ def build(repo, out):
 
     candidate = out / "candidate"
     extract(repo, CANDIDATE_SHA, candidate)
+    validate_candidate_adapters(candidate)
 
     baseline = out / "baseline"
     extract(repo, BASELINE_SHA, baseline)
@@ -131,8 +165,8 @@ def build(repo, out):
 
     ablation = out / "ablation"
     shutil.copytree(candidate, ablation)
-    for adapter in sorted((ablation / "agents").glob("research-v2-*.md")):
-        adapter.unlink()
+    for name in FROZEN_ADAPTERS:
+        (ablation / "agents" / name).unlink()
     (ablation / "skills" / "research-codebase" / "references"
      / "fleet-routing.md").unlink()
 
@@ -151,7 +185,17 @@ def main():
     parser.add_argument("--out", required=True,
                         help="output directory (recreated)")
     args = parser.parse_args()
-    build(Path(args.repo), Path(args.out))
+    hashes = build(Path(args.repo), Path(args.out))
+    mismatches = {
+        arm: (hashes[arm], registered)
+        for arm, registered in pilot_registration.INSTALL_SHA256.items()
+        if hashes.get(arm) != registered}
+    if mismatches:
+        for arm, (built, registered) in sorted(mismatches.items()):
+            print(f"{arm}: built {built} != registered {registered}",
+                  file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
