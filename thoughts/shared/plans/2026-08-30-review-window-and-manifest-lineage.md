@@ -237,8 +237,11 @@ define manifest currency against it.
 **Changes**:
 
 - `modes/audit.md:8`: record the default-branch anchor per the contract
-  (`git merge-base HEAD <default>`, falling back to `git rev-parse --short
-  HEAD` when the default branch is unknown, else `no-git`).
+  (`git merge-base HEAD <default>`, resolving the default branch via
+  `origin/HEAD` or the repository's documented mainline). When the default
+  branch cannot be determined and HEAD is not evidently on it, stop and
+  ask — never stamp a branch HEAD that a squash-merge would discard
+  (`no-git` without a repository).
 - `SKILL.md:48-50`: point the "current manifest" requirement at the
   contract's currency definition instead of leaving currency undefined.
 
