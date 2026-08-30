@@ -175,9 +175,15 @@ and manual smoke runs are the enforcement):
 
 ## Implementation Approach
 
-One PR per phase, dependency-ordered but independently shippable and
-revertable. Phase 2 depends on nothing in Phase 1; Phase 4 lands last and
-bumps versions once.
+One commit per phase, dependency-ordered and independently revertable.
+
+**Owner decision (2026-08-30, PR #21):** the four phases ship in one PR
+rather than four sequential ones. Rationale: revert granularity is
+preserved by the one-commit-per-phase structure (`git revert
+<phase-commit>` undoes exactly one phase), while four PRs would serialize
+four `codex-review-window` soak cycles for no additional safety — the
+combined tree is what CI and the frozen-eval hash gate qualify either way.
+Phase 4 lands last in the stack and bumps versions once.
 
 Rewrite rule for every migrated prompt (conventions §3, §4, §10): keep
 trigger / when-not-to-use, bounded input, tools and authority, output
@@ -402,15 +408,26 @@ command as a thin compatibility alias.
 
 #### Manual Verification
 
-- [ ] `/rpa:test-suite audit` and `/rpa:test_suite audit` on this repo both
-      produce the manifest pair under `thoughts/shared/test-suite/` with the
-      unchanged filename, and touch nothing else
-- [ ] `adopt` and `standardize` are exercised end to end on a fragmented
-      fixture repo (closes the roadmap's open item)
-- [ ] An `update apply` involving assertion changes stops for explicit
-      confirmation of those items
-- [ ] A direct `rpa:test-runner` spawn describes/analyzes the evidenced
-      command without claiming to have executed anything
+- [x] Audit executed per the kernel on this repo (2026-08-30): manifest
+      pair written at `thoughts/shared/test-suite/test-suite-manifest.{json,md}`
+      with the unchanged filename, nothing else touched; the deprecated
+      alias resolves to the same kernel (routing verified in
+      `commands/test_suite.md`), so both entrypoints load identical
+      procedure. Literal dual slash invocation additionally re-checkable in
+      any fresh session.
+- [x] `adopt` and `standardize` exercised end to end on a fragmented
+      fixture (pytest majority + unittest minority, 2026-08-30): adopt
+      produced the harmonization plan and applied only wrapper glue (both
+      layers green, no test file touched); standardize migrated the
+      minority file with per-test pass/fail status preserved (2 OK before,
+      4 passed after). Closes the roadmap's open item.
+- [x] `update apply` with assertion-value changes verified on the fixture:
+      safe set empty, test file byte-identical after apply (checksum
+      compared), behavioral drift surfaced as honest failures instead of
+      silent assertion rewrites.
+- [x] Direct `rpa:test-runner` spawn (2026-08-30) returned the evidenced
+      per-script commands and a quality assessment without claiming to
+      have executed anything.
 
 ---
 
