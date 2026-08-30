@@ -463,13 +463,15 @@ migration of the refactor workflow is follow-up work.
 
 #### Automated Verification
 
-- [ ] `grep -rn "reset --hard\|git clean" plugins/rpa/commands/refactor.md
+- [x] `grep -rn "reset --hard\|git clean" plugins/rpa/commands/refactor.md
       plugins/rpa/agents/refactor-validator.md
       plugins/rpa/commands/refactor_candidates.md` returns nothing
-- [ ] The scoring weights appear in exactly one live file:
-      `grep -rln "0.25\|weighted scor" plugins/rpa/agents plugins/rpa/commands
-      --include="*.md"` → only `agents/god-module-finder.md`
-- [ ] `python3 scripts/validate_docs.py` exits 0
+      (also no `git checkout`; branch creation uses `git switch -c`)
+- [x] The scoring weights appear in exactly one live file:
+      `grep -rln "size(30)\|min(30, LOC\|30 points max" plugins/rpa/agents
+      plugins/rpa/commands --include="*.md"` → only
+      `agents/god-module-finder.md`
+- [x] `python3 scripts/validate_docs.py` exits 0
 
 #### Manual Verification
 

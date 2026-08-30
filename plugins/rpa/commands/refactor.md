@@ -1,7 +1,7 @@
 ---
 description: Refactor monolithic/God-like code into focused, testable modules
 argument-hint: "[file-path|directory] - Target to refactor or scan for candidates"
-allowed-tools: Read, Glob, Grep, LS, Task, Edit, Write, TodoWrite, Bash(git status:*), Bash(git diff:*), Bash(git checkout:*), Bash(git branch:*), Bash(git reset --hard HEAD:*), Bash(npm test:*), Bash(pnpm test:*), Bash(yarn test:*), Bash(go test:*), Bash(pytest:*), Bash(python -m pytest:*), Bash(make test:*), Bash(npm run lint:*), Bash(npm run typecheck:*), Bash(npx tsc:*), Bash(cargo test:*), Bash(cargo fmt:*), Bash(cargo clippy:*)
+allowed-tools: Read, Glob, Grep, LS, Task, Edit, Write, TodoWrite, Bash(git status:*), Bash(git diff:*), Bash(npm test:*), Bash(pnpm test:*), Bash(yarn test:*), Bash(go test:*), Bash(pytest:*), Bash(python -m pytest:*), Bash(make test:*), Bash(npm run lint:*), Bash(npm run typecheck:*), Bash(npx tsc:*), Bash(cargo test:*), Bash(cargo fmt:*), Bash(cargo clippy:*)
 ---
 
 # Refactor Code
@@ -23,7 +23,8 @@ The target path is available as `$ARGUMENTS`.
 2. Run verification
 3. **STOP and present results**
 4. **Do NOT proceed to the next phase until the user types "continue", "next", or "proceed"**
-5. If verification fails, offer the abort option immediately
+5. If verification fails, report the scoped diff of workflow-touched files
+   and wait for the user's decision (see Failure Handling)
 
 ## Initial Response
 
@@ -36,18 +37,9 @@ Scanning for refactoring candidates...
 Then spawn `god-module-finder` agent to scan the codebase and present top 5-10 candidates ranked by severity.
 
 ### When invoked WITH a directory path (Directory Mode):
-```
-Scanning [directory] for refactoring candidates...
-
-I'll rank files by weighted God-score:
-- Size (LOC) - 30 points max
-- Public surface (exports) - 20 points max
-- Fan-in (importers) - 20 points max
-- Fan-out (dependencies) - 10 points max
-- Smell density (TODO/FIXME/suppressions) - 10 points max
-- Churn hotspot (commits) - 10 points max
-```
-Then spawn `god-module-finder` agent scoped to that directory. Present top 5-10 candidates ranked by score (not hard thresholds) and ask user to pick ONE.
+Announce the scan, then spawn `god-module-finder` scoped to that directory —
+the agent owns the weighted God-score definition and severity tiers
+(`agents/god-module-finder.md`, single source; do not restate weights here). Present top 5-10 candidates ranked by score (not hard thresholds) and ask user to pick ONE.
 
 ### When invoked WITH a file path (File Mode):
 ```
@@ -394,29 +386,24 @@ export { function1, function2 } from './new-module';
 
 ---
 
-## Rollback Strategy
+## Failure Handling (Non-Destructive)
 
 If issues arise at any point:
 
-### Immediate Abort
-If verification fails and user chooses to stop:
-```bash
-git reset --hard HEAD
-```
-**Note**: This discards tracked file changes but does NOT remove untracked files (new modules you created). To fully clean, you may need to manually delete new files or use `git clean -fd` (be careful with this).
-
-### Partial Rollback
-If only the last phase failed:
-```bash
-git checkout HEAD~1 -- [affected files]
-```
+1. Report the scoped diff of exactly the files this workflow created or
+   modified (`git status --porcelain` plus `git diff -- [workflow files]`).
+   Pre-existing user changes — tracked or untracked — are preserved
+   untouched.
+2. Wait for the user's decision: fix forward, or reverse specific
+   workflow-owned files. Any reversal is user-driven and file-scoped.
+   Never discard the working tree wholesale, never delete untracked files,
+   and never run or recommend a git operation that throws away tracked or
+   untracked work (hard resets, tree-wide restores, clean).
 
 ### Branch Strategy
-All refactoring happens on a feature branch:
-```bash
-git checkout -b refactor/[component-name]
-```
-Main branch remains untouched until fully verified.
+All refactoring happens on a feature branch created before the first edit
+(propose one if the current branch is the mainline). Main branch remains
+untouched until fully verified.
 
 ### Phase Checkpoints (Recommended)
 After each phase passes verification, optionally commit:
@@ -463,7 +450,7 @@ After validation, consumers can be gradually updated:
 
 2. **Create feature branch**:
    ```bash
-   git checkout -b refactor/[component-name]
+   git switch -c refactor/[component-name]
    ```
 
 3. **Confirm with user**:
@@ -526,7 +513,8 @@ For each phase:
    [If any FAIL or NO]:
    Issues detected. Options:
    1. Fix and retry
-   2. Abort and rollback: `git reset --hard HEAD`
+   2. Stop — here is the scoped diff of workflow-touched files; tell me
+      which of them (if any) to revert
 
    [If all PASS]:
    Ready for next phase. Type "continue" to proceed.
@@ -572,7 +560,8 @@ Failed tests:
 
 Options:
 1. "fix" - Attempt to fix the issue
-2. "abort" - Rollback all changes: `git reset --hard HEAD`
+2. "stop" - Report the scoped diff of workflow-touched files and wait for
+   your file-by-file reversal decision (pre-existing changes stay intact)
 3. "skip" - Mark as known issue and continue (not recommended)
 ```
 

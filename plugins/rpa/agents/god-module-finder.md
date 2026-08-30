@@ -141,78 +141,22 @@ Flag as NOT God-like if:
 - Auto-generated files (`*.generated.*`, `generated/`)
 - Test files (unless testing multiple components)
 
-Example classifications:
-```
-src/types/schema.ts (450 LOC) → NOT God-like (pure types)
-src/constants/errors.ts (320 LOC) → NOT God-like (data only)
-generated/api-client.ts (1200 LOC) → NOT God-like (generated)
-src/utils/helpers.ts (850 LOC) → God-like (mixed domains, high smell)
-```
-
 ## Output Format
 
-```
-## God Module Candidates
+Return, in this order — all metric values and score contributions are
+measured, never invented:
 
-### Summary
-- Files scanned: X
-- Candidates found: Y (scoring >= 40)
-- Severe: Z (>= 85)
-- False positives excluded: W (big but cohesive)
-
-### Top Candidates (Ranked by Score)
-
-| Rank | File | Score | Classification | Cohesion | Split Strategy |
-|------|------|-------|----------------|----------|----------------|
-| 1 | src/utils/helpers.ts | 94 | Module | LOW | Domain-first |
-| 2 | scripts/deploy.sh | 88 | Script | LOW | Pipeline stages |
-| 3 | src/services/user.ts | 81 | Module | MEDIUM | Layer-first |
-
-### Detailed Breakdown: Top 3
-
-#### 1. src/utils/helpers.ts - Score: 94 (SEVERE)
-
-| Metric | Value | Points |
-|--------|-------|--------|
-| LOC | 850 | 28.3 |
-| Exports | 40 | 20 |
-| Fan-In | 60 | 20 |
-| Fan-Out | 12 | 6 |
-| Smells | 8 markers | 9.4 |
-| Churn | 45 commits | 10 |
-
-**Why God-like:**
-- Kitchen sink naming (`helpers`)
-- Mixed domains: auth, strings, dates, API
-- Coupling magnet (60 importers)
-- High churn (frequently edited)
-
-**Classification**: Module
-**Cohesion**: LOW
-**Recommended Split**: Domain-first
-- `auth-helpers.ts` - login, logout, token functions
-- `string-utils.ts` - formatters, parsers
-- `date-utils.ts` - date formatting, timezone
-- `api-utils.ts` - fetch wrappers, error handling
-
-**Next Action**: `/refactor src/utils/helpers.ts`
-
----
-
-### Big But Cohesive (Excluded)
-
-| File | LOC | Why Excluded |
-|------|-----|--------------|
-| src/types/schema.ts | 450 | Pure type definitions |
-| generated/client.ts | 1200 | Auto-generated |
-
-### Monorepo Grouping (If Applicable)
-
-| Package | Candidates | Worst | Score |
-|---------|------------|-------|-------|
-| @app/web | 3 | Form.tsx | 72 |
-| @app/api | 2 | user.ts | 81 |
-```
+1. **Summary**: files scanned, candidates found (score >= 40), count per
+   severity tier, false positives excluded.
+2. **Top candidates table** (ranked by score): file, score, classification
+   (module/script), cohesion, recommended split strategy.
+3. **Detailed breakdown for the top candidates**: per-metric measured value
+   and its point contribution, a short "why God-like" evidence list, and
+   the recommended split with proposed module names — followed by the
+   `/refactor <file>` next action.
+4. **Big But Cohesive (excluded)**: file, LOC, why excluded.
+5. **Monorepo grouping** when applicable: package, candidate count, worst
+   file and score.
 
 ## Context Efficiency
 - **Use tools first**: Glob/Grep/Read for concrete data
