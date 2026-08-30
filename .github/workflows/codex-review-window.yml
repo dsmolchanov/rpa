@@ -2,6 +2,11 @@ name: codex-review-window
 on:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
+  # A review submitted after a gate run finished starts a fresh run for the
+  # same head SHA; branch protection uses the latest run, so the gate
+  # self-heals when Codex is slower than the polling window.
+  pull_request_review:
+    types: [submitted]
 
 # The job key below MUST match the required-status-check name in branch
 # protection. GitHub matches required checks against the job key (or the
@@ -13,6 +18,15 @@ on:
 # later. Now the check waits for the Codex review of the CURRENT head commit
 # and FAILS while it reports P1/[BLOCKER] findings, so auto-merge holds and
 # Auto-fix pushes re-run the loop until Codex is green.
+#
+# 2026-08-30: the unconditional advisory pass at the deadline lost the race
+# again — rpa#21 passed after 8m09s with no review, auto-merge fired at
+# 09:25:59Z, and Codex posted three P1s at 09:27:02Z (63s late). The
+# deadline now fails closed when the repository is demonstrably connected
+# to Codex (bot reviews exist on this PR or recent PRs); the advisory pass
+# survives only for repos with no evidence of a Codex connection. Every
+# submitted review re-runs the FULL gate (no author skip): a step skipped
+# on a review event would report a green job and launder a red verdict.
 jobs:
   codex-review-window:
     if: ${{ !github.event.pull_request.draft }}
@@ -37,9 +51,14 @@ jobs:
           set -euo pipefail
           echo "Waiting for Codex review of ${HEAD_SHA} on PR #${PR}"
 
+          # --paginate emits one JSON array per page, so a per-page
+          # `last` would print one ID per page; emit matching IDs per
+          # line and take the overall last (reviews arrive in
+          # chronological order).
           review_id_for_head() {
             gh api "repos/${REPO}/pulls/${PR}/reviews" --paginate \
-              --jq "[.[] | select(.user.login == \"${CODEX_BOT}\" and .commit_id == \"${HEAD_SHA}\")] | (last | .id) // empty"
+              --jq ".[] | select(.user.login == \"${CODEX_BOT}\" and .commit_id == \"${HEAD_SHA}\") | .id" \
+              | tail -n 1
           }
 
           # Codex auto-reviews on open/ready but NOT on pushes — ask for a
@@ -50,7 +69,7 @@ jobs:
             echo "Posted '@codex review' to request a re-review of the new commit."
           fi
 
-          DEADLINE=$((SECONDS + 480))
+          DEADLINE=$((SECONDS + 780))
           RID=""
           while [ ${SECONDS} -lt ${DEADLINE} ]; do
             RID="$(review_id_for_head)"
@@ -59,6 +78,45 @@ jobs:
           done
 
           if [ -z "${RID}" ]; then
+            # No review for this head at the deadline. Pass advisorily only
+            # when nothing evidences a Codex connection; otherwise fail
+            # closed — the pull_request_review trigger re-runs this gate
+            # the moment the review lands.
+            # Connection means RECENT bot activity: a review on an old
+            # head must not pin the repo "connected" forever after the
+            # connector is removed, or the fail-closed path would block
+            # PRs permanently (no review will ever arrive to self-heal).
+            # With a 7-day window, a disconnected repo degrades back to
+            # the advisory pass within a week.
+            CUTOFF=$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)
+            # NB: --paginate emits one JSON array per page, so `length`
+            # would print one number per page; count matching ids per line
+            # instead.
+            CONNECTED=$(gh api "repos/${REPO}/pulls/${PR}/reviews" --paginate \
+              --jq ".[] | select(.user.login == \"${CODEX_BOT}\" and .submitted_at >= \"${CUTOFF}\") | .id" \
+              | wc -l | tr -d ' ')
+            # A probe that cannot answer must fail closed: an API error
+            # here must never turn into the advisory pass on a repo that
+            # may well be connected.
+            if [ "${CONNECTED}" -eq 0 ]; then
+              if ! RECENT=$(gh api "repos/${REPO}/pulls?state=all&per_page=10" --jq '.[].number'); then
+                echo "::error::Connection probe failed (recent-PRs query); failing closed rather than risking an advisory pass."
+                exit 1
+              fi
+              for n in ${RECENT}; do
+                if ! IDS=$(gh api "repos/${REPO}/pulls/${n}/reviews" --paginate \
+                  --jq ".[] | select(.user.login == \"${CODEX_BOT}\" and .submitted_at >= \"${CUTOFF}\") | .id"); then
+                  echo "::error::Connection probe failed (reviews query for PR #${n}); failing closed."
+                  exit 1
+                fi
+                HITS=$(printf '%s' "${IDS}" | grep -c . || true)
+                if [ "${HITS}" -gt 0 ]; then CONNECTED=1; break; fi
+              done
+            fi
+            if [ "${CONNECTED}" -gt 0 ]; then
+              echo "::error::No Codex review for ${HEAD_SHA} at the deadline, but this repository is connected to Codex (bot reviews exist). Failing closed; a submitted Codex review re-runs this gate automatically."
+              exit 1
+            fi
             echo "::warning::No Codex review for ${HEAD_SHA} within the window — passing (advisory fallback; repo may not be connected to Codex Cloud)."
             exit 0
           fi
@@ -66,12 +124,15 @@ jobs:
           # Give inline finding comments a moment to finish landing.
           sleep 15
 
+          # Fetch first, grep second: `|| true` may only absorb grep's
+          # zero-match exit, never an API failure that would otherwise
+          # report a blocking review as green.
           PATTERN='\[BLOCKER\]|badge/P1|P1 Badge'
-          INLINE=$(gh api "repos/${REPO}/pulls/${PR}/comments" --paginate \
-            --jq ".[] | select(.pull_request_review_id == ${RID}) | .body" \
-            | grep -cE "${PATTERN}" || true)
-          BODY=$(gh api "repos/${REPO}/pulls/${PR}/reviews/${RID}" --jq '.body' \
-            | grep -cE "${PATTERN}" || true)
+          INLINE_BODIES=$(gh api "repos/${REPO}/pulls/${PR}/comments" --paginate \
+            --jq ".[] | select(.pull_request_review_id == ${RID}) | .body")
+          INLINE=$(grep -cE "${PATTERN}" <<<"${INLINE_BODIES}" || true)
+          REVIEW_BODY=$(gh api "repos/${REPO}/pulls/${PR}/reviews/${RID}" --jq '.body')
+          BODY=$(grep -cE "${PATTERN}" <<<"${REVIEW_BODY}" || true)
 
           if [ "$((INLINE + BODY))" -gt 0 ]; then
             echo "::error::Codex review reports P1/[BLOCKER] finding(s) on ${HEAD_SHA} (inline hits: ${INLINE}). Auto-fix must push a fix commit; this check re-runs on the new head until Codex is green."

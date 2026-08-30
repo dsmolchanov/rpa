@@ -12,7 +12,13 @@ add fields rather than renaming.
   exists stops for an explicit decision (archive/rename); identical content
   is an idempotent no-op.
 - Markdown frontmatter always carries `date` (ISO timestamp), `type`, and
-  `commit` (short HEAD, or `no-git`).
+  `commit` — the checkout's **default-branch anchor**:
+  `git merge-base HEAD <default-branch>` (short), which equals HEAD on the
+  default branch itself; `no-git` without a repository. Branch SHAs die at
+  squash-merge, so a durable stamp must be a default-branch ancestor.
+- Audit artifacts are per-checkout snapshots produced by running `audit`
+  on the target checkout; hand-editing a manifest (e.g. to satisfy review
+  feedback) is not a valid refresh.
 - Plans list every file they would touch, precisely enough that `apply` can
   be checked against the authority matrix afterwards.
 
@@ -24,7 +30,7 @@ every audit (point-in-time snapshot). Required fields:
 ```json
 {
   "detected_at": "<ISO timestamp>",
-  "commit": "<short HEAD or no-git>",
+  "commit": "<default-branch anchor per the common rules, or no-git>",
   "languages": ["<language>", "..."],
   "frameworks": {"test": "<framework>", "lint": null, "typecheck": null},
   "commands": {
@@ -49,7 +55,9 @@ every audit (point-in-time snapshot). Required fields:
   },
   "monorepo": {"detected": false, "tool": null, "packages": []},
   "existing_tests": {"count": 0, "files": [], "passing": null},
-  "additional_tools": {"mocking": null, "assertions": null, "fixtures": null}
+  "additional_tools": {"mocking": null, "assertions": null, "fixtures": null},
+  "evidence": {"<file the detection relied on>": "<sha256 of its bytes>"},
+  "detection_globs": ["<config patterns the audit probed, found or not>"]
 }
 ```
 
@@ -57,6 +65,25 @@ Every command value must be evidenced by repository configuration (script
 entry, config file, Makefile target) — never invented. Unknown values are
 `null`, not guesses. `coverage_backend.threshold_config` names the defining
 file when the repository configures a threshold (see coverage-policy).
+
+A manifest is **current** while both hold:
+
+1. **Lineage** — its `commit` is an ancestor of the checkout HEAD
+   (`git merge-base --is-ancestor <commit> HEAD`); and
+2. **Freshness** — the working tree still matches what the audit
+   observed: every `evidence` entry's file exists with the recorded
+   SHA-256; globbing `patterns.test_files` yields exactly
+   `existing_tests.files`; and re-globbing `detection_globs` finds no
+   file absent from the `evidence` keys — a newly appeared detection
+   input (a project manifest, test config, Makefile) invalidates the
+   snapshot even though the recorded files are unchanged. (Content-based
+   on purpose: an anchor-to-HEAD diff would mark a fresh audit stale
+   whenever the audited branch itself changes evidenced files.)
+
+Otherwise non-audit modes treat it as stale and direct the user to
+`audit`. A `no-git` manifest carries no lineage to test: treat it as
+current only within the session that produced it, and re-run `audit`
+when in doubt.
 
 `test-suite-manifest.md` — human-readable projection of the same data:
 detected infrastructure table, patterns, commands table, existing-test
