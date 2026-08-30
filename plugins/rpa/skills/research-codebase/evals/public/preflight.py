@@ -6016,25 +6016,11 @@ def _run_preflight(registration_isolation_ok):
             and "references/artifact-contract.md" in skill_text,
             notes)
 
-        # Each v2 adapter must IMPORT its contract at parse time
-        # (@${CLAUDE_PLUGIN_ROOT}/...): the adapters have no Bash tool,
-        # so a plugin-root path left as prose is unreadable to them in a
-        # plugin-only install and all six would dead-end at the honest
-        # failure branch instead of researching.
-        adapter_dir = HERE.parents[3] / "agents"
-        adapter_files = sorted(adapter_dir.glob("research-v2-*.md"))
-        adapters_import = bool(adapter_files) and len(adapter_files) == 6
-        for adapter in adapter_files:
-            a_text = adapter.read_text(encoding="utf-8")
-            contract = adapter.name.replace(
-                "research-v2-", "research-", 1)
-            adapters_import &= (
-                "@${CLAUDE_PLUGIN_ROOT}/skills/research-codebase/references"
-                f"/agent-contracts/{contract}" in a_text)
-        ok &= check(
-            "v2 adapters import their agent contracts at parse time",
-            adapters_import,
-            notes)
+        # The historical research-v2-* adapters were removed from the
+        # live roster post-pilot; they exist only in the frozen trees
+        # addressed by the pinned SHAs. Their parse-time contract-import
+        # assertion now runs against the extracted candidate inside
+        # build_installs.py, where it actually applies.
 
         # macOS amendment: the wrapper must carry the registered
         # interface and deny-default profile, and the operator check

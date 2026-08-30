@@ -1,6 +1,6 @@
 # Testing Patterns Reference
 
-Shared reference for the `/tdd`, `/create_test_plan`, and `/test_suite` commands. Extracted from `/tdd` so commands orchestrate while this document teaches.
+Shared reference for the `tdd`, `create-test-plan`, and `test-suite` workflows (the `/test_suite` command remains a deprecated 2.x alias). Extracted from `/tdd` so workflows orchestrate while this document teaches.
 
 ## Unit Test Pattern (Jest/Vitest)
 
@@ -179,4 +179,4 @@ src/
 
 ## Language-Specific Templates
 
-For Python (pytest) and Go test structure templates, snapshot sanitization recipes, and edge-case discovery checklists, see the `test-generator` agent (`agents/test-generator.md`) — it carries the authoritative per-language templates used during generation.
+Generation policy (strategy selection, pending-test rules, snapshot sanitization) lives in the test-suite skill package: `skills/test-suite/references/modes/init.md` and the `test-generator` contract at `skills/test-suite/references/agent-contracts/test-generator.md`. Language-specific structure follows the repository's own conventions first, then the patterns in this document.

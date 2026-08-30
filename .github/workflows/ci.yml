@@ -64,6 +64,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history: the frozen-install builder archives two pinned
+          # commits that a shallow checkout does not carry.
+          fetch-depth: 0
       - name: Run integration tests
         run: |
           if [ -f package.json ]; then
@@ -78,6 +82,10 @@ jobs:
         working-directory: plugins/rpa/skills/research-codebase/evals/public
         timeout-minutes: 15
         run: python3 runner.py --preflight
+      - name: Frozen-install hash gate (registered arm hashes)
+        working-directory: plugins/rpa/skills/research-codebase/evals/public
+        timeout-minutes: 10
+        run: python3 build_installs.py --repo "${GITHUB_WORKSPACE}" --out "${RUNNER_TEMP}/rpa-frozen-installs"
 
   e2e:
     runs-on: ubuntu-latest

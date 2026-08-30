@@ -115,12 +115,12 @@ Coverage: 78% (unchanged from baseline)
    - Likely cause: Error handling changed during extraction
 
 ### Recommendation
-**FIX ISSUES** before continuing.
-
-Options:
-1. Fix the issues and re-validate
-2. Abort and rollback: `git reset --hard HEAD`
+**FAIL** — fix before continuing.
 ```
+
+On failure, return FAIL plus the per-check evidence above — nothing else.
+Remediation and any reversal decisions belong to the orchestrating workflow
+and the user; never run or recommend a rollback command.
 
 ## Context Efficiency
 - **Return**: Pass/fail matrix with specific issues

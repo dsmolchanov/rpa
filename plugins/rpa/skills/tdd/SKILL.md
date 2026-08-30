@@ -6,7 +6,7 @@ description: >
   justified cleanup. Select when the user asks to implement through TDD or run
   a named TDD phase. Do NOT select to write only a test strategy, repair an
   unrelated failing suite, add repo-wide coverage, or perform an unconstrained
-  refactor; use create-test-plan, debug/test-runner, test-suite, or refactor
+  refactor; use create-test-plan, debug, test-suite, or refactor
   instead.
 user-invocable: true
 permission-class: "workspace_write (plan-scoped source, tests, thoughts/shared/tests session log and receipts, thoughts/shared/one-pagers digest, .rpa/evidence local state)"

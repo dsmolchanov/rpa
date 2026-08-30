@@ -46,27 +46,11 @@ Generating index artifact...
 
 ### Step 2: Run God Module Finder
 
-Spawn the `god-module-finder` agent with enhanced scoring:
-
-```yaml
-Task - Find God Modules:
-  subagent_type: god-module-finder
-  Prompt: |
-    Scan [directory] for God-like modules.
-    Use weighted scoring: size(30) + surface(20) + fan_in(20) + fan_out(10) + smell(10) + hotspot(10)
-
-    Classify each candidate:
-    - SEVERE (score >= 85)
-    - HIGH (score >= 70)
-    - MEDIUM (score >= 55)
-    - LOW (score >= 40)
-
-    For scripts (*.sh, if __name__=="__main__"), use script weights.
-    Flag "big but cohesive" files as lower priority.
-
-    Return: Ranked list with scores, reasons, recommended split strategy.
-    STRICT LIMIT: 150 lines.
-```
+Spawn the `god-module-finder` agent scoped to the target directory. The
+agent owns the weighted scoring formula, script-vs-module weights, and
+severity tiers (`agents/god-module-finder.md`, single source — do not
+restate them in the prompt). Ask it for the ranked candidate list with
+scores, evidence, and recommended split strategies.
 
 ### Step 3: Enrich with Hotspot Data (Optional)
 
