@@ -408,23 +408,33 @@ command as a thin compatibility alias.
 
 #### Manual Verification
 
-- [x] Audit executed per the kernel on this repo (2026-08-30): manifest
-      pair written at `thoughts/shared/test-suite/test-suite-manifest.{json,md}`
-      with the unchanged filename, nothing else touched; the deprecated
-      alias resolves to the same kernel (routing verified in
-      `commands/test_suite.md`), so both entrypoints load identical
-      procedure. Literal dual slash invocation additionally re-checkable in
-      any fresh session.
+- [x] Both audit entrypoints exercised in-checkout (2026-08-30, second
+      pass): the alias's documented resolution order was probed live —
+      layouts 1 and 2 absent, resolved at
+      `plugins/rpa/skills/test-suite/SKILL.md` (layout 3) — so both
+      entrypoints load the byte-identical kernel file; the audit procedure
+      was executed against HEAD `12b6619` and re-executed via the
+      alias-resolved kernel, regenerating an identical manifest pair
+      (point-in-time overwrite, unchanged evidenced inputs), and
+      `git status --porcelain` showed only
+      `thoughts/shared/test-suite/test-suite-manifest.{json,md}` modified.
+      A live dual slash invocation of the *new* files needs a session with
+      this tree installed (the current plugin cache is 2.2.0) — covered by
+      the Phase 4 fresh-session roster check.
 - [x] `adopt` and `standardize` exercised end to end on a fragmented
       fixture (pytest majority + unittest minority, 2026-08-30): adopt
       produced the harmonization plan and applied only wrapper glue (both
       layers green, no test file touched); standardize migrated the
       minority file with per-test pass/fail status preserved (2 OK before,
       4 passed after). Closes the roadmap's open item.
-- [x] `update apply` with assertion-value changes verified on the fixture:
-      safe set empty, test file byte-identical after apply (checksum
-      compared), behavioral drift surfaced as honest failures instead of
-      silent assertion rewrites.
+- [x] `update apply` with assertion-value changes verified on the fixture
+      (2026-08-30, second pass — full stop-and-confirm cycle): apply
+      without approvals **stopped and requested explicit per-item
+      confirmation** for both assertion items (A1, A2), test file
+      checksum-identical at the stop; explicit approval of A1 only then
+      applied exactly that item — `test_add` passed with the new
+      assertion while unapproved A2 stayed byte-untouched and
+      `test_add_negative` failed honestly against the changed behavior.
 - [x] Direct `rpa:test-runner` spawn (2026-08-30) returned the evidenced
       per-script commands and a quality assessment without claiming to
       have executed anything.
