@@ -83,11 +83,21 @@ jobs:
             CONNECTED=$(gh api "repos/${REPO}/pulls/${PR}/reviews" --paginate \
               --jq ".[] | select(.user.login == \"${CODEX_BOT}\") | .id" \
               | wc -l | tr -d ' ')
+            # A probe that cannot answer must fail closed: an API error
+            # here must never turn into the advisory pass on a repo that
+            # may well be connected.
             if [ "${CONNECTED}" -eq 0 ]; then
-              for n in $(gh api "repos/${REPO}/pulls?state=all&per_page=10" --jq '.[].number'); do
-                HITS=$(gh api "repos/${REPO}/pulls/${n}/reviews" \
-                  --jq ".[] | select(.user.login == \"${CODEX_BOT}\") | .id" \
-                  | wc -l | tr -d ' ' || echo 0)
+              if ! RECENT=$(gh api "repos/${REPO}/pulls?state=all&per_page=10" --jq '.[].number'); then
+                echo "::error::Connection probe failed (recent-PRs query); failing closed rather than risking an advisory pass."
+                exit 1
+              fi
+              for n in ${RECENT}; do
+                if ! IDS=$(gh api "repos/${REPO}/pulls/${n}/reviews" \
+                  --jq ".[] | select(.user.login == \"${CODEX_BOT}\") | .id"); then
+                  echo "::error::Connection probe failed (reviews query for PR #${n}); failing closed."
+                  exit 1
+                fi
+                HITS=$(printf '%s' "${IDS}" | grep -c . || true)
                 if [ "${HITS}" -gt 0 ]; then CONNECTED=1; break; fi
               done
             fi
