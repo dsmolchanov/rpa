@@ -38,8 +38,8 @@ There is no single suite-level command; CI (`.github/workflows/ci.yml`,
 | One-pager | `python3 plugins/rpa/skills/one-pager/scripts/test_onepager.py` |
 
 The repository docs gate — the manifest's lint command,
-`python3 scripts/validate_docs.py --root .` (preceded by `--self-test`) —
-runs alongside them in the same job.
+`python3 scripts/validate_docs.py --root .` — runs alongside them in the
+same job.
 
 ## Existing Tests
 
