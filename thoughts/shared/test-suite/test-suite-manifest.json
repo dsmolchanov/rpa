@@ -1,0 +1,50 @@
+{
+  "detected_at": "2026-08-30T00:00:00Z",
+  "commit": "ee86cf9",
+  "languages": ["python"],
+  "frameworks": {
+    "test": "unittest (script-embedded)",
+    "lint": null,
+    "typecheck": null
+  },
+  "commands": {
+    "test": null,
+    "test_single": "python3 {file}",
+    "test_related": null,
+    "coverage": null,
+    "lint": null,
+    "typecheck": null
+  },
+  "patterns": {
+    "test_files": ["**/test_*.py"],
+    "test_directories": [
+      "plugins/rpa/hooks",
+      "plugins/rpa/skills/tdd/scripts",
+      "plugins/rpa/skills/one-pager/scripts"
+    ],
+    "source_to_test": "script <name>.py -> sibling test_<name>.py, self-runnable",
+    "naming_convention": "colocated"
+  },
+  "coverage_backend": {
+    "available": false,
+    "tool": null,
+    "output_path": null,
+    "threshold_config": null
+  },
+  "monorepo": { "detected": false, "tool": null, "packages": [] },
+  "existing_tests": {
+    "count": 4,
+    "files": [
+      "plugins/rpa/hooks/test_run_gate.py",
+      "plugins/rpa/skills/tdd/scripts/test_evidence.py",
+      "plugins/rpa/skills/tdd/scripts/test_validate_session_log.py",
+      "plugins/rpa/skills/one-pager/scripts/test_onepager.py"
+    ],
+    "passing": true
+  },
+  "additional_tools": {
+    "mocking": null,
+    "assertions": "assert / unittest",
+    "fixtures": "tests/fixtures (docs-validate), skill-local fixtures"
+  }
+}
