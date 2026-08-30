@@ -56,7 +56,7 @@ every audit (point-in-time snapshot). Required fields:
   "monorepo": {"detected": false, "tool": null, "packages": []},
   "existing_tests": {"count": 0, "files": [], "passing": null},
   "additional_tools": {"mocking": null, "assertions": null, "fixtures": null},
-  "evidence_paths": ["<files the detection relied on: configs, CI, scripts>"]
+  "evidence": {"<file the detection relied on>": "<sha256 of its bytes>"}
 }
 ```
 
@@ -69,9 +69,12 @@ A manifest is **current** while both hold:
 
 1. **Lineage** — its `commit` is an ancestor of the checkout HEAD
    (`git merge-base --is-ancestor <commit> HEAD`); and
-2. **Freshness** — no commit after the anchor changed the files the
-   detection relied on: `git diff --name-only <commit>..HEAD` is disjoint
-   from `evidence_paths` and from paths matching `patterns.test_files`.
+2. **Freshness** — the working tree still matches what the audit
+   observed: every `evidence` entry's file exists with the recorded
+   SHA-256, and globbing `patterns.test_files` yields exactly
+   `existing_tests.files`. (Content-based on purpose: an anchor-to-HEAD
+   diff would mark a fresh audit stale whenever the audited branch itself
+   changes evidenced files.)
 
 Otherwise non-audit modes treat it as stale and direct the user to
 `audit`. A `no-git` manifest carries no lineage to test: treat it as

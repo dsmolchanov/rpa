@@ -55,7 +55,7 @@
     "assertions": "assert / unittest",
     "fixtures": "tests/fixtures (docs-validate), skill-local fixtures"
   },
-  "evidence_paths": [
-    ".github/workflows/ci.yml"
-  ]
+  "evidence": {
+    ".github/workflows/ci.yml": "7f199c52cac74dce61380ec498ba4bfc182cd5272a75280a6898797411d631b7"
+  }
 }

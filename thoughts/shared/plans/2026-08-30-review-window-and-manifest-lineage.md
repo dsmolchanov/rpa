@@ -99,9 +99,11 @@ branch stamps a commit that still exists after squash-merge.
 - Not adding a post-merge manifest regeneration hook or CI job — audit is
   model-driven; regeneration stays a live-session action, which the
   contract now states explicitly.
-- Not rewriting the committed manifest at `thoughts/shared/test-suite/`
-  (already conformant) and not touching the tdd/one-pager artifact
-  contracts.
+- Not regenerating the committed manifest's detection content at
+  `thoughts/shared/test-suite/` (its `commit` stamp `e508ef7` is already
+  conformant). Phase 2's additive schema migration of that file — the
+  `evidence` content-hash map required by the freshness rule — IS in
+  scope. Not touching the tdd/one-pager artifact contracts.
 - Not modifying `AGENTS.md`/`CLAUDE.md`.
 
 ## Implementation Approach
@@ -209,10 +211,20 @@ define manifest currency against it.
   which equals HEAD on the default branch itself; `no-git` without a
   repository. State the reason once: branch SHAs die at squash-merge, so a
   durable stamp must be a default-branch ancestor.
-- Add to the manifest section: a manifest is **current** while its
+- Add to the manifest section: a manifest is **current** while (1) its
   `commit` is an ancestor of the checkout HEAD (`git merge-base
-  --is-ancestor <commit> HEAD`); otherwise non-audit modes treat it as
-  stale and direct to `audit`.
+  --is-ancestor <commit> HEAD`) and (2) the working tree still matches
+  what the audit observed — every entry of a new additive `evidence`
+  field ({file: sha256}) verifies, and globbing `patterns.test_files`
+  reproduces `existing_tests.files`. Content-based freshness on purpose:
+  an anchor-to-HEAD diff would mark a fresh audit stale whenever the
+  audited branch itself changes evidenced files. A `no-git` manifest has
+  no lineage to test and is current only within its producing session.
+  Otherwise non-audit modes treat the manifest as stale and direct to
+  `audit`.
+- Migrate the committed manifest at
+  `thoughts/shared/test-suite/test-suite-manifest.json` to the extended
+  schema (add its `evidence` map; detection content unchanged).
 - Add to the common rules: audit artifacts are per-checkout snapshots
   produced by running `audit` on the target checkout; hand-editing a
   manifest (e.g. to satisfy review feedback) is not a valid refresh.
