@@ -37,9 +37,9 @@ feature-scoped blueprint consumed by `/tdd`; it is not a generated test suite.
 
 ## 2. Requirements to Verification Mapping
 
-| Requirement or invariant | Evidence source | Positive coverage | Negative coverage | Exclusion reason |
+| Obligation or invariant | Evidence source | Positive coverage | Negative coverage | Exclusion reason |
 |---|---|---|---|---|
-| [behavior] | [source section or file:line] | [case IDs] | [case IDs] | [blank or reason] |
+| [`O-n` — behavior, or an invariant the source does not number] | [source section or file:line] | [case IDs] | [case IDs] | [blank or reason] |
 
 ## 3. Red-Phase Test Specification
 
@@ -113,6 +113,11 @@ For a test layer outside scope, replace its table with
 
 ## Content rules
 
+- When the source is an implementation plan with `## Obligations`, §2 has one
+  row per obligation, keyed by its `O-n` ID, ahead of any further invariant.
+  An obligation without automated coverage carries an exclusion reason; it is
+  never silently absent. This is the link from a plan's commitment to the
+  cases, and through them to the receipts, that prove it.
 - Keep case IDs unique and stable within the document: `U-*`, `I-*`, `E-*`.
 - Every case names an observable assertion, not merely “works” or “handles”.
 - Every negative case maps to a real failure mode; do not add ceremonial sad

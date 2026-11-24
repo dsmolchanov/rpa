@@ -17,8 +17,8 @@ This approach reduces errors, improves code quality, and creates documentation t
 | Command | Description |
 |---------|-------------|
 | `/research-codebase` | Document and explain the codebase as it exists |
-| `/create-plan` | Create detailed implementation plans through interactive iteration |
-| `/implement_plan` | Execute approved plans with verification at each phase |
+| `/create-plan` | Create implementation plans that separate binding obligations from design guidance |
+| `/implement-plan` | Execute approved plans phase by phase with verification and an implementation record; `/implement_plan` remains a deprecated 2.x alias |
 | `/iterate-plan` | Update existing plans based on feedback |
 | `/enhance-plan` | Synthesize multiple opinions into plan improvements |
 | `/enhance-research` | Improve research documents with additional findings |
@@ -35,6 +35,38 @@ This approach reduces errors, improves code quality, and creates documentation t
 | `/refactor` | Refactor monolithic modules into focused, testable modules |
 | `/tech-debt-sweep` | Scan codebase for technical debt and generate paydown plan |
 | `/tech_debt_trends` | Analyze technical debt trends over time |
+
+### Changes in 2.4.0
+
+- The implementation workflow is now the `implement-plan` skill;
+  `/rpa:implement-plan` is canonical and `/rpa:implement_plan` remains a
+  supported, deprecated 2.x alias. It no longer pauses after every phase: a
+  run stops for a manual check only when the plan says a later phase depends
+  on it, and otherwise carries manual items to the final report. On resume it
+  re-verifies earlier checkmarks instead of trusting them.
+- During implementation the plan's body is read-only. Progress, deviations,
+  assumptions, out-of-scope findings, and blockers go into a
+  `## Implementation Record` appended to the plan, which `/validate_plan`
+  reads as claims to check.
+- New plans carry YAML frontmatter (`repository`, `git_commit`, `status`) and
+  a numbered `## Obligations` section. Obligations are the binding, checkable
+  commitments; approach, naming, and ordering are design guidance that an
+  implementer may adapt and a reviewer may not block on. Existing plans stay
+  valid.
+- A plan opens with a one-page contract — overview, end state, obligations,
+  exclusions, decisions — that can be read alone. `Changes Required` says
+  where a change lands and what contract it presents, not how to make it.
+- No workflow step requires a human by default. Manual verification is an
+  optional block a plan adds only where the outcome takes human judgment;
+  phases are checked by commands.
+- Test plans map their cases to the plan's obligation IDs, so a commitment
+  can be followed to the cases and receipts that prove it.
+- Plans are sized to one reviewable change, with the remainder listed under
+  `## Follow-up Issues`, and phases are vertical slices.
+- `create-plan` and `implement-plan` define non-interactive behavior, so a
+  controller can call the kernels directly instead of forking their prompts.
+- `research-codebase` turns a change request into neutral questions about
+  the current system and labels how each behavioral claim was established.
 
 ### Changes in 2.3.0
 
@@ -174,7 +206,7 @@ After installation, start Claude Code and check that commands are available:
 # (plugin installs expose them with the rpa: prefix, e.g. /rpa:create-plan)
 /research-codebase
 /create-plan
-/implement_plan
+/implement-plan
 ```
 
 ## Directory Structure
@@ -237,6 +269,9 @@ After a manual copy install, your `~/.claude/` directory should look like:
 │   │   ├── SKILL.md
 │   │   └── references/
 │   ├── create-plan/
+│   │   ├── SKILL.md
+│   │   └── references/
+│   ├── implement-plan/
 │   │   ├── SKILL.md
 │   │   └── references/
 │   ├── iterate-plan/
@@ -409,22 +444,22 @@ The command will:
 
 The command will:
 1. Research existing patterns in your codebase
-2. Ask clarifying questions
-3. Create a phased implementation plan
+2. Ask only about decisions the repository cannot settle
+3. Create a phased implementation plan with numbered obligations
 4. Save it to `thoughts/shared/plans/YYYY-MM-DD-rate-limiting.md`
 
 ### Implement a Plan
 
 ```
-/implement_plan thoughts/shared/plans/2025-01-15-rate-limiting.md
+/implement-plan thoughts/shared/plans/2025-01-15-rate-limiting.md
 ```
 
 The command will:
-1. Read the plan and understand each phase
-2. Implement changes for each phase
-3. Run automated verification
-4. Pause for manual verification before continuing
-5. Update checkboxes in the plan as work completes
+1. Read the plan, check the starting state, and record the baseline
+2. Implement one phase at a time
+3. Run each phase's automated verification and tick only what passed
+4. Record deviations and assumptions in the plan's Implementation Record
+5. Report what still awaits human verification
 
 ### Validate Implementation
 
@@ -447,16 +482,16 @@ The command will:
 - Create research documents for future reference
 
 ### Planning Phase
-- Break work into small, testable phases
-- Include both automated AND manual success criteria
+- State obligations as checkable outcomes; keep approach as guidance
+- Break work into vertical slices that each end with something observable
+- Keep one plan to one reviewable change; list the rest as follow-ups
 - Define what's NOT in scope to prevent creep
-- Get feedback on structure before writing details
 
 ### Implementation Phase
-- Follow the plan's intent, adapt when reality differs
-- Run verification after each phase
-- Update plan checkboxes as you complete work
-- Pause for manual verification before proceeding
+- Meet the obligations; adapt the approach when reality differs and record it
+- Run verification after each phase, on the code as it stands
+- Leave the plan's body alone — changing the specification is `/iterate-plan`
+- Validate in a fresh session with `/validate_plan`
 
 ### Handoffs
 - Create handoffs at end of sessions or before context switches
@@ -489,16 +524,17 @@ checkout. The command is a thin Claude adapter over the shared
 4. Write dependency-ordered phases with exact success criteria
 5. Iterate based on feedback
 
-### /implement_plan
+### /implement-plan
 
-Executes an approved implementation plan.
+Executes an approved implementation plan. A thin Claude adapter
+(`/implement_plan`) remains over the shared `skills/implement-plan/` kernel.
 
 **Flow:**
-1. Read plan and identify starting point
-2. Implement each phase
-3. Run automated verification
-4. Pause for manual verification
-5. Continue to next phase
+1. Read the plan, establish the baseline, re-verify earlier work on resume
+2. Implement each phase with a single writer
+3. Run automated verification and checkpoint-commit the phase
+4. Record deviations, assumptions, and blockers in the plan
+5. Re-run every criterion on the final tree and report
 
 ### /validate_plan
 

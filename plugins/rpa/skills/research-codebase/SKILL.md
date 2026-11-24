@@ -63,6 +63,21 @@ What the model cannot derive on its own:
 - **Code is the source of truth.** `thoughts/` supplies historical context
   only; never answer from a prior research document without re-verifying
   against the live code at the current checkout.
+- **A change request is researched as questions about the present.** When
+  the request describes something to build or fix rather than something to
+  explain, derive the few neutral questions about the current system that a
+  planner will need answered, list them under Research Question after the
+  original request, and investigate those. Give delegated agents the
+  questions, not the intended solution: research that is told the answer
+  tends to collect evidence for it.
+- **Say how each behavioral claim was established.** Reading code and
+  running it are different evidence. A claim about runtime behavior that
+  rests on reading alone is worded as what the code states; when a command,
+  test, or query was run to confirm it, cite what was run and the outcome.
+  An inference from a name or a comment is labeled as an inference.
+- **Open Questions feed the next workflow.** List what the investigation
+  could not settle, each with what was checked and what decision or further
+  check depends on it, so a planner can tell a gap from an oversight.
 - **Metadata comes from the script, collected once.** Run the installed
   `spec_metadata.sh` (this plugin's `scripts/spec_metadata.sh`) for the
   document's metadata; if unavailable, gather the same fields manually —

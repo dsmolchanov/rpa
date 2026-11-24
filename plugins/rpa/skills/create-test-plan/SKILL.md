@@ -47,7 +47,9 @@ assertions, dependencies, and commands explicit.
 2. **Read and orient.** Read the complete source and applicable repository
    instructions. Extract required behavior, state transitions, failure modes,
    external boundaries, non-functional requirements, and compatibility or
-   migration concerns.
+   migration concerns. When the source is a plan that numbers its
+   obligations, they are the requirement list: carry their IDs into the
+   mapping.
 3. **Run a repository-reality preflight.** Inspect manifests, lockfiles, test
    configuration, CI, representative tests, fixtures, and utilities. Record
    the actual framework and commands. Locate existing coverage so the plan
@@ -96,8 +98,9 @@ The workflow is complete when:
    section.
 2. Its repo-reality section cites the actual framework, commands, conventions,
    helpers, and relevant existing tests.
-3. Every source requirement and material failure mode maps to coverage or an
-   explicit evidence-backed exclusion.
+3. Every source requirement — every numbered obligation when the source is a
+   plan that carries them — and every material failure mode maps to coverage
+   or an explicit evidence-backed exclusion.
 4. Proposed cases have stable IDs, exact locations, observable assertions,
    setup, dependencies, and negative paths sufficient for an implementer to
    write failing tests without guessing.
