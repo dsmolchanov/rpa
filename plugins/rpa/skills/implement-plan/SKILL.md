@@ -105,7 +105,8 @@ commands; report the scoped diff of files this workflow touched instead.
 Classify the mismatch before acting on it:
 
 - **Drift** — a file moved, a symbol was renamed, line numbers shifted, an
-  equivalent API replaced the cited one. Adapt and record a deviation.
+  equivalent API replaced the cited one. `Changes Required` is a locator, not
+  a script: adapt and record a deviation.
 - **Approach divergence** — the plan's suggested approach or design note
   turns out wrong or clearly inferior, while every obligation and criterion
   can still be met. Take the sound approach and record the deviation with its
@@ -121,10 +122,12 @@ obligation and record it as an assumption.
 
 ### Manual verification
 
-Manual criteria belong to a human and are ticked only on that human's
-confirmation in this session. Pause at a phase boundary for a manual check
-only when the plan says a later phase depends on its outcome. Otherwise
-continue, and carry every manual item into the record and the final report.
+Most plans have no manual criteria, and none is required to finish a run.
+Where a plan does carry them, they belong to a human and are ticked only on
+that human's confirmation in this session. Pause at a phase boundary for a
+manual check only when the plan says a later phase depends on its outcome.
+Otherwise continue, and carry every manual item into the record and the
+final report.
 
 ### Non-interactive runs
 
@@ -198,9 +201,10 @@ such; do not substitute an invented command.
   is missing or ambiguous about what to build, when materially new authority
   is required, or when a high-impact irreversible action was not explicitly
   authorized.
-- A plan whose frontmatter says `status: draft` is not yet an agreed
-  specification. In an interactive run, confirm once that the user wants it
-  implemented as written; in a non-interactive run, stop.
+- A plan whose frontmatter says `status: draft` names a decision that is
+  still open. That is an ambiguity about what to build, not a formality to
+  confirm: when the request or the repository settles it, record that and
+  proceed; otherwise ask that one question, or stop in a non-interactive run.
 - Present an obligation conflict as what the plan says, what the repository
   shows, why it matters, and the options with a recommendation — one
   decision, not a survey. In a non-interactive run, record it and end

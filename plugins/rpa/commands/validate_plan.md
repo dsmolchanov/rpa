@@ -79,9 +79,10 @@ For each phase in the plan:
    - Document pass/fail status
    - If failures, investigate root cause
 
-3. **Assess manual criteria**:
-   - List what needs manual testing
-   - Provide clear steps for user verification
+3. **Assess manual criteria** — only when the plan defines them:
+   - List the plan's manual criteria that are still open
+   - Do not invent manual checks the plan does not contain; a plan with
+     none has nothing to report here
 
 4. **Think deeply about edge cases**:
    - Were error conditions handled?

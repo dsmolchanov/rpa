@@ -53,6 +53,14 @@ This approach reduces errors, improves code quality, and creates documentation t
   commitments; approach, naming, and ordering are design guidance that an
   implementer may adapt and a reviewer may not block on. Existing plans stay
   valid.
+- A plan opens with a one-page contract — overview, end state, obligations,
+  exclusions, decisions — that can be read alone. `Changes Required` says
+  where a change lands and what contract it presents, not how to make it.
+- No workflow step requires a human by default. Manual verification is an
+  optional block a plan adds only where the outcome takes human judgment;
+  phases are checked by commands.
+- Test plans map their cases to the plan's obligation IDs, so a commitment
+  can be followed to the cases and receipts that prove it.
 - Plans are sized to one reviewable change, with the remainder listed under
   `## Follow-up Issues`, and phases are vertical slices.
 - `create-plan` and `implement-plan` define non-interactive behavior, so a
@@ -436,8 +444,8 @@ The command will:
 
 The command will:
 1. Research existing patterns in your codebase
-2. Ask clarifying questions
-3. Create a phased implementation plan
+2. Ask only about decisions the repository cannot settle
+3. Create a phased implementation plan with numbered obligations
 4. Save it to `thoughts/shared/plans/YYYY-MM-DD-rate-limiting.md`
 
 ### Implement a Plan

@@ -42,9 +42,9 @@ research: [Paths of research documents the plan relies on — omit when none]
 ```
 
 - `status: approved` — every decision is resolved and the plan is an agreed
-  specification. `status: draft` — published for the user's review with a
-  decision still theirs to make; a draft binds nobody and is not implemented
-  as-is.
+  specification. `status: draft` — published with a decision still open,
+  named under `## Decisions and Assumptions`; a draft binds nobody until that
+  decision is settled.
 - `repository` and `git_commit` let consumers detect a plan applied to the
   wrong repository or to code that has moved since it was written.
 - Implementation progress is not tracked here; it lives in the plan's
@@ -62,18 +62,9 @@ workflows; do not rewrite them only to add frontmatter.
 
 [What will change and why]
 
-## Current State Analysis
-
-[Relevant behavior today, grounded in file:line references]
-
 ## Desired End State
 
 [Observable end state and how to recognize it]
-
-### Key Discoveries
-
-- [Current implementation detail with file:line reference]
-- [Pattern or invariant the implementation must preserve]
 
 ## Obligations
 
@@ -83,6 +74,19 @@ workflows; do not rewrite them only to add frontmatter.
 ## What We're NOT Doing
 
 - [Explicit scope exclusion]
+
+## Decisions and Assumptions
+
+- **A-1** ([decided by user | derived from repository | assumed]) — [decision] — [evidence or reason]
+
+## Current State Analysis
+
+[Relevant behavior today, grounded in file:line references]
+
+### Key Discoveries
+
+- [Current implementation detail with file:line reference]
+- [Pattern or invariant the implementation must preserve]
 
 ## Implementation Approach
 
@@ -96,14 +100,10 @@ workflows; do not rewrite them only to add frontmatter.
 
 ### Changes Required
 
-#### 1. [Component or file group]
+- `path/to/existing_file.ext` — `symbol`: [behavior or contract that changes]
+- `path/to/new_file.ext` (new) — [what it provides]
 
-**Files**: `path/to/existing-or-new-file.ext`
-
-**Changes**:
-
-- [Specific symbol, behavior, contract, or data-flow change]
-- [Compatibility, migration, or rollback handling when applicable]
+**Interfaces**: [signature, schema, or data shape that another phase or caller depends on — omit when none]
 
 ### Success Criteria
 
@@ -111,25 +111,11 @@ workflows; do not rewrite them only to add frontmatter.
 
 - [ ] [Exact repository command and expected outcome] (O-1)
 
-#### Manual Verification
-
-- [ ] [Outcome only a human can judge — who checks it and when] (O-2)
-
 ---
 
 ## Testing Strategy
 
-### Unit Tests
-
-- [Behavior and edge cases]
-
-### Integration Tests
-
-- [Cross-component scenarios, or `Not applicable — reason`]
-
-### Manual Testing
-
-- [Human-only scenario, or `Not applicable — reason`]
+[Which test layers carry which obligations, and the commands that run them]
 
 ## Performance Considerations
 
@@ -138,10 +124,6 @@ workflows; do not rewrite them only to add frontmatter.
 ## Migration and Rollback
 
 [Data/deployment/compatibility steps, or `Not applicable — reason`]
-
-## Decisions and Assumptions
-
-- **A-1** ([decided by user | derived from repository | assumed]) — [decision] — [evidence or reason]
 
 ## References
 
@@ -154,10 +136,15 @@ workflows; do not rewrite them only to add frontmatter.
 - [Independently shippable remainder cut from this plan — one entry per future plan]
 ```
 
-Repeat the phase block for each dependency-ordered phase. Omit an empty
-verification category inside a phase only when the phase clearly states why
-it does not apply. Omit `## Follow-up Issues` when nothing was cut. Do not put
-unresolved product or architecture questions in the final artifact.
+Repeat the phase block for each dependency-ordered phase. Omit
+`## Follow-up Issues` when nothing was cut. Do not put unresolved product or
+architecture questions in the final artifact.
+
+The sections from `## Overview` through `## Decisions and Assumptions` are the
+plan's contract page: what will be true, what is out of scope, and what was
+decided. Write them to be read alone — by a reviewer, a validator, or a later
+planner — and keep them to about a page. Everything after them is working
+material for the implementer.
 
 The implementing workflow appends a `## Implementation Record` and the
 enhancement workflow a `## Enhancement History`; both are defined by their
@@ -180,6 +167,18 @@ owning packages and are not written by the planner.
 - `## What We're NOT Doing` is binding in the same way: work it excludes is
   out of scope for the implementation and for review of it.
 - IDs are stable. Revising a plan retires an ID rather than reusing it.
+
+## Changes Required rules
+
+- The section locates the change and states the contract it must present:
+  files, symbols, and the interface shapes other code depends on. It does not
+  sequence the edits or draft them.
+- An implementer reads it to find where to work; how to make the change is
+  theirs to decide, and departing from the list is a recorded deviation, not
+  a violation.
+- An entry is one line. A change that needs a paragraph to describe is either
+  an obligation that belongs on the contract page or a decision that belongs
+  in the approach.
 
 ## Phase and size rules
 
@@ -206,10 +205,18 @@ owning packages and are not written by the planner.
 - An outcome an agent can observe with the repository's own tools — a CLI
   run, an HTTP call, a rendered page — is an automated criterion with the
   procedure written out, not a manual one.
-- A manual criterion is reserved for human judgment. It says who checks it
-  and when (before merge, after deploy), and states explicitly when a later
-  phase depends on its outcome; without that statement the implementing
-  workflow does not pause for it.
+- Every phase has at least one automated criterion. A phase that cannot be
+  checked by a command is usually part of another phase.
+- Manual verification is optional and absent by default. Add a
+  `#### Manual Verification` block with its own checkboxes to a phase only
+  for an outcome that takes human judgment, and say who checks it and when
+  (before merge, after deploy). A phase without one needs no explanation.
+- No plan step waits for a human unless the plan says so: state explicitly
+  when a later phase depends on a manual outcome, and prefer cutting the plan
+  at that point into a follow-up issue.
+- `## Testing Strategy` names layers and commands. When a test plan is
+  written from this plan, the cases live there, keyed to the obligation IDs;
+  do not enumerate them twice.
 - Checkbox syntax appears only on success criteria. Progress, decisions, and
   follow-ups use plain bullets, so tooling that counts criteria stays
   accurate.
@@ -224,9 +231,9 @@ owning packages and are not written by the planner.
 - Code snippets are optional and reserved for a contract or interface shape
   that prose cannot describe unambiguously; the plan is not a speculative
   patch.
-- Automated and manual verification remain separate. Do not add a universal
-  human pause between phases; the implementing workflow applies its own
-  authority and interaction rules.
+- Do not add approval gates, sign-off steps, or pauses between phases; the
+  implementing workflow applies its own authority and interaction rules.
+  Where manual verification exists it stays separate from automated criteria.
 - `## Decisions and Assumptions` records how each material decision was
   settled: by the user, by repository evidence, or by assumption. A plan
   produced without a user to ask resolves every fork as a recorded assumption.

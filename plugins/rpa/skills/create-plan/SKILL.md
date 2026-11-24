@@ -73,21 +73,25 @@ file before writing. Keep the stable section names so `/implement-plan`,
    desired states, exclusions, and overall approach. Divide the work into
    independently verifiable phases ordered by real dependencies, each a
    vertical slice that ends with something observable. Keep the whole plan to
-   one reviewable change and move the remainder to follow-up issues. Name
-   exact files and symbols when known; describe new files explicitly. Prefer
-   pointers and interface shapes over pasted implementation bodies, and let
-   the plan's length follow the size of the change.
+   one reviewable change and move the remainder to follow-up issues. For each
+   phase say where the change lands and what contract it presents — files,
+   symbols, interface shapes — and leave the sequence of edits to the
+   implementer. Let the plan's length follow the size of the change.
 7. **Make verification executable.** For every phase, name applicable repo
    commands and observable outcomes; for new behavior prefer a check that
    fails before the phase and passes after. Whatever an agent can observe
-   with the repository's tools is an automated criterion; reserve manual
-   criteria for human judgment and say who checks them and when. Include
-   migrations, rollback, compatibility, performance, security, and
-   operational checks only when the change makes them relevant; state
-   `not applicable` with a reason rather than inventing a checklist.
-8. **Write and report.** Emit the artifact contract exactly, then return the
-   plan path plus the obligations, decisions, risks, and any `not_applicable`
-   verification outcomes that matter to the implementer.
+   with the repository's tools is an automated criterion. A plan needs no
+   human step: add a manual criterion only where the outcome takes human
+   judgment, and say who checks it and when. Name test layers and commands
+   and leave individual cases to the test plan. Include migrations, rollback,
+   compatibility, performance, security, and operational checks only when the
+   change makes them relevant; state `not applicable` with a reason rather
+   than inventing a checklist.
+8. **Write and report.** Emit the artifact contract exactly, contract page
+   first — overview, end state, obligations, exclusions, decisions — short
+   enough to be read alone. Then return the plan path plus the obligations,
+   decisions, risks, and any `not_applicable` verification outcomes that
+   matter to the implementer.
 
 When the invocation says nobody will answer, or the run is controller-driven,
 do not ask and do not wait: settle each fork with the most defensible option,
@@ -107,8 +111,8 @@ The workflow is complete when:
 2. Current-state claims and proposed touch points cite concrete `file:line`
    evidence from the current checkout; external API or library claims cite an
    authoritative source when they affect the design.
-3. Each phase identifies its files or symbols, changes, dependencies, and
-   measurable automated and/or manual success criteria.
+3. Each phase identifies its files or symbols, the contract it presents, its
+   dependencies, and at least one measurable automated success criterion.
 4. Every obligation is an observable outcome mapped to at least one criterion
    or test, and nothing the change must satisfy appears only as narrative.
 5. Scope exclusions, risks, migration or rollback needs, and cross-component
@@ -124,7 +128,7 @@ The workflow is complete when:
 | Gate | Applicability | Runner | When | Mode | Evidence |
 |---|---|---|---|---|---|
 | Repository metadata | when the installed metadata script is available | `scripts/spec_metadata.sh` | before naming the plan | advisory | date, branch, commit, and repository output |
-| Plan structure | every produced plan | compare against `references/artifact-contract.md` | before finishing | blocking | frontmatter, required headings, and phase fields present; every obligation ID appears on a criterion |
+| Plan structure | every produced plan | compare against `references/artifact-contract.md` | before finishing | blocking | frontmatter, required headings in contract order, and phase fields present; every obligation ID appears on a criterion |
 | Kernel/docs hygiene | this repository's kernel and adapter files | `python3 scripts/validate_docs.py` | before commit / in CI | blocking | exit status 0 |
 
 For a gate that does not apply, report `not_applicable` and the reason. Do not
