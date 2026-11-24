@@ -36,11 +36,17 @@ When invoked:
 
 If starting fresh or need more context:
 
-1. **Read the implementation plan** completely
+1. **Read the implementation plan** completely, including its
+   `## Obligations` and `## Implementation Record` when present. The record
+   is the implementer's own account: use it to find deviations, assumptions,
+   and blockers, and check its claims rather than trusting them.
 2. **Identify what should have changed**:
    - List all files that should be modified
    - Note all success criteria (automated and manual)
    - Identify key functionality to verify
+   - List the obligations: a violated obligation is a conformance failure,
+     while a recorded deviation from design guidance that still meets every
+     obligation is not
 
 3. **Spawn parallel research tasks** to discover implementation:
    ```
@@ -195,7 +201,7 @@ never edits it.
 ## Relationship to Other Commands
 
 Recommended workflow:
-1. `/implement_plan` - Execute the implementation
+1. `/implement-plan` - Execute the implementation
 2. `/commit` - Create atomic commits for changes
 3. `/validate_plan` - Verify implementation correctness (plan conformance)
 4. `/code-review` (native) - Bug-focused review of the diff quality

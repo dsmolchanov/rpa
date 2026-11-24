@@ -34,7 +34,7 @@ state changes, or edits to orientation documents.
 The plan path, required sections, phase structure, and verification format are
 defined once in
 [`references/artifact-contract.md`](references/artifact-contract.md). Read that
-file before writing. Keep the stable section names so `/implement_plan`,
+file before writing. Keep the stable section names so `/implement-plan`,
 `/iterate_plan`, `/enhance_plan`, and `/validate_plan` can consume the result.
 
 ## Process guidance
@@ -42,7 +42,9 @@ file before writing. Keep the stable section names so `/implement_plan`,
 1. **Establish the planning target.** If the invocation names a ticket,
    research document, plan, or source file, read every named file completely
    before decomposing the work. If no target is supplied, ask one focused
-   question for the task or source document.
+   question for the task or source document. A research document is evidence
+   as of its `git_commit`: for any file it cites that changed since, re-verify
+   the finding at the current checkout before the plan relies on it.
 2. **Orient before searching.** Read applicable `AGENTS.md` / `CLAUDE.md` and
    `ARCHITECTURE.md` files first. Treat code and repository configuration at
    the current checkout as authoritative; prior `thoughts/` documents provide
@@ -55,22 +57,43 @@ file before writing. Keep the stable section names so `/implement_plan`,
 4. **Resolve decisions before finalizing.** Derive answers from the repository
    where possible. Ask the user only when plausible interpretations materially
    change scope, architecture, compatibility, or another hard-to-reverse
-   choice. Continue without ritual outline approvals when the supplied request
-   and evidence already determine the approach.
-5. **Design in dependency order.** State the current and desired states,
-   exclusions, and overall approach. Divide the work into independently
-   verifiable phases ordered by real dependencies. Name exact files and
-   symbols when known; describe new files explicitly. Prefer pointers and
-   interface shapes over pasted implementation bodies.
-6. **Make verification executable.** For every phase, name applicable repo
-   commands and observable outcomes. Separate automated checks from genuinely
-   human-only verification. Include migrations, rollback, compatibility,
-   performance, security, and operational checks only when the change makes
-   them relevant; state `not applicable` with a reason rather than inventing a
-   checklist.
-7. **Write and report.** Emit the artifact contract exactly, then return the
-   plan path plus the decisions, risks, and any `not_applicable` verification
-   outcomes that matter to the implementer.
+   choice — and then put the fork as options with their trade-offs and a
+   recommendation, one decision at a time. Continue without ritual outline
+   approvals when the supplied request and evidence already determine the
+   approach. Record how each material decision was settled.
+5. **Separate obligations from guidance.** State as an obligation only what
+   must hold for the change to be correct, as an observable outcome with the
+   criterion that demonstrates it. Approach, naming, ordering, and file
+   layout are design guidance: an implementer may adapt them, and a reviewer
+   may not block on them. Requirements the request implies but does not state
+   — compatibility, authorization, data handling, existing callers — are the
+   ones most often missed; look for them in the affected code and write them
+   down as obligations or as explicit exclusions.
+6. **Design in dependency order, sized for one review.** State the current and
+   desired states, exclusions, and overall approach. Divide the work into
+   independently verifiable phases ordered by real dependencies, each a
+   vertical slice that ends with something observable. Keep the whole plan to
+   one reviewable change and move the remainder to follow-up issues. Name
+   exact files and symbols when known; describe new files explicitly. Prefer
+   pointers and interface shapes over pasted implementation bodies, and let
+   the plan's length follow the size of the change.
+7. **Make verification executable.** For every phase, name applicable repo
+   commands and observable outcomes; for new behavior prefer a check that
+   fails before the phase and passes after. Whatever an agent can observe
+   with the repository's tools is an automated criterion; reserve manual
+   criteria for human judgment and say who checks them and when. Include
+   migrations, rollback, compatibility, performance, security, and
+   operational checks only when the change makes them relevant; state
+   `not applicable` with a reason rather than inventing a checklist.
+8. **Write and report.** Emit the artifact contract exactly, then return the
+   plan path plus the obligations, decisions, risks, and any `not_applicable`
+   verification outcomes that matter to the implementer.
+
+When the invocation says nobody will answer, or the run is controller-driven,
+do not ask and do not wait: settle each fork with the most defensible option,
+record it as an assumption, and publish the plan as `approved`. A fork too
+consequential to assume — it changes what is built, or cannot be undone —
+ends the run without a plan and with the question stated.
 
 Tool results can be truncated, paginated, or filtered. When a file or output
 is load-bearing for the plan, ensure you have seen all of it before relying on
@@ -86,20 +109,22 @@ The workflow is complete when:
    authoritative source when they affect the design.
 3. Each phase identifies its files or symbols, changes, dependencies, and
    measurable automated and/or manual success criteria.
-4. Scope exclusions, risks, migration or rollback needs, and cross-component
+4. Every obligation is an observable outcome mapped to at least one criterion
+   or test, and nothing the change must satisfy appears only as narrative.
+5. Scope exclusions, risks, migration or rollback needs, and cross-component
    effects are explicit where applicable.
-5. No unresolved decision is disguised as an implementation step. A bounded
+6. No unresolved decision is disguised as an implementation step. A bounded
    uncertainty may remain only when the plan states how implementation will
    resolve it deterministically without changing agreed scope.
-6. The final response links the artifact and briefly identifies the selected
-   approach and verification profile.
+7. The final response links the artifact and briefly identifies the selected
+   approach, the obligations, and the verification profile.
 
 ## Deterministic verification profile
 
 | Gate | Applicability | Runner | When | Mode | Evidence |
 |---|---|---|---|---|---|
 | Repository metadata | when the installed metadata script is available | `scripts/spec_metadata.sh` | before naming the plan | advisory | date, branch, commit, and repository output |
-| Plan structure | every produced plan | compare against `references/artifact-contract.md` | before finishing | blocking | required headings and phase fields present |
+| Plan structure | every produced plan | compare against `references/artifact-contract.md` | before finishing | blocking | frontmatter, required headings, and phase fields present; every obligation ID appears on a criterion |
 | Kernel/docs hygiene | this repository's kernel and adapter files | `python3 scripts/validate_docs.py` | before commit / in CI | blocking | exit status 0 |
 
 For a gate that does not apply, report `not_applicable` and the reason. Do not
@@ -116,3 +141,7 @@ replace a missing project-specific test command with a fabricated one.
   resolved.
 - If a complete actionable plan cannot be produced, do not publish a document
   that presents unresolved choices as settled work.
+- If the change is small and understood well enough to implement and verify
+  directly, say so before writing: a plan is for work that needs decisions
+  recorded, not a toll on every edit. Write the compact plan anyway when the
+  caller asked for the artifact.
