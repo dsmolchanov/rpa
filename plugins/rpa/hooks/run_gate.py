@@ -175,7 +175,7 @@ def run_related_tests() -> int:
     if npm is None:
         return report("related-tests", "failed", "npm is unavailable", blocking=True)
     completed = subprocess.run(
-        [npm, "test", "--", "--bail", "--findRelatedTests", "--", *files],
+        [npm, "test", "--", "--bail", "--passWithNoTests", "--findRelatedTests", "--", *files],
         cwd=root,
         check=False,
     )
