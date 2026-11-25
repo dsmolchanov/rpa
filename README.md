@@ -36,6 +36,11 @@ This approach reduces errors, improves code quality, and creates documentation t
 | `/tech-debt-sweep` | Scan codebase for technical debt and generate paydown plan |
 | `/tech_debt_trends` | Analyze technical debt trends over time |
 
+### Changes in 2.4.1
+
+- The test-plan contract states that `TEST` is a literal segment of the
+  filename and that an exact output path named by the caller wins.
+
 ### Changes in 2.4.0
 
 - The implementation workflow is now the `implement-plan` skill;

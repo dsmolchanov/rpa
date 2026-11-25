@@ -7,10 +7,15 @@ feature-scoped blueprint consumed by `/tdd`; it is not a generated test suite.
 
 `thoughts/shared/tests/YYYY-MM-DD-TEST-XXXX-short-description.md`
 
+- `TEST` is a literal segment and always appears in the name: consumers find
+  test plans by it. Only `XXXX` is a placeholder.
 - Use the source ticket identifier in place of `XXXX` when one exists.
 - When no ticket exists, use a stable short identifier derived from the source
   rather than the literal placeholder `XXXX`.
 - Use the current local date and a short kebab-case description.
+- When the invocation names an exact output path, write there instead.
+
+Example: `2025-01-08-TEST-ENG-1478-parent-child-tracking.md`.
 
 ## Required body
 
